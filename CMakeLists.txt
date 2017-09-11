@@ -30,6 +30,7 @@ configure_file(
         src/version.h
 )
 
+
 #as per http://cgal-discuss.949826.n4.nabble.com/CMake-and-flags-td949906.html
 #don't override internal settings
 set( CGAL_DONT_OVERRIDE_CMAKE_FLAGS TRUE )
@@ -73,6 +74,8 @@ include_directories(
         ${Boost_INCLUDE_DIR}
         )
 
+
+set(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE})
 
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 add_executable(mesher ${SOURCE_FILES})
