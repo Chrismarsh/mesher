@@ -1,0 +1,3 @@
+/Users/chris/Desktop/mesher/CMakeFiles/rebuild_cache.dir
+/Users/chris/Desktop/mesher/CMakeFiles/edit_cache.dir
+/Users/chris/Desktop/mesher/CMakeFiles/mesher.dir
