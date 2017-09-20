@@ -75,6 +75,7 @@ The classifier allows for reclassifying data within mesher so that data-loss fro
 
 Complex basin shapes might result in the creation of many triangles along the complex edges. Thus ```simplify=True``` and ```simplify_tol``` can be used to simplify the basin outline. ```simplify_tol``` is the simplification tolerance specified in meters. Be careful as too high a tolerance will cause many lines to be outside of the bounds of the raster.
 
+```simplify_buffer``` Sets a negative buffer (i.e., contracts the meshing domain) to give ```simplify_tol``` more room to work. That is, usage of the simplify tolerance without this will likely put triangles outside of the valid data domain. Using this allows for the simplification to result in triangles that exist within the data domain. You can disable the use of this buffer by setting ```no_simplify_buffer=True```. ```simplify_buffer``` is enabled by default [defaults to 10m] when ```simplify=True```.
 
 ```python
 # Configuration file for Mesher

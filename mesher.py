@@ -61,6 +61,19 @@ def main():
         simplify = X.simplify
         simplify_tol = X.simplify_tol
 
+    bufferDist=-10 #default to -10, will only trigger is simplify is set to T
+    if hasattr(X, 'simplify_buffer'):
+        bufferDist = X.simplify_buffer
+
+    #be able to turn this off, I guess?
+    no_simplify_buffer = False
+    if hasattr(X, 'no_simplify_buffer'):
+        bufferDist = X.no_simplify_buffer
+
+    if bufferDist > 0:
+        print 'Buffer must be < 0 as we need to shrink the extent.'
+        exit(-1)
+
     lloyd_itr = 0;
     if hasattr(X,'lloyd_itr'):
         lloyd_itr = X.lloyd_itr
@@ -177,7 +190,7 @@ def main():
     else:
         output_file_name = '_projected.tif'
 
-     subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' % (
+    subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' % (
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
@@ -338,10 +351,40 @@ def main():
     dataSource.ExecuteSQL("REPACK " + layer.GetName())
     dataSource.Destroy()
 
+    # allow us to be able to use this directly in the exec_string below if we dont' simplify
+    outputBufferfn = base_dir + plgs_shp
+    if simplify and not no_simplify_buffer:
+        # buffering code from http://pcjericks.github.io/py-gdalogr-cookbook/vector_layers.html?highlight=buffer
+        inputfn = base_dir + plgs_shp
+        outputBufferfn = base_dir + "buffered_"+plgs_shp
+        bufferDist = -10.0
+
+        print 'Simplifying extents by buffer distance = ' + str(bufferDist)
+        inputds = ogr.Open(inputfn)
+        inputlyr = inputds.GetLayer()
+
+        shpdriver = ogr.GetDriverByName('ESRI Shapefile')
+        if os.path.exists(outputBufferfn):
+            shpdriver.DeleteDataSource(outputBufferfn)
+        outputBufferds = shpdriver.CreateDataSource(outputBufferfn)
+        bufferlyr = outputBufferds.CreateLayer(outputBufferfn, srs_out, geom_type=ogr.wkbPolygon)
+        featureDefn = bufferlyr.GetLayerDefn()
+
+        for feature in inputlyr:
+            ingeom = feature.GetGeometryRef()
+            geomBuffer = ingeom.Buffer(bufferDist)
+
+            outFeature = ogr.Feature(featureDefn)
+            outFeature.SetGeometry(geomBuffer)
+            bufferlyr.CreateFeature(outFeature)
+            outFeature = None
+
+        inputds = None
+        outputBufferds = None
 
     print 'Converting polygon to linestring'
-    exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING' % (base_dir + 'line_' + plgs_shp, base_dir +
-                                                                 plgs_shp)
+    exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING' % (base_dir + 'line_' + plgs_shp, outputBufferfn)
+
     if simplify:
         exec_string = exec_string + ' -simplify ' + str(simplify_tol)
 
@@ -1010,7 +1053,6 @@ def rasterize_elem(data, feature, key):
 
 
     return output
-
 
 if __name__ == "__main__":
     main()
