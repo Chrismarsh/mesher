@@ -357,7 +357,6 @@ def main():
         # buffering code from http://pcjericks.github.io/py-gdalogr-cookbook/vector_layers.html?highlight=buffer
         inputfn = base_dir + plgs_shp
         outputBufferfn = base_dir + "buffered_"+plgs_shp
-        bufferDist = -10.0
 
         print 'Simplifying extents by buffer distance = ' + str(bufferDist)
         inputds = ogr.Open(inputfn)
