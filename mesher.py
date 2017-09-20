@@ -177,7 +177,7 @@ def main():
     else:
         output_file_name = '_projected.tif'
 
-    subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' % (
+     subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' % (
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
@@ -237,7 +237,7 @@ def main():
         if parameter_files[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
-            estr = exec_str + 'cubicspline'
+            estr = exec_str + 'average'
 
         #we need to handle a path being passed in
         output_param_fname = os.path.basename(data['file'])
@@ -263,7 +263,7 @@ def main():
         if initial_conditions[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
-            estr = exec_str + 'cubicspline'
+            estr = exec_str + 'average'
 
         #we need to handle a path being passed in
         output_ic_fname = os.path.basename(data['file'])
@@ -669,6 +669,7 @@ def main():
                                                              mesh['mesh']['vertex'][v1][2] +
                                                              mesh['mesh']['vertex'][v2][2]) / 3.)
 
+
                     tpoly = ogr.Geometry(ogr.wkbPolygon)
                     tpoly.AddGeometry(ring)
 
@@ -916,7 +917,8 @@ def rasterize_elem(data, feature, key):
     srs.ImportFromWkt(wkt)
     gt = raster.GetGeoTransform()
     rb = raster.GetRasterBand(1)
-    src_offset = bbox_to_pixel_offsets(gt, feature.geometry().GetEnvelope(), raster.RasterXSize, raster.RasterYSize)
+    geom = feature.geometry()
+    src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), raster.RasterXSize, raster.RasterYSize)
     src_array = rb.ReadAsArray(*src_offset)
     # calculate new geotransform of the feature subset
     new_gt = (
@@ -927,24 +929,6 @@ def rasterize_elem(data, feature, key):
         0.0,
         gt[5]
     )
-
-    # testing code
-    # tri_id = feature.GetField('triangle')
-    # if tri_id == 12439:
-    #     mem_drv = ogr.GetDriverByName('ESRI Shapefile')
-    #     mem_ds = mem_drv.CreateDataSource('12439.shp')
-    #     mem_layer = mem_ds.CreateLayer('poly', srs, ogr.wkbPolygon)
-    #     mem_layer.CreateFeature(feature.Clone())
-    #
-    #
-    #     driver = gdal.GetDriverByName('GTiff')
-    #     rvds = driver.Create('12439.tiff', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
-    #     rvds.SetGeoTransform(new_gt)
-    #     rvds.SetProjection(wkt)
-    #     gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
-    #     rvds = None
-    #     mem_layer = None
-    #     exit(1)
 
     # Create a temporary vector layer in memory
     mem_drv = ogr.GetDriverByName('Memory')
@@ -957,10 +941,10 @@ def rasterize_elem(data, feature, key):
     rvds = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
     rvds.SetGeoTransform(new_gt)
     rvds.SetProjection(wkt)
-    gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
+    err = gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
+    if err != 0:
+        raise Exception("error rasterizing layer: %s" % err)
 
-    # rvds = None
-    # exit(1)
     rv_array = rvds.ReadAsArray()  # holds a mask of where the triangle is on the raster
     # Mask the source data array with our current feature
     # we take the logical_not to flip 0<->1 to get the correct mask effect
@@ -996,6 +980,35 @@ def rasterize_elem(data, feature, key):
         print 'Error: unknown data aggregation method %s' % data['method']
 
     feature.SetField(key, output)
+
+#testing code
+    # if output < 0:
+    #     print "Found < 0"
+    #
+    #     # testing code
+    #     tri_id = str(feature.GetField('triangle'))
+    #     print "Tri ID = " + tri_id
+    #
+    #     print masked
+    #
+    #     mem_drv = ogr.GetDriverByName('ESRI Shapefile')
+    #     mem_ds = mem_drv.CreateDataSource(tri_id+'.shp')
+    #     mem_layer = mem_ds.CreateLayer('poly', srs, ogr.wkbPolygon)
+    #     mem_layer.CreateFeature(feature.Clone())
+    #
+    #     driver = gdal.GetDriverByName('GTiff')
+    #     rvds = driver.Create(tri_id+'.tiff', src_offset[2], src_offset[3], 1, gdal.GDT_Float32)
+    #     rvds.SetGeoTransform(new_gt)
+    #     rvds.SetProjection(wkt)
+    #     outband = rvds.GetRasterBand(1)
+    #     outband.WriteArray(src_array)
+    #     # gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
+    #
+    #     rvds = None
+    #     mem_layer = None
+    #     exit(1)
+
+
     return output
 
 
