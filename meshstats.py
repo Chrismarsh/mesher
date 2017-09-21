@@ -19,16 +19,13 @@ def main():
     print 'Reading in files'
 
     #############
-    if 'mesher_output_dir' in locals():
-        base_name =os.path.basename(os.path.normpath(mesher_output_dir))
-        raster_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_projected.tif'
-        shp_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_USM.shp'
-    elif 'raster_file' not in locals() or 'shp_file' not in locals():
-        print 'If mesher output folder not given, must manually specify both shp and raster file'
-        exit(1)
-    else:
-        base_name =os.path.basename(os.path.normpath(raster_file))
-        base_shp_name =os.path.basename(os.path.normpath(shp_file))
+
+    base_name =os.path.basename(os.path.normpath(mesher_output_dir))
+    raster_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_projected.tif'
+    shp_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_USM.shp'
+
+    base_name =os.path.basename(os.path.normpath(raster_file))
+    base_shp_name =os.path.basename(os.path.normpath(shp_file))
 
     raster_ds = gdal.Open(raster_file)
     if raster_ds is None:
