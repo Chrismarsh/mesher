@@ -21,13 +21,12 @@ import json
 import os
 import numpy as np
 import scipy.stats.mstats as sp
-import scipy.interpolate as sp_interp
+
 import sys
 import shutil
 import imp
 import vtk
-import itertools
-import collections
+
 gdal.UseExceptions()  # Enable errors
 
 
