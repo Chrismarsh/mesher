@@ -40,13 +40,14 @@ int main(int argc, char *argv[])
 {
     GDALAllRegister();
 
-    std::string version = "mesher 0.1 " GIT_BRANCH "/" GIT_COMMIT_HASH ;
+    std::string version = "mesher " GIT_BRANCH "/" GIT_COMMIT_HASH ;
     std::string poly_file;
     double max_area = 0;
     double min_area = 1;
     bool is_geographic = false;
     size_t lloyd_itr = 0;
     std::string error_metric = "rmse"; //default of RMSE
+
     //holds all rasters we perform tolerance checking on
     std::vector< std::pair< boost::shared_ptr<raster>,double> > rasters;
 
@@ -67,7 +68,7 @@ int main(int argc, char *argv[])
                     " Must be give in the same order as the rasters.")
 
             ("category-raster,R", po::value<std::vector<std::string>>(), "Optional landcover raster to conform mesh to.")
-            ("category-frac,T",  po::value<std::vector<double>>(), "Franctional percent of continous landcover required to not-split a triangle.")
+            ("category-frac,T",  po::value<std::vector<double>>(), "Fractional percent of continuous landcover required to not-split a triangle.")
 
             ("area,a", po::value<double>(&max_area), "Maximum area a triangle can be. Square unit.")
             ("min-area,m", po::value<double>(&min_area), "Minimum area a triangle can be. Square unit.")
@@ -90,7 +91,6 @@ int main(int argc, char *argv[])
         std::cout << version << std::endl;
         exit(1);
     }
-
 
     if ( (vm.count("raster") && ! vm.count("tolerance")) ||
             (!vm.count("raster") &&  vm.count("tolerance")) )
@@ -118,7 +118,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-
+    //Ensure we have the same number of tolerances as we do raster files
     if( vm.count("raster") && vm.count("tolerance"))
     {
         auto files = vm["raster"].as<std::vector<std::string>>();
@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
 
         if(files.size() != tols.size())
         {
-            std::cout << "Mismatched lengths in rasters and tolerances. Must be equale."<<std::endl;
+            std::cout << "Mismatched lengths in rasters and tolerances. Must be equal."<<std::endl;
             exit(1);
         }
         for(int i = 0 ; i< tols.size();++i)
@@ -137,6 +137,7 @@ int main(int argc, char *argv[])
         }
     }
 
+//ensure we have the same number of category rasters as category fractions
     if( vm.count("category-raster") && vm.count("category-frac"))
     {
         auto files = vm["category-raster"].as<std::vector<std::string>>();
@@ -161,8 +162,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    CDT cdt;
-
+    CDT cdt; //main mesh data structure
 
     std::ifstream infile(poly_file);
     if(!infile)
@@ -187,6 +187,8 @@ int main(int argc, char *argv[])
         std::cout << "Wrong number of columns" <<std::endl;
         exit(1);
     }
+
+    //Build the PLGS that constrains the triangulation
     for(int i = 0 ; i < row -1 ; i++)
     {
         std::getline(infile, line);
@@ -203,7 +205,7 @@ int main(int argc, char *argv[])
         vertex.push_back(vh);
     }
 
-    //skip last line of vertexes. this is a duplicate, so don't need it (Triangle does though)
+    //skip last line of vertexes. this is a duplicate, so don't need it (Triangle does though and these files are Triangle compatible)
     std::getline(infile, line);
 
     //empty line
@@ -234,10 +236,10 @@ int main(int argc, char *argv[])
         v0 = vertex.at(i0);
         v1 = vertex.at(i1);
 
-        cdt.insert_constraint(v0,v1);
+        cdt.insert_constraint(v0,v1); //set PLGS constraint
     }
 
-    //and lastly, close the loop, ignore
+    //and lastly, close the loop
     Vertex_handle v0,v1;
     v0 = vertex.at(row-2);
     v1 = vertex.at(0);
@@ -245,7 +247,7 @@ int main(int argc, char *argv[])
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
-    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125,max_area,min_area,rasters,category_rasters,error_metric,is_geographic));
+    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic));
 
     //run lloyd optimizations if required.
     //if run, 100 is a good pick
