@@ -24,12 +24,11 @@ def main():
     raster_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_projected.tif'
     shp_file = os.path.normpath(mesher_output_dir)+'/'+base_name+'_USM.shp'
 
-    base_name =os.path.basename(os.path.normpath(raster_file))
     base_shp_name =os.path.basename(os.path.normpath(shp_file))
 
     raster_ds = gdal.Open(raster_file)
     if raster_ds is None:
-        print 'Could not open %s' % (raster_ds)
+        print 'Could not open %s' % raster_ds
         exit(1)
 
 
@@ -52,13 +51,13 @@ def main():
     # driver = ogr.GetDriverByName('ESRI Shapefile')
     mesh = ogr.Open(shp_file, update=True)
     if mesh is None:
-        print 'Could not open %s' % (mesh)
+        print 'Could not open %s' % mesh
         exit(1)
 
 
     layer = mesh.GetLayer()
     num_elem = layer.GetFeatureCount()
-    print "Number of triangles = %d" % (num_elem)
+    print "Number of triangles = %d" % num_elem
 
     print "# triangles v. raster = " + str( num_elem / float(c) * 100.) + '%'
 
@@ -140,11 +139,11 @@ def main():
 
 def tri_angles(raster_ds, ring):
     x1, y1, z = ring.GetPoint(0)  # this z is 0,
-    z1 = extract_point(raster_ds, x1, y1);
+    z1 = extract_point(raster_ds, x1, y1)
     x2, y2, z = ring.GetPoint(1)
-    z2 = extract_point(raster_ds, x2, y2);
+    z2 = extract_point(raster_ds, x2, y2)
     x3, y3, z = ring.GetPoint(2)
-    z3 = extract_point(raster_ds, x3, y3);
+    z3 = extract_point(raster_ds, x3, y3)
 
     rb = raster_ds.GetRasterBand(1)
     if z1 == rb.GetNoDataValue() or z2 == rb.GetNoDataValue() or z3 == rb.GetNoDataValue():
@@ -168,14 +167,14 @@ def tri_angles(raster_ds, ring):
     v = (y3 - y2, x3 - x2)
     angle13 = math.acos(dp(u, v) / (vl(u) * vl(v))) * 180. / math.pi
 
-    return(angle32,angle12,angle13)
+    return angle32, angle12, angle13
 
 
 def tri_rmse(raster_ds,feature):
     geom = feature.GetGeometryRef()
     ring = geom.GetGeometryRef(0)
 
-    new_gt, rtri,xsize,ysize = rasterize_elem(raster_ds, feature, '')
+    new_gt, rtri,xsize,ysize = rasterize_elem(raster_ds, feature)
 
     #get triangle verticies
     x1, y1, z = ring.GetPoint(0)  # this z is 0,
@@ -213,7 +212,7 @@ def tri_rmse(raster_ds,feature):
     if c == 0:    #collinear
         return None
 
-    max_diff = -9999;
+    max_diff = -9999
     for y in xrange(rtri.shape[0]):
         for x in xrange(rtri.shape[1]):
             if not np.ma.is_masked(rtri[y,x]):
@@ -264,7 +263,7 @@ def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
     if y1 + ysize >= rasterYsize:
         ysize = rasterYsize-y1
 
-    return (x1, y1, xsize, ysize)
+    return x1, y1, xsize, ysize
 
 def xyToPixel( gt, x,  y,  max_x,  max_y):
     # adfGeoTransform[0] /* top left x */
@@ -279,20 +278,20 @@ def xyToPixel( gt, x,  y,  max_x,  max_y):
 
     #out of bound issue when we are off by one
     if px >= max_x:
-        px = max_x - 1;
+        px = max_x - 1
 
     if py >= max_y:
-        py = max_y - 1;
+        py = max_y - 1
 
     if py < 0:
-        py = 0;
+        py = 0
 
     if px <0 :
-        px = 0;
+        px = 0
 
-    return (px,py)
+    return px, py
 
-def rasterize_elem(raster, feature, key):
+def rasterize_elem(raster, feature):
 
     wkt = raster.GetProjection()
     srs = osr.SpatialReference()

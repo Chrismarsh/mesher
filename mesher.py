@@ -21,18 +21,19 @@ import json
 import os
 import numpy as np
 import scipy.stats.mstats as sp
-
 import sys
 import shutil
 import imp
 import vtk
 
-gdal.UseExceptions()  # Enable errors
+gdal.UseExceptions()  # Enable exception support
+
 
 
 def main():
     #######  load user configurable paramters here    #######
-    # Check user defined configuraiton file
+    # Check user defined configuration file
+
     if len(sys.argv) == 1:
         print('ERROR: main.py requires one argument [configuration file] (i.e. main.py Bow)')
         return
@@ -43,28 +44,35 @@ def main():
     # Load in configuration file as module
     X = imp.load_source('',configfile)
 
+
     dem_filename = X.dem_filename
     max_area = X.max_area
 
+    #load any user given parameter files
     parameter_files = {}
     if hasattr(X, 'parameter_files'):
         parameter_files = X.parameter_files
 
+    #initial conditions to apply to the triangles with
     initial_conditions = {}
     if hasattr(X, 'initial_conditions'):
         initial_conditions = X.initial_conditions
 
+    # simplify applies a simplification routine in GDAL to the outer boundary such
+    # that the error between the simplified geom and the original is no more than simplify_tol.
+    # This allows the mesh generator more lee way in not creating small triangles allong the boundary
     simplify = False
     simplify_tol = 0
     if hasattr(X, 'simplify'):
         simplify = X.simplify
         simplify_tol = X.simplify_tol
 
+    #simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
     bufferDist=-10 #default to -10, will only trigger is simplify is set to T
     if hasattr(X, 'simplify_buffer'):
         bufferDist = X.simplify_buffer
 
-    #be able to turn this off, I guess?
+    #Can set simplify_buffer to 0, but we can also just disable this here
     no_simplify_buffer = False
     if hasattr(X, 'no_simplify_buffer'):
         bufferDist = X.no_simplify_buffer
@@ -73,49 +81,62 @@ def main():
         print 'Buffer must be < 0 as we need to shrink the extent.'
         exit(-1)
 
-    lloyd_itr = 0;
+    #Enable lloyd iterations
+    #"The goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees."
+    # 100 iterations is a suggested amount
+    #https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization
+    lloyd_itr = 0
     if hasattr(X,'lloyd_itr'):
         lloyd_itr = X.lloyd_itr
 
+    #Maximum tolerance, as measured by the error metric, between the triangle and the elevation raster.
+    # -1 skips the tolerance check -- useful for producing uniform triangles
     max_tolerance = None
     if hasattr(X, 'max_tolerance'):
         max_tolerance = X.max_tolerance
 
+    #Choice of error metric.
+    # Can be RMSE or tolerance
     errormetric='rmse'
     if hasattr(X,'errormetric'):
         errormetric = X.errormetric
 
+    #if a mesh was already generated, and only applying a new parametrization is required,
+    # enabling this skips the mesh generation step
     reuse_mesh = False
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
 
-    # path to triangle executable
+    # path to mesher executable
     triangle_path = '../../bin/Release/mesher'
     if hasattr(X,'mesher_path'):
         triangle_path = X.mesher_path
 
+    #enable verbose output for debugging
     verbose = False
     if hasattr(X,'verbose'):
         verbose = X.verbose
 
+    # output to the specific directory, instead of the root dir of the calling python script
     user_output_dir = ''
     if hasattr(X,'user_output_dir'):
         user_output_dir = X.user_output_dir
         if user_output_dir[-1] is not os.path.sep:
             user_output_dir += os.path.sep
 
-    #instead of using Albers, should we use the input file's projection?
-    #this is useful for preserving a UTM input. If the input file is geographic, this will currently bail.
+    # Use the input file's projection.
+    # This is useful for preserving a UTM input. Does not work if the input file is geographic.
     use_input_prj = False
     if hasattr(X,'use_input_prj'):
         use_input_prj=X.use_input_prj
 
-    #should we do smoothing of the input DEM to great a more smooth mesh
+    # Do smoothing of the input DEM to create a more smooth mesh. This can help if the DEM quality is poor or if
+    # triangles close to the elevation raster cell size is required
     do_smoothing = False
     if hasattr(X, 'do_smoothing'):
         do_smoothing = X.do_smoothing
 
-    #smoothing can resample the input DEM, this is the amount it scales by
+    # Smoothing factor for above option.
     scaling_factor = 2.0
     if hasattr(X, 'smoothing_scaling_factor'):
         scaling_factor = X.smoothing_scaling_factor
@@ -145,8 +166,8 @@ def main():
     if reuse_mesh:
         try:
             os.remove(base_dir + base_name + '_USM.shp')
-        except:
-            pass
+        except OSError:
+            pass #If the folder doesn't exist, don't worry
 
     # figure out what srs out input is in, we will reproject everything to this
     # if hasattr(X, 'EPSG'):
@@ -160,16 +181,30 @@ def main():
 
     try:
         src_ds = gdal.Open(dem_filename)
-    except:
+    except RuntimeError as e:
         print 'Unable to open file ' + dem_filename
-        exit(1)
+        raise e
 
 
     if src_ds.GetProjection() == '':
-        print "Input DEM must have spatial reference information."
-        exit(1)
+        raise RuntimeError("Input DEM must have spatial reference information.")
 
-    wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\",     GEOGCS[\"GCS_North_American_1983\",         DATUM[\"North_American_Datum_1983\",             SPHEROID[\"GRS_1980\",6378137,298.257222101]],         PRIMEM[\"Greenwich\",0],         UNIT[\"Degree\",0.017453292519943295]],     PROJECTION[\"Albers_Conic_Equal_Area\"],     PARAMETER[\"False_Easting\",0],     PARAMETER[\"False_Northing\",0],     PARAMETER[\"longitude_of_center\",-96],     PARAMETER[\"Standard_Parallel_1\",20],     PARAMETER[\"Standard_Parallel_2\",60],     PARAMETER[\"latitude_of_center\",40],     UNIT[\"Meter\",1],     AUTHORITY[\"EPSG\",\"102008\"]]";
+
+    wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\"," \
+              "     GEOGCS[\"GCS_North_American_1983\"," \
+              "         DATUM[\"North_American_Datum_1983\"," \
+              "             SPHEROID[\"GRS_1980\",6378137,298.257222101]]," \
+              "         PRIMEM[\"Greenwich\",0]," \
+              "         UNIT[\"Degree\",0.017453292519943295]]," \
+              "     PROJECTION[\"Albers_Conic_Equal_Area\"]," \
+              "     PARAMETER[\"False_Easting\",0]," \
+              "     PARAMETER[\"False_Northing\",0]," \
+              "     PARAMETER[\"longitude_of_center\",-96]," \
+              "     PARAMETER[\"Standard_Parallel_1\",20]," \
+              "     PARAMETER[\"Standard_Parallel_2\",60]," \
+              "     PARAMETER[\"latitude_of_center\",40]," \
+              "     UNIT[\"Meter\",1]," \
+              "     AUTHORITY[\"EPSG\",\"102008\"]]"
     if use_input_prj:
         wkt_out = src_ds.GetProjection()
 
@@ -201,9 +236,6 @@ def main():
     # #######
 
     gt = src_ds.GetGeoTransform()
-    # x,y origin
-    xmin = gt[0]
-    ymax = gt[3]
 
     pixel_width = gt[1]
     pixel_height = gt[5]
@@ -215,19 +247,19 @@ def main():
             pixel_width * pixel_height)  # if the user doesn't specify, then limit to the underlying resolution. No point going past this!
 
     if do_smoothing:
-        for iter in range(max_smooth_iter):
+        for itr in range(max_smooth_iter):
 
-            in_name = base_dir + base_name + '_projected_%d.tif' % (iter)
-            out_name = base_dir + base_name +'_projected_%d.tif' % (iter + 1)
+            in_name = base_dir + base_name + '_projected_%d.tif' % itr
+            out_name = base_dir + base_name +'_projected_%d.tif' % (itr + 1)
 
-            if iter+1 == max_smooth_iter: #last iteration, change output
+            if itr+1 == max_smooth_iter: #last iteration, change output
                 out_name = base_dir + base_name + '_projected.tif'
 
             subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -r cubicspline -tr %f %f' % (
                 in_name, out_name, abs(pixel_width) / scaling_factor,
                 abs(pixel_height) / scaling_factor)], shell=True)
 
-            scaling_factor *= (iter+1)
+            scaling_factor *= (itr+1)
 
     # now, reopen the file
     src_ds = gdal.Open(base_dir + base_name + '_projected.tif')
@@ -320,6 +352,7 @@ def main():
     dst_ds.GetRasterBand(1).SetNoDataValue(dem.GetNoDataValue())
     dst_ds.GetRasterBand(1).WriteArray(Z)
     dst_ds.FlushCache()  # super key to get this to disk
+    # noinspection PyUnusedLocal
     dst_ds = None  # close file
 
     # raster -> polygon
@@ -501,8 +534,7 @@ def main():
     # read in the node, ele, and neigh from
 
     # holds our main mesh structure which we will write out to json to read into CHM
-    mesh = {}
-    mesh['mesh'] = {}
+    mesh = {'mesh': {}}
     mesh['mesh']['vertex'] = []
 
     read_header = False
@@ -595,16 +627,14 @@ def main():
         layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
 
     read_header = False
-    i = 1
 
     print 'Computing parameters and initial conditions'
 
-    triangles_to_fix = []
     mesh['mesh']['elem'] = []
     mesh['mesh']['is_geographic'] = is_geographic
 
     #need to save the UTM coordinates so-as to be able to generate lat/long of points if needed later (e.g., CHM)
-    if(not is_geographic):
+    if not is_geographic:
         mesh['mesh']['proj4']  = srs.ExportToProj4()
         mesh['mesh']['UTM_zone'] = srs.GetUTMZone()  #negative in southern hemisphere
 
@@ -619,8 +649,7 @@ def main():
     for key, data in initial_conditions.iteritems():
         ics[key] = []
 
-    vtu_cells  = {}
-    vtu_cells['Elevation'] = vtk.vtkFloatArray()
+    vtu_cells  = {'Elevation': vtk.vtkFloatArray()}
     vtu_cells['Elevation'].SetName("Elevation")
 
     for key, data in parameter_files.iteritems():
@@ -634,6 +663,7 @@ def main():
         vtu_cells[k].SetName(k)
 
     i = 0
+    nelem = 0
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
         for line in elem:
             if '#' not in line:
@@ -759,10 +789,10 @@ def main():
                     i = i + 1
                     # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
     if len(invalid_nodes) > 0:
-        print 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        print 'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
-        print 'Try reducing simplify_tol.'
-        raise
+        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
+        errstr +=  'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
+        errstr +=  'Try reducing simplify_tol.'
+        raise RuntimeError(errstr)
 
     #optionally smooth the mesh
     #this can likely be removed, but is here is the newly added cubic filtering of the input dem is deemed not enough
@@ -888,7 +918,7 @@ def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
         if y1 + ysize > rasterYsize:
             ysize = rasterYsize - y1
 
-    return (x1, y1, xsize, ysize)
+    return x1, y1, xsize, ysize
 
 
 def extract_point(raster, mx, my):
