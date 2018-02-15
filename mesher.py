@@ -44,7 +44,6 @@ def main():
     # Load in configuration file as module
     X = imp.load_source('',configfile)
 
-
     dem_filename = X.dem_filename
     max_area = X.max_area
 
@@ -57,6 +56,11 @@ def main():
     initial_conditions = {}
     if hasattr(X, 'initial_conditions'):
         initial_conditions = X.initial_conditions
+
+    # any extra user-specific constraints. E.g., streams
+    constraints = {}
+    if hasattr(X, 'constraints'):
+        constraints = X.constraints
 
     # simplify applies a simplification routine in GDAL to the outer boundary such
     # that the error between the simplified geom and the original is no more than simplify_tol.
@@ -300,8 +304,7 @@ def main():
         parameter_files[key]['file'] = gdal.Open(base_dir + output_param_fname + '_projected.tif')
 
         if parameter_files[key]['file'] is None:
-            print 'Error: Unable to open raster for: %s' % key
-            exit(1)
+            raise RuntimeError('Error: Unable to open raster for: %s' % key)
 
     for key, data in initial_conditions.iteritems():
         if initial_conditions[key]['method'] == 'mode':
@@ -314,8 +317,7 @@ def main():
         output_ic_fname = os.path.splitext(output_ic_fname)[0]
 
         if gdal.Open(data['file']).GetProjection() == '':
-            print "IC " + data['file'] + " must have spatial reference information."
-            exit(1)
+            raise RuntimeError("IC " + data['file'] + " must have spatial reference information.")
 
         # force all the initial condition files to have the same extent as the input DEM
         subprocess.check_call([estr % (
@@ -329,11 +331,41 @@ def main():
             print 'Error: Unable to open raster for: %s' % key
             exit(1)
 
+    for key, data in constraints.iteritems():
+        # we need to handle a path being passed in
+        output_constraint_fname = os.path.basename(data['file'])
+        output_constraint_fname = os.path.splitext(output_constraint_fname)[0]
+
+        df = ogr.Open(data['file'])
+        if df.GetLayer(0).GetSpatialRef() is None:
+            raise RuntimeError("Constraint " + data['file'] + " must have spatial reference information.")
+        df = None
+
+        outname = base_dir + 'constraint_' + output_constraint_fname
+        # force all the initial condition files to have the same extent as the input DEM
+        exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING -t_srs \"%s\"' % (outname+'.shp', data['file'], wkt_out)
+
+        if simplify:
+            exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
+
+        subprocess.check_call(exec_string, shell=True)
+
+        # convert to geoJSON because it's easy to parse
+        subprocess.check_call(['ogr2ogr -f GeoJSON %s %s' % (outname + '.geojson', outname + '.shp')], shell=True)
+
+        constraints[key]['filename'] = outname + '.geojson'
+
+        #since all the project has already happened in the ogr2ogr step, we can just read it in now
+        with open(outname + '.geojson') as f:
+            constraints[key]['file'] =  json.load(f)
+
+
+
     plgs_shp = base_name + '.shp'
 
     dem = src_ds.GetRasterBand(1)
 
-    # Step 1: Create a mask raster that has a uniform value for all cells
+    # Create a mask raster that has a uniform value for all cells
     # read all elevation data. Might be worth changing to the for-loop approach we use below so we don't have to read in all into ram.
     # some raster
     Z = dem.ReadAsArray()
@@ -465,10 +497,24 @@ def main():
 
     # assuming just the biggest feature is what we want. Need to add in more to support rivers and lakes
     if plgs['features'][idx]['geometry']['type'] != 'LineString':
-        print('Not linestring')
-        exit(1)
+        raise RuntimeError('Not linestring')
 
     coords = plgs['features'][idx]['geometry']['coordinates']
+
+    # We can't just insert this into the global PLGS datastructure as we need that to define the convex hull
+    # so merge all the constraints into 1 geojson file so we can just load in the main cpp mesher code to define the interior PLGS
+    # TODO: in the future this and the convex hull PLGS should all be in 1 PLGS and the Triangle compatibility should be removed
+    interior_PLGS = {
+            "type": "FeatureCollection",
+            "name": "interior_PLGS",
+            "features": []}
+
+    for key, data in constraints.iteritems(): #over each constraint
+        for feat in data['file']['features']: #over the features present in each constraint
+            interior_PLGS['features'].append(feat)
+
+    with open(base_dir+'interior_PLGS.geojson', 'w') as fp:
+        json.dump(interior_PLGS, fp)
 
     # Create the PLGS to constrain the triangulation
     poly_file = 'PLGS' + base_name + '.poly'
@@ -501,7 +547,7 @@ def main():
     is_geographic = srs.IsGeographic()
 
     if not reuse_mesh:
-        execstr = '%s --poly-file %s --tolerance %f --raster %s --area %f --min-area %f --error-metric %s --lloyd %d' % \
+        execstr = '%s --poly-file %s --tolerance %f --raster %s --area %f --min-area %f --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                   (triangle_path,
                    base_dir + poly_file,
                    max_tolerance,
@@ -509,7 +555,8 @@ def main():
                    max_area,
                    min_area,
                    errormetric,
-                   lloyd_itr
+                   lloyd_itr,
+                   base_dir + 'interior_PLGS.geojson'
                    )
 
         if is_geographic:

@@ -7,3 +7,7 @@ CMakeCache.txt
 \.idea/
 
 Makefile
+
+cmake-build-debug/
+
+cmake-build-release/

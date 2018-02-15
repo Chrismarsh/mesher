@@ -19,7 +19,8 @@
 #include <vector>
 #include <utility>
 #include <fstream>
-
+#include <stdexcept>
+#include <csignal>
 #include "mesh.h"
 #include "version.h"
 
@@ -33,15 +34,60 @@
 #include <boost/tokenizer.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/shared_ptr.hpp>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/lexical_cast.hpp>
 
+namespace pt = boost::property_tree;
 namespace po = boost::program_options;
+
+pt::ptree read_json(const std::string& path)
+{
+ // the imbue appears to fix some oddness in how the json parser parses the str.
+    // http://stackoverflow.com/q/35275314/410074
+    // putting it here fixed a segfault very deep in the json parse
+
+    std::ifstream in(path);
+    in.imbue(std::locale());
+
+    std::stringstream json_file;
+    if (in.is_open())
+    {
+        std::string line;
+        while ( getline (in,line) )
+        {
+            json_file << line << '\n';
+        }
+        in.close();
+    }
+    else
+    {
+        throw std::invalid_argument("Unable to open " + path);
+
+    }
+
+    pt::ptree config;
+    try
+    {
+        pt::read_json( json_file, config);
+    }
+    catch (pt::json_parser_error &e)
+    {
+      throw std::invalid_argument( "Error reading file: " + path + " on line: " + std::to_string(e.line()) + " with error: " + e.message());
+    }
+
+    return config;
+}
 
 int main(int argc, char *argv[])
 {
     GDALAllRegister();
 
+//    raise(SIGSTOP);
+
     std::string version = "mesher " GIT_BRANCH "/" GIT_COMMIT_HASH ;
     std::string poly_file;
+    std::string interior_plgs_file;
     double max_area = 0;
     double min_area = 1;
     bool is_geographic = false;
@@ -61,6 +107,9 @@ int main(int argc, char *argv[])
             ("is-geographic,g", po::value<bool>(&is_geographic),"Set to true if the input data are in geographic (lat/long) format.")
             ("poly-file,p", po::value<std::string>(&poly_file),
              "PLGS file to use to bound triangulation. Same format as Triangle.")
+             ("interior-plgs-file,i", po::value<std::string>(&interior_plgs_file),
+             "Interior PLGS file to use to bound triangulation, e.g., rivers")
+
             ("raster,r", po::value<std::vector<std::string>>(), "If tolerance checking is used,"
                     "this provides a list of the rasters to provide the tolerance checking against. "
                     "Order needs to match the order the tolerances are given in.")
@@ -164,6 +213,7 @@ int main(int argc, char *argv[])
 
     CDT cdt; //main mesh data structure
 
+    //read exterior PLGS
     std::ifstream infile(poly_file);
     if(!infile)
     {
@@ -244,6 +294,45 @@ int main(int argc, char *argv[])
     v0 = vertex.at(row-2);
     v1 = vertex.at(0);
     cdt.insert_constraint(v0,v1);
+
+    //do interior plgs
+    auto interior_plgs = read_json(interior_plgs_file);
+    std::cout << "Reading interior PLGS file " << interior_plgs_file << std::endl;
+
+    //iterate over all the features
+    for(auto& feat : interior_plgs.get_child("features") )
+    {
+        //this will hold the vertexes we make from all the read in points. Then they will be joined in a line to make the constriant
+        std::vector<Vertex_handle> interior_vertexes;
+
+        for(auto& coords : feat.second.get_child("geometry.coordinates"))
+        {
+            std::vector<double> v;
+
+            for(auto& c: coords.second)
+            {
+                v.push_back( boost::lexical_cast<double>(c.second.data()));
+            }
+            Vertex_handle vh = cdt.insert(Point(v[0],v[1]));
+            interior_vertexes.push_back(vh);
+//            std::cout <<  v[0]<<","<<v[1] << std::endl;
+
+        }
+
+        //go up to end - 1 as we will not make a cycle, just a linear feature
+        for(size_t i = 0; i < interior_vertexes.size() - 1; i++)
+        {
+            std::cout << i << std::endl;
+            Vertex_handle v0,v1;
+            v0 = interior_vertexes.at(i);
+            v1 = interior_vertexes.at(i+1);
+
+
+            cdt.insert_constraint(v0,v1);
+        }
+
+    }
+
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
