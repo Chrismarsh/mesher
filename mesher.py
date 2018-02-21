@@ -154,9 +154,11 @@ def main():
     #use the convex combination of weights method
     use_weights = False
     topo_weight = 1
+    weight_threshold = 0
     if hasattr(X,'use_weights'):
         use_weights = X.use_weights
         topo_weight = X.topo_weight
+        weight_threshold = X.weight_threshold
 
     ########################################################
 
@@ -586,6 +588,7 @@ def main():
 
         if use_weights:
             execstr += ' --weight %f' % topo_weight
+            execstr += ' --weight-threshold %f' % weight_threshold
 
         for key, data in parameter_files.iteritems():
             if 'tolerance'in data:

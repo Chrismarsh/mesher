@@ -93,6 +93,7 @@ int main(int argc, char *argv[])
     bool is_geographic = false;
     size_t lloyd_itr = 0;
     std::string error_metric = "rmse"; //default of RMSE
+    double weight_threshold=0;// if weights are used, threshold of weighted sum that must be surpassed for triangle to be accepeted as good
 
     bool use_weights = false; // use the weighted generic method. If any weights are passed in (weights.size() > 0) then this will be set true and the weight methods will be used.
 
@@ -123,14 +124,14 @@ int main(int argc, char *argv[])
 
             ("category-raster,R", po::value<std::vector<std::string>>(), "Optional landcover raster to conform mesh to.")
             ("category-frac,T",  po::value<std::vector<double>>(), "Fractional percent of continuous landcover required to not-split a triangle.")
-            ("weights,w",  po::value<std::vector<double>>(), "Fractional weights (must all sum to 1). Must be in exactly same order as rasters and category rasters given.")
+            ("weight,w",  po::value<std::vector<double>>(), "Fractional weights (must all sum to 1). Must be in exactly same order as rasters and category rasters given.")
             ("area,a", po::value<double>(&max_area), "Maximum area a triangle can be. Square unit.")
             ("min-area,m", po::value<double>(&min_area), "Minimum area a triangle can be. Square unit.")
             ("lloyd,l", po::value<size_t>(&lloyd_itr), "Number of Llyod iterations.")
             ("error-metric,M", po::value<std::string>(&error_metric), "Error metric. One of: rmse, mean_tol, max_tol."
                                                          "mean_tol compares the mean triangle vertex value to the mean raster value. "
-                                                        "max_tol mimics the ArcGIS TIN tolerance, and is the maximum difference between the triangle and any single raster cell.");
-
+                                                        "max_tol mimics the ArcGIS TIN tolerance, and is the maximum difference between the triangle and any single raster cell.")
+            ("weight-threshold,h", po::value<double>(&weight_threshold),"If weights are used, threshold of weighted sum that must be surpassed for triangle to be accepted as good.");
     po::variables_map vm;
     po::store(po::command_line_parser(argc, argv).options(desc).run(), vm);
     po::notify(vm);
@@ -173,10 +174,10 @@ int main(int argc, char *argv[])
     }
 
     std::vector<double> weights;
-    if(vm.count("weights"))
+    if(vm.count("weight"))
     {
         use_weights = true;
-        weights = vm["weights"].as<std::vector<double>>();
+        weights = vm["weight"].as<std::vector<double>>();
     }
 
     size_t mw = 0; //counter for getting the offset into the weights array
@@ -383,7 +384,7 @@ int main(int argc, char *argv[])
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
-    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic,use_weights));
+    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic,use_weights,weight_threshold));
 
     //run lloyd optimizations if required.
     //if run, 100 is a good pick

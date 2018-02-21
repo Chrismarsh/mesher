@@ -42,6 +42,7 @@
         const std::string& error_metric;
         const bool is_geographic;
         const bool use_weights;
+        const double weight_threshold;
 
         OGRCoordinateTransformation* prj_trans;
     public:
@@ -54,8 +55,9 @@
                               const std::string& error_metric = std::string(),
                               const bool is_geographic = false,
                               const bool use_weights = false,
+                              const double weight_threshold = 0,
                               const Geom_traits &traits = Geom_traits())
-        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights)
+        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),weight_threshold(weight_threshold)
 
         {
             this->max_area = max_area;
@@ -187,6 +189,7 @@
             const std::string& error_metric;
             const bool is_geographic;
             const bool use_weights;
+            const double weight_threshold;
             OGRCoordinateTransformation* prj_trans;
             const Geom_traits &traits;
 
@@ -203,10 +206,12 @@
                    const std::string& error_metric,
                    const bool is_geographic=false,
                    const bool use_weights=false,
+                   const double weight_threshold=0,
                    OGRCoordinateTransformation* prj_trans=nullptr,
                    const Geom_traits &traits = Geom_traits() )
                     : B(aspect_bound), max_area(area_bound), min_area(min_area),
-                      r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),traits(traits)
+                      r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),
+                      use_weights(use_weights),weight_threshold(weight_threshold),traits(traits)
             {
                 this->prj_trans = prj_trans;
                 if(!prj_trans && is_geographic)
@@ -600,7 +605,7 @@
                 {
                     //first == current tol
                     //second == max tol
-                    if(itr.first > itr.second) //do we violate the max tol
+                    if(itr.first >= itr.second) //do we violate the max tol
                         return CGAL::Mesh_2::BAD;
                 }
 
@@ -608,7 +613,7 @@
                 {
                     //first == current tol
                     //second == max tol
-                    if(itr.first < itr.second)  // is our max land cover below the required threshold to keep this triangle?
+                    if(itr.first <= itr.second)  // is our max land cover below the required threshold to keep this triangle?
                         return CGAL::Mesh_2::BAD;
                 }
 
@@ -724,7 +729,7 @@
 
 
                 // area = 4 * area^2(triangle)
-                double area2 = 2 * CGAL::to_double(area_2(pa, pb, pc));
+                double area2 = 2.0 * CGAL::to_double(area_2(pa, pb, pc));
                 area2 = area2 * area2;
 
                 if (a < b) if (a < c)
@@ -761,9 +766,28 @@
                         if( std::get<1>(itr) != -1)
                         {
                             auto t = error_fn(fh,*( std::get<0>(itr)));
-                            q._tolerance.push_back(std::make_pair(t, std::get<1>(itr)));
 
-                            current_badness = operator()(q);
+                            // Don't push back, we don't want to be checking these, only want to check area and shape, we will manually do the tolerance
+                            // q._tolerance.push_back(std::make_pair(t, std::get<1>(itr)));
+
+                            // even with the weights there are a few things which we must fullfill
+                            if (q.area() > max_area)
+                                return CGAL::Mesh_2::IMPERATIVELY_BAD;
+
+                            //bad angles
+                            if (q.sine() < this->B)
+                                return CGAL::Mesh_2::BAD;
+
+                            //we've gone to small, we need out
+                            if (q.area() <= min_area )
+                                return CGAL::Mesh_2::NOT_BAD;
+
+
+                            if( t <= std::get<1>(itr))
+                                current_badness = CGAL::Mesh_2::NOT_BAD;
+                            else
+                                current_badness = CGAL::Mesh_2::BAD;
+
 
                             double weight =  std::get<2>(itr);
                             weight *= (current_badness == CGAL::Mesh_2::NOT_BAD ? 1 : 0);
@@ -780,18 +804,35 @@
                     for(auto& itr : category_rasters)
                     {
                         auto t = categoryraster_isok(fh,*(std::get<0>(itr)));
-                        q._category_tol.push_back(std::make_pair(t,std::get<1>(itr)));
+//                      q._category_tol.push_back(std::make_pair(t,std::get<1>(itr)));
 
-                        current_badness = operator()(q);
+                        // even with the weights there are a few things which we must fullfill
+                        if (q.area() > max_area)
+                            return CGAL::Mesh_2::IMPERATIVELY_BAD;
+
+                        //bad angles
+                        if (q.sine() < this->B)
+                            return CGAL::Mesh_2::BAD;
+
+                        //we've gone to small, we need out
+                        if (q.area() <= min_area )
+                            return CGAL::Mesh_2::NOT_BAD;
+
+                        if( t >= std::get<1>(itr))
+                            current_badness = CGAL::Mesh_2::NOT_BAD;
+                        else
+                            current_badness = CGAL::Mesh_2::BAD;
+
                         double weight =  std::get<2>(itr);
                         weight *= (current_badness == CGAL::Mesh_2::NOT_BAD ? 1 : 0);
                         alpha += weight;
                     }
 
-                    if (alpha > 0.3)
+                    if (alpha >= weight_threshold)
                         return CGAL::Mesh_2::NOT_BAD;
                     else
                         return CGAL::Mesh_2::BAD;
+
                 } else //this rigorously ensures each tolerance is met
                 {
                     //do numeric rasters
@@ -834,6 +875,6 @@
 
         Is_bad is_bad_object() const
         {
-            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, prj_trans, this->traits);
+            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, prj_trans, this->traits);
         }
     };
