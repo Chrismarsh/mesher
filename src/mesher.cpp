@@ -100,6 +100,9 @@ int main(int argc, char *argv[])
     //these are category based rasters, e.g., landcover, so use a fractional % to figure out if we should split on the tri.
     std::vector< std::pair< boost::shared_ptr<raster> ,double> > category_rasters;
 
+    //weights to apply a convex combination to the constraints. If weights is emtpy, then mesher will rigorously fullfill each constraint
+    std::vector<double> weights;
+
     po::options_description desc("Allowed options");
     desc.add_options()
             ("help", "This message")
@@ -118,7 +121,7 @@ int main(int argc, char *argv[])
 
             ("category-raster,R", po::value<std::vector<std::string>>(), "Optional landcover raster to conform mesh to.")
             ("category-frac,T",  po::value<std::vector<double>>(), "Fractional percent of continuous landcover required to not-split a triangle.")
-
+            ("weights,w",  po::value<std::vector<double>>(), "Fractional weights (must all sum to 1). Must be in exactly same order as rasters and category rasters given.")
             ("area,a", po::value<double>(&max_area), "Maximum area a triangle can be. Square unit.")
             ("min-area,m", po::value<double>(&min_area), "Minimum area a triangle can be. Square unit.")
             ("lloyd,l", po::value<size_t>(&lloyd_itr), "Number of Llyod iterations.")

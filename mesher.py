@@ -150,6 +150,14 @@ def main():
     max_smooth_iter = 1
     if hasattr(X, 'max_smooth_iter'):
         max_smooth_iter = X.max_smooth_iter
+
+    #use the convex combination of weights method
+    use_weights = False
+    topo_weight = 1
+    if hasattr(X,'use_weights'):
+        use_convex_combination = X.use_convex_combination
+        topo_weight X.topo_weight
+
     ########################################################
 
     base_name = os.path.basename(dem_filename)
@@ -281,11 +289,19 @@ def main():
 
     exec_str = 'gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs "%s" -te %f %f %f %f  -tr %f %f -r '
 
+    #ensure all the weights sum to 1
+    total_weights=0
+    if use_weights:
+        total_weights = topo_weight
+
     for key, data in parameter_files.iteritems():
         if parameter_files[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
             estr = exec_str + 'average'
+
+        if use_weights and 'weight' in data:
+            total_weights += data['weight']
 
         #we need to handle a path being passed in
         output_param_fname = os.path.basename(data['file'])
@@ -312,6 +328,9 @@ def main():
         else:
             estr = exec_str + 'average'
 
+        if use_weights and 'weight' in data:
+            total_weights += data['weight']
+
         #we need to handle a path being passed in
         output_ic_fname = os.path.basename(data['file'])
         output_ic_fname = os.path.splitext(output_ic_fname)[0]
@@ -330,6 +349,9 @@ def main():
         if initial_conditions[key]['file'] is None:
             print 'Error: Unable to open raster for: %s' % key
             exit(1)
+
+    if use_weights and total_weights > 1:
+        raise RuntimeError("Weights > 1")
 
     for key, data in constraints.iteritems():
         # we need to handle a path being passed in
@@ -562,12 +584,17 @@ def main():
         if is_geographic:
             execstr += ' --is-geographic true'
 
+        if use_weights:
+            execstr += ' --weight %f' % topo_weight
+
         for key, data in parameter_files.iteritems():
             if 'tolerance'in data:
                 if data['method'] == 'mode':
                     execstr += ' --category-raster %s --category-frac %f' % (data['filename'], data['tolerance'])
                 else:
                     execstr += ' --raster %s --tolerance %f' % (data['filename'], data['tolerance'])
+            if 'weight' in data:
+                execstr += ' --weight %f' % data['weight']
 
         for key, data in initial_conditions.iteritems():
             if 'tolerance' in data:
@@ -575,6 +602,9 @@ def main():
                     execstr += ' --category-raster %s --category-frac %f' % (data['filename'], data['tolerance'])
                 else:
                     execstr += ' --raster %s --tolerance %f' % (data['filename'], data['tolerance'])
+            if 'weight' in data:
+                execstr += ' --weight %f' % data['weight']
+
         print execstr
         subprocess.check_call(execstr, shell=True)
 
