@@ -370,7 +370,7 @@ int main(int argc, char *argv[])
         //go up to end - 1 as we will not make a cycle, just a linear feature
         for(size_t i = 0; i < interior_vertexes.size() - 1; i++)
         {
-            std::cout << i << std::endl;
+//            std::cout << i << std::endl;
             Vertex_handle v0,v1;
             v0 = interior_vertexes.at(i);
             v1 = interior_vertexes.at(i+1);
