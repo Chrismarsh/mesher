@@ -155,8 +155,8 @@ def main():
     use_weights = False
     topo_weight = 1
     if hasattr(X,'use_weights'):
-        use_convex_combination = X.use_convex_combination
-        topo_weight X.topo_weight
+        use_weights = X.use_weights
+        topo_weight = X.topo_weight
 
     ########################################################
 

@@ -37,10 +37,11 @@
         double min_area;
         double B;
         Geom_traits traits;
-        const std::vector< std::pair< boost::shared_ptr<raster>,double> >& r;
-        const std::vector< std::pair< boost::shared_ptr<raster>,double> >& category_rasters;
+        const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& r;
+        const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& category_rasters;
         const std::string& error_metric;
         const bool is_geographic;
+        const bool use_weights;
 
         OGRCoordinateTransformation* prj_trans;
     public:
@@ -48,12 +49,13 @@
         mesh_2_criterion_area(const double aspect_bound = 0.125,
                               const double max_area = 0,
                               const double min_area = 1,
-                              const std::vector< std::pair< boost::shared_ptr<raster>,double> >& rasters = std::vector< std::pair< boost::shared_ptr<raster>,double>> (),
-                              const std::vector< std::pair< boost::shared_ptr<raster>,double> >& category_rasters = std::vector< std::pair< boost::shared_ptr<raster>,double>>(),
+                              const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& rasters = std::vector< std::tuple< boost::shared_ptr<raster>,double, double>> (),
+                              const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& category_rasters = std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>(),
                               const std::string& error_metric = std::string(),
                               const bool is_geographic = false,
+                              const bool use_weights = false,
                               const Geom_traits &traits = Geom_traits())
-        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic)
+        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights)
 
         {
             this->max_area = max_area;
@@ -64,7 +66,7 @@
 
             if(is_geographic)
             {
-                char* wkt = const_cast<char*>(r.at(0).first->getDs()->GetProjectionRef());
+                char* wkt = const_cast<char*>( std::get<0>(r.at(0))->getDs()->GetProjectionRef());
                 OGRSpatialReference srs;
                 srs.importFromWkt(&wkt);
 
@@ -180,10 +182,11 @@
             const double B;
             const double max_area;
             const double min_area;
-            const std::vector< std::pair< boost::shared_ptr<raster>,double> >& r;
-            const std::vector< std::pair< boost::shared_ptr<raster>,double> >& category_rasters;
+            const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& r;
+            const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& category_rasters;
             const std::string& error_metric;
             const bool is_geographic;
+            const bool use_weights;
             OGRCoordinateTransformation* prj_trans;
             const Geom_traits &traits;
 
@@ -195,14 +198,15 @@
             Is_bad(const double aspect_bound,
                    const double area_bound,
                    const double min_area,
-                   const std::vector< std::pair< boost::shared_ptr<raster>,double> >& r,
-                   const std::vector< std::pair< boost::shared_ptr<raster>,double> >& category_rasters,
+                   const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& r,
+                   const std::vector< std::tuple< boost::shared_ptr<raster>,double, double>>& category_rasters,
                    const std::string& error_metric,
                    const bool is_geographic=false,
+                   const bool use_weights=false,
                    OGRCoordinateTransformation* prj_trans=nullptr,
                    const Geom_traits &traits = Geom_traits() )
                     : B(aspect_bound), max_area(area_bound), min_area(min_area),
-                      r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),traits(traits)
+                      r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),traits(traits)
             {
                 this->prj_trans = prj_trans;
                 if(!prj_trans && is_geographic)
@@ -636,7 +640,7 @@
                 double area = 0;
                 if(is_geographic)
                 {
-                    const char* wkt = r.at(0).first->getDs()->GetProjectionRef();
+                    const char* wkt = std::get<0>(r.at(0))->getDs()->GetProjectionRef();
                     char* srs_wkt = const_cast<char*>(wkt);
                     OGRSpatialReference srs;
                     srs.importFromWkt(&srs_wkt);
@@ -742,46 +746,94 @@
                 if (current_badness != CGAL::Mesh_2::NOT_BAD)
                     return current_badness;
 
-
-
-                //do numeric rasters
-                for(auto& itr : r)
+                if(use_weights)
                 {
-                    //if tolerance == -1, skip the tolerance tests because we want to make a uniform mesh.
-                    if(itr.second != -1)
+                    //total weighted score of this triangle
+                    double alpha = 0;
+
+                    //do numeric rasters
+                    // <0> = raster
+                    // <1> = tol
+                    // <2> = weight
+                    for(auto& itr : r)
                     {
-                        auto t = error_fn(fh,*(itr.first));
-                        q._tolerance.push_back(std::make_pair(t,itr.second));
+                        //if tolerance == -1, skip the tolerance tests because we want to make a uniform mesh.
+                        if( std::get<1>(itr) != -1)
+                        {
+                            auto t = error_fn(fh,*( std::get<0>(itr)));
+                            q._tolerance.push_back(std::make_pair(t, std::get<1>(itr)));
+
+                            current_badness = operator()(q);
+
+                            double weight =  std::get<2>(itr);
+                            weight *= (current_badness == CGAL::Mesh_2::NOT_BAD ? 1 : 0);
+                            alpha += weight;
+                        }
+                        else
+                        {
+                            //give it a good score
+                            alpha += std::get<2>(itr);
+                        }
+
+                    }
+
+                    for(auto& itr : category_rasters)
+                    {
+                        auto t = categoryraster_isok(fh,*(std::get<0>(itr)));
+                        q._category_tol.push_back(std::make_pair(t,std::get<1>(itr)));
+
+                        current_badness = operator()(q);
+                        double weight =  std::get<2>(itr);
+                        weight *= (current_badness == CGAL::Mesh_2::NOT_BAD ? 1 : 0);
+                        alpha += weight;
+                    }
+
+                    if (alpha > 0.3)
+                        return CGAL::Mesh_2::NOT_BAD;
+                    else
+                        return CGAL::Mesh_2::BAD;
+                } else //this rigorously ensures each tolerance is met
+                {
+                    //do numeric rasters
+                    // <0> = raster
+                    // <1> = tol
+                    // <2> = weight
+                    for(auto& itr : r)
+                    {
+                        //if tolerance == -1, skip the tolerance tests because we want to make a uniform mesh.
+                        if( std::get<1>(itr) != -1)
+                        {
+                            auto t = error_fn(fh,*( std::get<0>(itr)));
+                            q._tolerance.push_back(std::make_pair(t, std::get<1>(itr)));
+
+                            current_badness = operator()(q);
+                            if (current_badness != CGAL::Mesh_2::NOT_BAD)
+                                return current_badness;
+                        }
+                        else
+                        {
+                            //fake it passing by giving it a 0 rmse
+                            q._tolerance.push_back(std::make_pair(0,std::get<1>(itr)));
+                        }
+
+                    }
+
+                    for(auto& itr : category_rasters)
+                    {
+                        auto t = categoryraster_isok(fh,*(std::get<0>(itr)));
+                        q._category_tol.push_back(std::make_pair(t,std::get<1>(itr)));
 
                         current_badness = operator()(q);
                         if (current_badness != CGAL::Mesh_2::NOT_BAD)
                             return current_badness;
                     }
-                    else
-                    {
-                        //fake it passing
-                        q._tolerance.push_back(std::make_pair(0,itr.second));
-                    }
-
+                    return operator()(q);
                 }
-
-                for(auto& itr : category_rasters)
-                {
-                    auto t = categoryraster_isok(fh,*(itr.first));
-                    q._category_tol.push_back(std::make_pair(t,itr.second));
-
-                    current_badness = operator()(q);
-                    if (current_badness != CGAL::Mesh_2::NOT_BAD)
-                        return current_badness;
-                }
-                return operator()(q);
             }
-
-
         };
 
         Is_bad is_bad_object() const
         {
-            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, prj_trans,this->traits);
+            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, prj_trans, this->traits);
         }
     };

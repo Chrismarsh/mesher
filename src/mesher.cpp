@@ -19,7 +19,7 @@
 #include <vector>
 #include <utility>
 #include <fstream>
-#include <stdexcept>
+#include <tuple>
 #include <csignal>
 #include "mesh.h"
 #include "version.h"
@@ -94,14 +94,16 @@ int main(int argc, char *argv[])
     size_t lloyd_itr = 0;
     std::string error_metric = "rmse"; //default of RMSE
 
+    bool use_weights = false; // use the weighted generic method. If any weights are passed in (weights.size() > 0) then this will be set true and the weight methods will be used.
+
+    // for both raster and category raster, the 3rd param are weights to apply a convex combination to the constraints.
+    // If weights is emtpy, then mesher will rigorously fullfill each constraint
+
     //holds all rasters we perform tolerance checking on
-    std::vector< std::pair< boost::shared_ptr<raster>,double> > rasters;
+    std::vector< std::tuple< boost::shared_ptr<raster>,double, double> > rasters;
 
     //these are category based rasters, e.g., landcover, so use a fractional % to figure out if we should split on the tri.
-    std::vector< std::pair< boost::shared_ptr<raster> ,double> > category_rasters;
-
-    //weights to apply a convex combination to the constraints. If weights is emtpy, then mesher will rigorously fullfill each constraint
-    std::vector<double> weights;
+    std::vector< std::tuple< boost::shared_ptr<raster> ,double, double> > category_rasters;
 
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -170,6 +172,15 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
+    std::vector<double> weights;
+    if(vm.count("weights"))
+    {
+        use_weights = true;
+        weights = vm["weights"].as<std::vector<double>>();
+    }
+
+    size_t mw = 0; //counter for getting the offset into the weights array
+
     //Ensure we have the same number of tolerances as we do raster files
     if( vm.count("raster") && vm.count("tolerance"))
     {
@@ -181,15 +192,32 @@ int main(int argc, char *argv[])
             std::cout << "Mismatched lengths in rasters and tolerances. Must be equal."<<std::endl;
             exit(1);
         }
+
+//        if(use_weights && weights.size() != tols.size())
+//        {
+//            std::cout << "Mismatched lengths in tolerances and weights. Must be equal."<<std::endl;
+//            exit(1);
+//        }
+
         for(int i = 0 ; i< tols.size();++i)
         {
             auto r = boost::make_shared<raster>();
             r->open(files.at(i));
-            rasters.push_back(std::make_pair( r,tols.at(i) ));
+
+            double w=1;
+            if (weights.size() > 0) w = weights.at(mw++) ; // if there are no weights, just insert a dummy var
+
+            if(w > 1)
+            {
+                std::cout << "Weights must be <=1!"<<std::endl;
+                exit(1);
+            }
+
+            rasters.push_back(std::make_tuple( r,tols.at(i), w ));
         }
     }
 
-//ensure we have the same number of category rasters as category fractions
+    //ensure we have the same number of category rasters as category fractions
     if( vm.count("category-raster") && vm.count("category-frac"))
     {
         auto files = vm["category-raster"].as<std::vector<std::string>>();
@@ -200,6 +228,12 @@ int main(int argc, char *argv[])
             std::cout << "Mismatched lengths in category-raster and category-frac. Must be equale."<<std::endl;
             exit(1);
         }
+//        if(use_weights && weights.size() != tols.size())
+//        {
+//            std::cout << "Mismatched lengths in category-fra and weights. Must be equal."<<std::endl;
+//            exit(1);
+//        }
+
         for(int i = 0 ; i< tols.size();++i)
         {
             auto r = boost::make_shared<raster>();
@@ -210,7 +244,17 @@ int main(int argc, char *argv[])
                 std::cout << "Fractional percentage required for category-frac!"<<std::endl;
                 exit(1);
             }
-            category_rasters.push_back(std::make_pair( r,tols.at(i) ));
+
+            double w=1;
+            if (weights.size() > 0) w = weights.at(mw++) ; // if there are no weights, just insert a dummy var
+            
+            if(w > 1)
+            {
+                std::cout << "Weights must be <=1!"<<std::endl;
+                exit(1);
+            }
+
+            category_rasters.push_back(std::make_tuple( r,tols.at(i),w ));
         }
     }
 
@@ -339,7 +383,7 @@ int main(int argc, char *argv[])
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
-    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic));
+    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic,use_weights));
 
     //run lloyd optimizations if required.
     //if run, 100 is a good pick
