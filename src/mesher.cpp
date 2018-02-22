@@ -21,6 +21,8 @@
 #include <fstream>
 #include <tuple>
 #include <csignal>
+
+
 #include "mesh.h"
 #include "version.h"
 
@@ -40,6 +42,8 @@
 
 namespace pt = boost::property_tree;
 namespace po = boost::program_options;
+
+
 
 pt::ptree read_json(const std::string& path)
 {
@@ -376,7 +380,15 @@ int main(int argc, char *argv[])
             v1 = interior_vertexes.at(i+1);
 
 
-            cdt.insert_constraint(v0,v1);
+            try
+            {
+                cdt.insert_constraint(v0,v1);
+            }catch(std::runtime_error& e)
+            {
+                std::cout << "[ Warning ]: The following point lies outside of the outer PLGS. It will be ignored." << std::endl;
+                std::cout << "\tv0 x=" << v0->point().x() << ",y=" <<v0->point().y() << std::endl;
+                std::cout << "\tv1 x=" << v1->point().x() << ",y=" <<v1->point().y() << std::endl;
+            }
         }
 
     }

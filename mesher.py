@@ -352,37 +352,8 @@ def main():
             print 'Error: Unable to open raster for: %s' % key
             exit(1)
 
-    if use_weights and total_weights > 1:
-        raise RuntimeError("Weights > 1")
-
-    for key, data in constraints.iteritems():
-        # we need to handle a path being passed in
-        output_constraint_fname = os.path.basename(data['file'])
-        output_constraint_fname = os.path.splitext(output_constraint_fname)[0]
-
-        df = ogr.Open(data['file'])
-        if df.GetLayer(0).GetSpatialRef() is None:
-            raise RuntimeError("Constraint " + data['file'] + " must have spatial reference information.")
-        df = None
-
-        outname = base_dir + 'constraint_' + output_constraint_fname
-        # force all the initial condition files to have the same extent as the input DEM
-        exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING -t_srs \"%s\"' % (outname+'.shp', data['file'], wkt_out)
-
-        if simplify:
-            exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
-
-        subprocess.check_call(exec_string, shell=True)
-
-        # convert to geoJSON because it's easy to parse
-        subprocess.check_call(['ogr2ogr -f GeoJSON %s %s' % (outname + '.geojson', outname + '.shp')], shell=True)
-
-        constraints[key]['filename'] = outname + '.geojson'
-
-        #since all the project has already happened in the ogr2ogr step, we can just read it in now
-        with open(outname + '.geojson') as f:
-            constraints[key]['file'] =  json.load(f)
-
+    if use_weights and total_weights != 1:
+        raise RuntimeError("Weights must equal 1")
 
 
     plgs_shp = base_name + '.shp'
@@ -439,7 +410,7 @@ def main():
     dataSource.ExecuteSQL("REPACK " + layer.GetName())
     dataSource.Destroy()
 
-    # allow us to be able to use this directly in the exec_string below if we dont' simplify
+    # allow us to be able to use this directly in the exec_string below if we don't simplify
     outputBufferfn = base_dir + plgs_shp
     if simplify and not no_simplify_buffer:
         # buffering code from http://pcjericks.github.io/py-gdalogr-cookbook/vector_layers.html?highlight=buffer
@@ -468,6 +439,52 @@ def main():
 
         inputds = None
         outputBufferds = None
+
+    #this needs to be done after we optionally simplify the outer domain. If we do, we need to ensure any interior constraints are clipped to this new domain as the
+    #triangulation does not like intersecting constraints.
+    for key, data in constraints.iteritems():
+        # we need to handle a path being passed in
+        output_constraint_fname = os.path.basename(data['file'])
+        output_constraint_fname = os.path.splitext(output_constraint_fname)[0]
+
+        df = ogr.Open(data['file'])
+        if df is None:
+            raise RuntimeError("Unable to open constraint " + data['file'])
+
+        if df.GetLayer(0).GetSpatialRef() is None:
+            raise RuntimeError("Constraint " + data['file'] + " must have spatial reference information.")
+        df = None
+
+        outname = base_dir + 'constraint_' + output_constraint_fname
+
+        # force all the constraints to have the same extent as the input DEM
+        exec_string = 'ogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (outname+'.shp', data['file'], wkt_out)
+
+        if 'simplify' in data:
+            exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
+
+        subprocess.check_call(exec_string, shell=True)
+
+        # if we simplified with a buffer, clip the constraint shp to that extent. Do this after we project it above.
+        if simplify and not no_simplify_buffer:
+            clip_outname = base_dir + 'clip_constraint_' + output_constraint_fname
+            exec_string = 'ogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (outputBufferfn, clip_outname+ '.shp' ,outname+ '.shp')  #clip src, output, input
+            subprocess.check_call(exec_string, shell=True)
+
+            #update outname to be the clipped one so we can use it below
+            outname = clip_outname
+
+
+        # convert to geoJSON because it's easy to parse
+        # ensure it's all line strings and explode the multilines into linestrings
+        subprocess.check_call(['ogr2ogr -f GeoJSON   -nlt LINESTRING -explodecollections  %s %s' % (outname + '.geojson', outname + '.shp')], shell=True)
+
+        constraints[key]['filename'] = outname + '.geojson'
+
+        #since all the project has already happened in the ogr2ogr step, we can just read it in now
+        with open(outname + '.geojson') as f:
+            constraints[key]['file'] =  json.load(f)
+
 
     print 'Converting polygon to linestring'
     exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING' % (base_dir + 'line_' + plgs_shp, outputBufferfn)

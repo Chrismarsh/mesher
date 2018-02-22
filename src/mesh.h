@@ -14,12 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #pragma once
+
+
+//Defining this forces a custom exception to be raised within the CGAL code
+// Constrained_triangulat_2.h l 846
+// this allows for catching constraints that intersect the domain boundaries and are invalid
+#define CGAL_CT2_WANTS_TO_HAVE_EXTRA_ACTION_FOR_INTERSECTING_CONSTRAINTS
+#define CGAL_CDT2_EXTRA_ACTION_FOR_INTERSECTING_CONSTRAINTS throw std::runtime_error("Point results in intersection contraints");
+
+
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Exact_predicates_exact_constructions_kernel.h>
 #include <CGAL/Constrained_Delaunay_triangulation_2.h>
 #include <CGAL/Delaunay_mesher_2.h>
 #include <CGAL/Delaunay_mesh_face_base_2.h>
-//#include <CGAL/Triangulation_vertex_base_with_info_2.h>
 #include <CGAL/Delaunay_mesh_vertex_base_2.h>
 #include <CGAL/Delaunay_mesh_size_criteria_2.h>
 #include <CGAL/lloyd_optimize_mesh_2.h>
