@@ -670,7 +670,7 @@ def main():
 
                     mz = extract_point(src_ds, mx, my)
 
-                    if mz == dem.GetNoDataValue():
+                    if mz == dem.GetNoDataValue() or mz is None:
                         invalid_nodes.append(int(items[0]) - 1)
 
                     mesh['mesh']['vertex'].append([mx, my, mz])
@@ -1035,6 +1035,8 @@ def extract_point(raster, mx, my):
     if py == raster.RasterYSize:
         py = py - 1
     mz = rb.ReadAsArray(px, py, 1, 1)
+    if mz is None:
+        return rb.GetNoDataValue()
     mz = float(mz.flatten()[0])
 
     if mz == rb.GetNoDataValue():
