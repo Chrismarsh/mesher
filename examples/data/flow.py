@@ -2,19 +2,23 @@ import richdem as rd
 import numpy as np
 import subprocess
 from osgeo import gdal, ogr
+
+
 dem = rd.LoadGDAL("chro_extent_lowRes.tif")
-# dem = rd.rdarray(dem, no_data=-9999)
+dem =  dem.astype(np.float32,copy=False)
 #Fill depressions with epsilon gradient to ensure drainage
-rd.FillDepressions(dem,  in_place=True)
+rd.FillDepressions(dem, epsilon = True, in_place=True)
 
 #Get flow accumulation with no explicit weighting. The default will be 1.
-accum_d8 = rd.FlowAccumulation(dem, method='Dinf')
-# accum_d8[ accum_d8 < 5005] = 0
-# accum_d8[ accum_d8 > 0] = 1
-# d8_fig = rd.rdShow(accum_d8, zxmin=450, zxmax=550, zymin=550, zymax=450, figsize=(8,5.5), axes=False, cmap='jet')
+accum = rd.FlowAccumulation(dem, method='Dinf')
 
 
-rd.SaveGDAL('flow_accumulation.tif',accum_d8)
+# accum[ accum >= 500] = 1
+# accum[ accum < 500] = 0
+# d8_fig = rd.rdShow(accum, zxmin=450, zxmax=550, zymin=550, zymax=450, figsize=(8,5.5), axes=False, cmap='jet')
+
+
+rd.SaveGDAL('flow_accumulation.tif',accum)
 
 
 # tmp_raster = 'd8.tif'

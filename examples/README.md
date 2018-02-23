@@ -38,12 +38,12 @@ Demonstrates the impact of 100 [lloyd optimization](https://doc.cgal.org/latest/
 ![](images/lloyd.png)
 
 ## flat_stream
-A stream network with the flat DEM has been constrained to, showing the greater number of triangles near the stream. Simplified stream networks produce fewer triangles along the river constraint.
+The flat DEM has been constrained to a stream network input as a shape file. This shows the greater number of triangles near the stream. Simplified stream networks produce fewer triangles along the river constraint.
 
 ![](images/flat_stream.png)
 
 ## stream_dem
-A stream network with the Granger subset DEM.
+Same as above, but including the the Granger subset DEM.
 ![](images/stream_dem.png)
 
 ## granger\_low\_veg\_weight
