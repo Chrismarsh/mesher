@@ -67,7 +67,9 @@ A small subset of the above Bow Valley domain is extracted to show the impact of
 ![](images/dem_no_smoothing.png)
 
 mesher has an option to smooth the input DEM to lessen this impact. This is enabled via
-```do_smoothing = True
+
+```
+do_smoothing = True
 max_smooth_iter = 1
 smoothing_scaling_factor = 1
 ```
@@ -75,8 +77,11 @@ Each iteration the smoothing magnitude increases by `iteration * smoothing_scali
 ![](images/dem_smoothing_1.png)
 
 Subsequent iterations, or increases in `smoothing_scaling_factor` can reduce the stair-stepping further at the cost of increased smoothing of complex terrain.
-```do_smoothing = True
+
+```
+do_smoothing = True
 max_smooth_iter = 2
 smoothing_scaling_factor = 1
 ```
+
 ![](images/dem_smoothing_2.png)
