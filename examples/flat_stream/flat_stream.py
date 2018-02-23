@@ -36,5 +36,5 @@ errormetric = 'rmse'
 
 #path to the mesher binary
 # mesher_path = '../mesher'
-mesher_path = '/Users/chris/Documents/PhD/code/mesher/cmake-build-debug/bin/Debug/mesher'
+mesher_path = '../mesher'
 
