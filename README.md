@@ -12,7 +12,7 @@ An example of a mesh that has been generated to represent topography and vegetat
 
 ![](images/mesh.png)
 
-## Mesh constriction 
+## Mesh construction 
 Below are two animations that show various snapshots of the in-construction mesh as it is being refined. These correspond to the `gaussian_hill` and `granger` meshes in the `examples` directory. Both meshes used only topgrahy for construction, and thus the triangles are colored based on RMSE (m) to the underlying raster.
 
 
