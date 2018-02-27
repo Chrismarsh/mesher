@@ -12,6 +12,17 @@ An example of a mesh that has been generated to represent topography and vegetat
 
 ![](images/mesh.png)
 
+## Mesh constriction 
+Below are two animations that show various snapshots of the in-construction mesh as it is being refined. These correspond to the `gauassian_hill` and `granger` meshes in the `examples` directory. Both meshes used only topgrahy for constriction, and thus the triangles are colored based on RMSE (m) to the underlying raster.
+
+### Gaussian Hill
+
+![](images/gauss.gif)
+
+### Granger
+![](images/granger.gif)
+
+
 # Use
 Mesher depends heavily upon GDAL to handle the geospatial data and the GDAL python bindings. Mesher's input rasters can be in any 1-band raster that GDAL can open. The triangulation is performed using the Delaunay triangulation code in CGAL. Input rasters need to have a coordinate system.
 
@@ -106,6 +117,8 @@ simplify_tol =   5
 ```max_smooth_iter``` Number of iterations to smooth over, each smoothing using cubic spline, and resamples by ```iter * scaling_factor``` for each iteration.
 
 ```reuse_mesh``` If a mesh was already generated, and only applying a new parametrization is required, enabling this skips the mesh generation step.
+
+
 
 # Outputs
 

@@ -389,7 +389,7 @@ def main():
     driver = ogr.GetDriverByName('ESRI Shapefile')
     dataSource = driver.Open( base_dir + plgs_shp, 1)
 
-    #find the largest polygon and keep it
+    #If the input has multiple polygon regions, find the largest polygon and use that as the meshing domain
     layer = dataSource.GetLayer()
     max_geom_area = -1
     max_feature_ID = None
@@ -401,7 +401,7 @@ def main():
             max_feature_ID = feature.GetFID()
             max_geom_area = area
 
-    print 'Using FID = ' + str(max_feature_ID) + " as the largest continous area."
+    print 'Using FID = ' + str(max_feature_ID) + " as the largest continuous area."
     feats = np.arange(0,layer.GetFeatureCount())
     for f in feats:
         if f != max_feature_ID:
@@ -412,6 +412,8 @@ def main():
 
     # allow us to be able to use this directly in the exec_string below if we don't simplify
     outputBufferfn = base_dir + plgs_shp
+
+    #simplify the outter domain constraint and contract by X m, which allows more flexibility in fitting larger triangles to the outter domain.
     if simplify and not no_simplify_buffer:
         # buffering code from http://pcjericks.github.io/py-gdalogr-cookbook/vector_layers.html?highlight=buffer
         inputfn = base_dir + plgs_shp
@@ -436,7 +438,7 @@ def main():
             outFeature.SetGeometry(geomBuffer)
             bufferlyr.CreateFeature(outFeature)
             outFeature = None
-
+        #close the files
         inputds = None
         outputBufferds = None
 
@@ -557,7 +559,7 @@ def main():
     with open(base_dir+'interior_PLGS.geojson', 'w') as fp:
         json.dump(interior_PLGS, fp)
 
-    # Create the PLGS to constrain the triangulation
+    # Create the outter PLGS to constrain the triangulation
     poly_file = 'PLGS' + base_name + '.poly'
     with open(base_dir +
                       poly_file, 'w') as f:
@@ -587,6 +589,7 @@ def main():
 
     is_geographic = srs.IsGeographic()
 
+    #if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
         execstr = '%s --poly-file %s --tolerance %f --raster %s --area %f --min-area %f --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                   (triangle_path,
@@ -653,7 +656,7 @@ def main():
     vtu_points = vtk.vtkPoints()
     vtu_triangles = vtk.vtkCellArray()
 
-    invalid_nodes = []  # any nodes that are outside of the domain AND
+    invalid_nodes = []  # any nodes that are outside of the domain.
     print 'Reading nodes'
     with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
         for line in f:
@@ -678,7 +681,7 @@ def main():
 
     print 'Length of invalid nodes = ' + str(len(invalid_nodes))
 
-    # read in the neighbour file
+    # read in the neighbour file, triangle topology
     print 'Reading in neighbour file'
     read_header = False
     mesh['mesh']['neigh'] = []
@@ -695,7 +698,7 @@ def main():
 
                     mesh['mesh']['neigh'].append([v0, v1, v2])
 
-                # Create the shape file to hold the triangulation. Could do all in memory but it is nice to see this in a GIS
+    # Create the shape file to hold the triangulation. Could do all in memory but it is nice to see this in a GIS
     # set up the shapefile driver
     driver = ogr.GetDriverByName("ESRI Shapefile")
     # create the data source
@@ -761,6 +764,8 @@ def main():
 
     i = 0
     nelem = 0
+
+    #loop through all the tirangles and assign the parameter and ic values to the t riangle
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
         for line in elem:
             if '#' not in line:
@@ -778,6 +783,9 @@ def main():
                     v1 = int(items[2]) - 1
                     v2 = int(items[3]) - 1
 
+                    #if the node we have is invalid (out side of domain) we can try to fix it by interpolating from the surrounding nodes.
+                    # this can happen when the outter domain constraint is effectively the limit of the DEM and the node ends up *just* outside of the domain due to
+                    # numerical imprecision.
                     # estimate an invalid node's z coord from this triangles other nodes' z value
                     if v0 in invalid_nodes:
                         z_v1 = mesh['mesh']['vertex'][v1][2]
@@ -845,11 +853,8 @@ def main():
                     feature.SetField('triangle', int(items[0]) - 1)
                     feature.SetGeometry(tpoly)
 
+                    #if the input was geographic, we need to project to get a reasonable area
                     if is_geographic:
-                        # wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\",     GEOGCS[\"GCS_North_American_1983\",         DATUM[\"North_American_Datum_1983\",             SPHEROID[\"GRS_1980\",6378137,298.257222101]],         PRIMEM[\"Greenwich\",0],         UNIT[\"Degree\",0.017453292519943295]],     PROJECTION[\"Albers_Conic_Equal_Area\"],     PARAMETER[\"False_Easting\",0],     PARAMETER[\"False_Northing\",0],     PARAMETER[\"longitude_of_center\",-96],     PARAMETER[\"Standard_Parallel_1\",20],     PARAMETER[\"Standard_Parallel_2\",60],     PARAMETER[\"latitude_of_center\",40],     UNIT[\"Meter\",1],     AUTHORITY[\"EPSG\",\"102008\"]]";
-                        # srs_out =  osr.SpatialReference()
-                        # srs_out.ImportFromWkt(wkt_out)
-
                         transform = osr.CoordinateTransformation(srs, srs_out)
                         p = tpoly.Clone()
                         p.Transform(transform)
@@ -857,7 +862,7 @@ def main():
                         feature.SetField('area', area)
                         params['area'].append(area)
 
-                    # get the value under each triangle from each paramter file
+                    # get the value under each triangle from each parameter file
                     for key, data in parameter_files.iteritems():
                         output = rasterize_elem(data, feature, key)
 
@@ -892,7 +897,7 @@ def main():
         raise RuntimeError(errstr)
 
     #optionally smooth the mesh
-    #this can likely be removed, but is here is the newly added cubic filtering of the input dem is deemed not enough
+    #this can likely be removed, but is here if the newly added cubic filtering of the input dem is deemed not enough
     # smooth = False
     # if smooth:
     #     for i in range(10):
