@@ -1,0 +1,15 @@
+include(ExternalProject)
+ExternalProject_Add(
+        CGAL
+        #URL http://github.com/CGAL/cgal/releases/download/releases/CGAL-4.11/CGAL-4.11.tar.xz
+        GIT_REPOSITORY https://github.com/CGAL/cgal
+        GIT_TAG a7caa5c
+        UPDATE_COMMAND ""
+        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/lib/CGAL
+        BUILD_COMMAND make -j10
+        INSTALL_COMMAND make install
+        BUILD_IN_SOURCE 1
+        PATCH_COMMAND patch -p1  < ${CMAKE_BINARY_DIR}/cgal.4.11.patch
+
+)
+LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}/lib/CGAL/lib64/CGAL")

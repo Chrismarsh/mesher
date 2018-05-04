@@ -23,7 +23,7 @@ constraints = { 'river_network' :
 					}
  			}
 
-lloyd_itr=100
+lloyd_itr=1
 #Simplify the outter boundary allowing at most simplify_tol difference between boundary and simplified boundary
 simplify=True
 simplify_tol=500

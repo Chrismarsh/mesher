@@ -46,6 +46,10 @@ The flat DEM has been constrained to a stream network input as a shape file. Thi
 Same as above, but including the the Granger subset DEM.
 ![](images/stream_dem.png)
 
+## granger
+The Granger subset is used only the elevation map.
+![](images/granger.png)
+
 ## granger\_low\_veg\_weight
 The granger subset is used  with a low elevation tolerance plus low weights on the vegetation map, showing mesher mostly ignoring the vegetation constraints. 
 

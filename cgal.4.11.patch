@@ -1,0 +1,112 @@
+diff -Naur cgal-orig/Installation/CMakeLists.txt cgal/Installation/CMakeLists.txt
+--- cgal-orig/Installation/CMakeLists.txt	2018-02-28 14:08:24.419550000 -0600
++++ cgal/Installation/CMakeLists.txt	2018-02-28 14:11:22.000000000 -0600
+@@ -42,6 +42,12 @@
+ 
+ # Use GNUInstallDirst to get canonical paths
+ include(GNUInstallDirs)
++# --------
++#
++#   Chris add this
++#
++# ----------
++find_package(GDAL 2.1 REQUIRED )
+ 
+ #--------------------------------------------------------------------------------------------------
+ #
+@@ -803,6 +809,7 @@
+ endforeach()
+ 
+ include_directories (${CGAL_INCLUDE_DIRS})
++include_directories(${GDAL_INCLUDE_DIR})
+ 
+ cache_get(CGAL_3RD_PARTY_PRECONFIGURED )
+ 
+diff -Naur cgal-orig/Mesh_2/include/CGAL/Mesh_2/Refine_edges_with_clusters.h cgal/Mesh_2/include/CGAL/Mesh_2/Refine_edges_with_clusters.h
+--- cgal-orig/Mesh_2/include/CGAL/Mesh_2/Refine_edges_with_clusters.h	2018-02-28 14:08:24.488549000 -0600
++++ cgal/Mesh_2/include/CGAL/Mesh_2/Refine_edges_with_clusters.h	2018-02-28 14:12:43.000000000 -0600
+@@ -79,9 +79,10 @@
+   Cluster ca, cb;
+   clusters_iterator ca_it, cb_it;
+ 
+-  using Super::triangulation_ref_impl;
++
+ 
+ public:
++    using Super::triangulation_ref_impl;
+   /** \name CONSTRUCTORS */
+ 
+   Refine_edges_base_with_clusters(Tr& tr_, Clusters<Tr>& c_) 
+diff -Naur cgal-orig/Mesher_level/include/CGAL/Mesher_level.h cgal/Mesher_level/include/CGAL/Mesher_level.h
+--- cgal-orig/Mesher_level/include/CGAL/Mesher_level.h	2018-02-28 14:08:24.504549000 -0600
++++ cgal/Mesher_level/include/CGAL/Mesher_level.h	2018-03-01 11:53:39.346133000 -0600
+@@ -21,10 +21,14 @@
+ #ifndef CGAL_MESHER_LEVEL_H
+ #define CGAL_MESHER_LEVEL_H
+ 
++#include <ogr_spatialref.h>
++#include <ogr_geometry.h>
++#include <gdal_alg.h>
++#include <ogrsf_frmts.h>
+ #include <string>
+ 
+ namespace CGAL {
+-
++    static size_t iteration = 0;
+ enum Mesher_level_conflict_status {
+   NO_CONFLICT = 0,
+   CONFLICT_BUT_ELEMENT_CAN_BE_RECONSIDERED,
+@@ -281,11 +285,53 @@
+   template <class Mesh_visitor>
+   void refine(Mesh_visitor visitor)
+   {
++
++    char* srs_wkt = "PROJCS[\"North_America_Albers_Equal_Area_Conic\"," \
++              "     GEOGCS[\"GCS_North_American_1983\"," \
++              "         DATUM[\"North_American_Datum_1983\"," \
++              "             SPHEROID[\"GRS_1980\",6378137,298.257222101]]," \
++              "         PRIMEM[\"Greenwich\",0]," \
++              "         UNIT[\"Degree\",0.017453292519943295]]," \
++              "     PROJECTION[\"Albers_Conic_Equal_Area\"]," \
++              "     PARAMETER[\"False_Easting\",0]," \
++              "     PARAMETER[\"False_Northing\",0]," \
++              "     PARAMETER[\"longitude_of_center\",-96]," \
++              "     PARAMETER[\"Standard_Parallel_1\",20]," \
++              "     PARAMETER[\"Standard_Parallel_2\",60]," \
++              "     PARAMETER[\"latitude_of_center\",40]," \
++              "     UNIT[\"Meter\",1]," \
++              "     AUTHORITY[\"EPSG\",\"102008\"]]";
++    OGRSpatialReference srs;
++    srs.importFromWkt(&srs_wkt);
++    bool output_intermediate=false;
+     while(! is_algorithm_done() )
+     {
++      if(output_intermediate) {
++        auto driver = GetGDALDriverManager()->GetDriverByName("ESRI Shapefile");
++        std::string fname = "mesh_evolution/mesh_" + std::to_string(iteration) + ".shp";
++        std::cout << "Iteration = " << iteration << std::endl;
++        auto shp = driver->Create(fname.c_str(), 0, 0, 0, GDT_Unknown, NULL);
++        auto layer = shp->CreateLayer("poly", &srs, wkbPolygon, NULL);
++        for (auto itr = triangulation().finite_faces_begin(); itr != triangulation().finite_faces_end(); itr++) {
++          OGRLinearRing ring;
++          ring.addPoint(itr->vertex(0)->point().x(), itr->vertex(0)->point().y());
++          ring.addPoint(itr->vertex(1)->point().x(), itr->vertex(1)->point().y());
++          ring.addPoint(itr->vertex(2)->point().x(), itr->vertex(2)->point().y());
++          ring.addPoint(itr->vertex(0)->point().x(), itr->vertex(0)->point().y()); //close it
++          OGRPolygon poly;
++          poly.addRing(&ring);
++          auto feature = OGRFeature::CreateFeature(layer->GetLayerDefn());
++          feature->SetGeometry(&poly);
++          layer->CreateFeature(feature);
++        }
++        shp->FlushCache();
++        GDALClose(shp);
++        ++iteration;
++      }
+       previous_level.refine(visitor.previous_level());
+       if(! no_longer_element_to_refine() )
+         process_one_element(visitor);
++
+     }
+   }
+ 

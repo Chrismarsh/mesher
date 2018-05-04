@@ -28,8 +28,6 @@ import vtk
 
 gdal.UseExceptions()  # Enable exception support
 
-
-
 def main():
     #######  load user configurable paramters here    #######
     # Check user defined configuration file
@@ -850,8 +848,9 @@ def main():
                     tpoly.AddGeometry(ring)
 
                     feature = ogr.Feature(layer.GetLayerDefn())
-                    feature.SetField('triangle', int(items[0]) - 1)
                     feature.SetGeometry(tpoly)
+
+                    feature.SetField('triangle', int(items[0]) - 1)
 
                     #if the input was geographic, we need to project to get a reasonable area
                     if is_geographic:
@@ -870,6 +869,8 @@ def main():
                             output = data['classifier'](output)
                         params[key].append(output)
 
+                        feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+
                         # we want to write actual NaN to vtu for better displaying
                         if output == -9999:
                             output = float('nan')
@@ -882,6 +883,8 @@ def main():
 
                         ics[key].append(output)
 
+                        feature.SetField(key[0:10], float(output))
+
                         # we want to write actual NaN to vtu for better displaying
                         if output == -9999:
                             output = float('nan')
@@ -890,6 +893,9 @@ def main():
                     layer.CreateFeature(feature)
                     i = i + 1
                     # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
+    output_usm.FlushCache()
+    output_usm = None #close file
+
     if len(invalid_nodes) > 0:
         errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
         errstr +=  'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
