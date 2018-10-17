@@ -6,6 +6,11 @@ import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.csgraph as graph
 
+import matplotlib as mpl
+mpl.use('AGG')  # non-gui display (much faster)
+import matplotlib.pyplot as plt
+
+
 def print_usage():
     print('USAGE: ')
     print('  permutation_tools.py <json_mesh_input_file> [json_mesh_output_file]')
@@ -65,8 +70,12 @@ def convert_neighbor_list_to_csr_matrix(neighbor_list):
 def print_bandwidth_before_after_permutation(A,permutation):
     """Display bandwidth before and after permutation"""
     orig_band = compute_bandwidth_CSR(A)
-    post_band = compute_bandwidth_CSR(A[permutation,:][:,permutation])
     print("  Original bandwidth: ", orig_band)
+    plot_mat_connectivity(A,"orig_order.png")
+    Aperm = A[permutation,:][:,permutation]
+
+    post_band = compute_bandwidth_CSR(Aperm)
+    plot_mat_connectivity(Aperm,"post_order.png")
     print("  Permuted bandwidth: ", post_band)
     return
 
@@ -82,6 +91,18 @@ def compute_bandwidth_CSR(A):
             bandwidth = maxind-row
     return bandwidth
 
+def plot_mat_connectivity(A,filename,**kwargs):
+    """Plot the spy view of the connectivity matrix
+    - TODO kwargs can be used to get values to pass into matplotlib functions"""
+
+    fig=plt.figure(figsize=(18,16), dpi= 80)
+    plt.spy(A,markersize=0.05)
+    Nnz = A.nnz
+    Nrow = A.shape[0]
+    ratio = Nnz/(Nrow*Nrow)
+    plt.title("Nearest neighbour connectivity")
+    plt.xlabel("Number of non-zeros: " + str(Nnz) + " (%.3f %%)" %(ratio*100))
+    plt.savefig(filename)
 
 if __name__=="__main__":
 
