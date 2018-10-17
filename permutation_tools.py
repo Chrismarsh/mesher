@@ -35,6 +35,8 @@ def compute_minimum_bandwidth_permutation(neighbor_list):
     # Note we are always dealing with undirected (symmetric) graphs
     permutation = graph.reverse_cuthill_mckee(A,symmetric_mode=True)
 
+    print_bandwidth_before_after_permutation(A,permutation)
+
     return permutation.tolist()
 
 def convert_neighbor_list_to_csr_matrix(neighbor_list):
@@ -56,6 +58,29 @@ def convert_neighbor_list_to_csr_matrix(neighbor_list):
     A = sparse.coo_matrix((val,(i,j)),shape=(N,N))
 
     return sparse.csr_matrix(A)
+
+
+## Bandwidth comparison
+
+def print_bandwidth_before_after_permutation(A,permutation):
+    """Display bandwidth before and after permutation"""
+    orig_band = compute_bandwidth_CSR(A)
+    post_band = compute_bandwidth_CSR(A[permutation,:][:,permutation])
+    print("  Original bandwidth: ", orig_band)
+    print("  Permuted bandwidth: ", post_band)
+    return
+
+def compute_bandwidth_CSR(A):
+    """Compute the maximum bandwidth from a CSR sparse matrix A"""
+    assert(sparse.isspmatrix_csr(A))
+    indices = A.indices
+    indptr = A.indptr
+    bandwidth = 0
+    for row in range(A.shape[0]):
+        maxind = np.max(indices[indptr[row]:indptr[row+1]])
+        if maxind-row > bandwidth:
+            bandwidth = maxind-row
+    return bandwidth
 
 
 if __name__=="__main__":
