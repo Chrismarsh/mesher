@@ -13,7 +13,8 @@
 
  # You should have received a copy of the GNU General Public License
  # along with this program.  If not, see <http://www.gnu.org/licenses/>.
- 
+
+#!/usr/bin/env python
 from osgeo import gdal, ogr, osr
 import subprocess
 import re
@@ -25,6 +26,7 @@ import sys
 import shutil
 import imp
 import vtk
+import warnings
 
 gdal.UseExceptions()  # Enable exception support
 
@@ -109,10 +111,22 @@ def main():
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
 
+    mesher_path = '../../bin/Release/mesher'
+
+    #look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc over this
+    using_mesher_environ=False
+    try:
+        mesher_path = os.environ['MESHER_EXE']
+        using_mesher_environ=True
+    except KeyError as E:
+        pass
+
     # path to mesher executable
-    triangle_path = '../../bin/Release/mesher'
     if hasattr(X,'mesher_path'):
-        triangle_path = X.mesher_path
+        mesher_path = X.mesher_path
+
+        if using_mesher_environ:
+            warnings.warn("Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from the configuration file")
 
     #enable verbose output for debugging
     verbose = False
@@ -593,7 +607,7 @@ def main():
     #if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
         execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
-                  (triangle_path,
+                  (mesher_path,
                    base_dir + poly_file,
                    max_tolerance,
                    base_dir + base_name + '_projected.tif',
