@@ -9,7 +9,7 @@ ExternalProject_Add(
         BUILD_COMMAND make -j10
         INSTALL_COMMAND make install
         BUILD_IN_SOURCE 1
-        PATCH_COMMAND patch -p1  < ${CMAKE_BINARY_DIR}/cgal.4.11.patch
+       # PATCH_COMMAND patch -p1  < ${CMAKE_BINARY_DIR}/cgal.4.11.patch
 
 )
 LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}/lib/CGAL/lib64/CGAL")
