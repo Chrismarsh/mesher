@@ -114,14 +114,7 @@
                 _sine = 0;
                 _area = 0;
             };
-//
-//            Quality(double sine, double area, double tolerance)
-//            {
-//                _sine = sine;
-//
-//                _area = area;
-//
-//            }
+
 
             const double &area() const
             { return _area; }
@@ -129,11 +122,9 @@
             const double &sine() const
             { return _sine; }
 
-            const double &tol() const
-            { return _tolerance; }
 
-//        // q1<q2 means q1 is prioritised over q2
-//        // ( q1 == *this, q2 == q )
+        // q1<q2 means q1 is prioritised over q2
+        // ( q1 == *this, q2 == q )
             bool operator<(const Quality &q) const
             {
                 if ( this->_area < q._area)
