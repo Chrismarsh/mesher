@@ -270,7 +270,7 @@ def main():
             if itr+1 == max_smooth_iter: #last iteration, change output
                 out_name = base_dir + base_name + '_projected.tif'
 
-            subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -r cubicspline -tr %f %f' % (
+            subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
                 in_name, out_name, abs(pixel_width) / scaling_factor,
                 abs(pixel_height) / scaling_factor)], shell=True)
 
@@ -290,7 +290,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = 'gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs "%s" -te %f %f %f %f  -tr %f %f -r '
+    exec_str = 'gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -tr %s %s -r '
 
     #ensure all the weights sum to 1
     total_weights=0
@@ -592,7 +592,7 @@ def main():
 
     #if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
-        execstr = '%s --poly-file %s --tolerance %f --raster %s --area %f --min-area %f --error-metric %s --lloyd %d --interior-plgs-file %s' % \
+        execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                   (triangle_path,
                    base_dir + poly_file,
                    max_tolerance,
@@ -608,26 +608,26 @@ def main():
             execstr += ' --is-geographic true'
 
         if use_weights:
-            execstr += ' --weight %f' % topo_weight
-            execstr += ' --weight-threshold %f' % weight_threshold
+            execstr += ' --weight %s' % topo_weight
+            execstr += ' --weight-threshold %s' % weight_threshold
 
         for key, data in parameter_files.iteritems():
             if 'tolerance'in data:
                 if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %f' % (data['filename'], data['tolerance'])
+                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
                 else:
-                    execstr += ' --raster %s --tolerance %f' % (data['filename'], data['tolerance'])
+                    execstr += ' --raster %s --tolerance %s' % (data['filename'], data['tolerance'])
             if 'weight' in data:
-                execstr += ' --weight %f' % data['weight']
+                execstr += ' --weight %s' % data['weight']
 
         for key, data in initial_conditions.iteritems():
             if 'tolerance' in data:
                 if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %f' % (data['filename'], data['tolerance'])
+                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
                 else:
-                    execstr += ' --raster %s --tolerance %f' % (data['filename'], data['tolerance'])
+                    execstr += ' --raster %s --tolerance %s' % (data['filename'], data['tolerance'])
             if 'weight' in data:
-                execstr += ' --weight %f' % data['weight']
+                execstr += ' --weight %s' % data['weight']
 
         print execstr
         subprocess.check_call(execstr, shell=True)
@@ -1086,7 +1086,7 @@ def extract_point(raster, mx, my):
         z = [x for x in z if x != rb.GetNoDataValue()]
 
         if len(z) == 0:
-            #print 'Warning: The point (%f,%f) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
+            #print 'Warning: The point (%s,%s) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
             return rb.GetNoDataValue()
 
 
