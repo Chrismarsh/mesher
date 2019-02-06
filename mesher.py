@@ -145,7 +145,7 @@ def main():
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
-    use_input_prj = False
+    use_input_prj = True
     if hasattr(X,'use_input_prj'):
         use_input_prj=X.use_input_prj
 
