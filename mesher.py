@@ -82,7 +82,7 @@ def main():
         bufferDist = X.no_simplify_buffer
 
     if bufferDist > 0:
-        print 'Buffer must be < 0 as we need to shrink the extent.'
+        print('Buffer must be < 0 as we need to shrink the extent.')
         exit(-1)
 
     #Enable lloyd iterations
@@ -134,11 +134,14 @@ def main():
         verbose = X.verbose
 
     # output to the specific directory, instead of the root dir of the calling python script
-    user_output_dir = ''
+    user_output_dir = configfile[:-3] +'/' # use the config filename as output path
+
     if hasattr(X,'user_output_dir'):
         user_output_dir = X.user_output_dir
         if user_output_dir[-1] is not os.path.sep:
             user_output_dir += os.path.sep
+
+
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
@@ -225,7 +228,7 @@ def main():
     try:
         src_ds = gdal.Open(dem_filename)
     except RuntimeError as e:
-        print 'Unable to open file ' + dem_filename
+        print('Unable to open file ' + dem_filename)
         raise e
 
 
@@ -259,7 +262,7 @@ def main():
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
 
     if src_ds is None:
-        print 'Unable to open %s' % dem_filename
+        print('Unable to open %s' % dem_filename)
         exit(1)
 
     # #######
@@ -311,7 +314,7 @@ def main():
     if use_weights:
         total_weights = topo_weight
 
-    for key, data in parameter_files.iteritems():
+    for key, data in parameter_files.items():
         if parameter_files[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
@@ -325,7 +328,7 @@ def main():
         output_param_fname = os.path.splitext(output_param_fname)[0]
 
         if gdal.Open(data['file']).GetProjection() == '':
-            print "Parameter " + data['file'] + " must have spatial reference information."
+            print("Parameter " + data['file'] + " must have spatial reference information.")
             exit(1)
 
         # force all the paramter files to have the same extent as the input DEM
@@ -339,7 +342,7 @@ def main():
         if parameter_files[key]['file'] is None:
             raise RuntimeError('Error: Unable to open raster for: %s' % key)
 
-    for key, data in initial_conditions.iteritems():
+    for key, data in initial_conditions.items():
         if initial_conditions[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
@@ -364,7 +367,7 @@ def main():
         initial_conditions[key]['file'] = gdal.Open(base_dir + output_ic_fname + '_projected.tif')
 
         if initial_conditions[key]['file'] is None:
-            print 'Error: Unable to open raster for: %s' % key
+            print('Error: Unable to open raster for: %s' % key)
             exit(1)
 
     if use_weights and total_weights != 1:
@@ -416,7 +419,7 @@ def main():
             max_feature_ID = feature.GetFID()
             max_geom_area = area
 
-    print 'Using FID = ' + str(max_feature_ID) + " as the largest continuous area."
+    print('Using FID = ' + str(max_feature_ID) + " as the largest continuous area.")
     feats = np.arange(0,layer.GetFeatureCount())
     for f in feats:
         if f != max_feature_ID:
@@ -434,7 +437,7 @@ def main():
         inputfn = base_dir + plgs_shp
         outputBufferfn = base_dir + "buffered_"+plgs_shp
 
-        print 'Simplifying extents by buffer distance = ' + str(bufferDist)
+        print('Simplifying extents by buffer distance = ' + str(bufferDist))
         inputds = ogr.Open(inputfn)
         inputlyr = inputds.GetLayer()
 
@@ -459,7 +462,7 @@ def main():
 
     #this needs to be done after we optionally simplify the outer domain. If we do, we need to ensure any interior constraints are clipped to this new domain as the
     #triangulation does not like intersecting constraints.
-    for key, data in constraints.iteritems():
+    for key, data in constraints.items():
         # we need to handle a path being passed in
         output_constraint_fname = os.path.basename(data['file'])
         output_constraint_fname = os.path.splitext(output_constraint_fname)[0]
@@ -503,7 +506,7 @@ def main():
             constraints[key]['file'] =  json.load(f)
 
 
-    print 'Converting polygon to linestring'
+    print('Converting polygon to linestring')
     exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING' % (base_dir + 'line_' + plgs_shp, outputBufferfn)
 
     if simplify:
@@ -567,7 +570,7 @@ def main():
             "name": "interior_PLGS",
             "features": []}
 
-    for key, data in constraints.iteritems(): #over each constraint
+    for key, data in constraints.items(): #over each constraint
         for feat in data['file']['features']: #over the features present in each constraint
             interior_PLGS['features'].append(feat)
 
@@ -625,7 +628,7 @@ def main():
             execstr += ' --weight %s' % topo_weight
             execstr += ' --weight-threshold %s' % weight_threshold
 
-        for key, data in parameter_files.iteritems():
+        for key, data in parameter_files.items():
             if 'tolerance'in data:
                 if data['method'] == 'mode':
                     execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
@@ -634,7 +637,7 @@ def main():
             if 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
-        for key, data in initial_conditions.iteritems():
+        for key, data in initial_conditions.items():
             if 'tolerance' in data:
                 if data['method'] == 'mode':
                     execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
@@ -643,7 +646,7 @@ def main():
             if 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
-        print execstr
+        print(execstr)
         subprocess.check_call(execstr, shell=True)
 
     # read in the node, ele, and neigh from
@@ -672,7 +675,7 @@ def main():
     vtu_triangles = vtk.vtkCellArray()
 
     invalid_nodes = []  # any nodes that are outside of the domain.
-    print 'Reading nodes'
+    print('Reading nodes')
     with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
         for line in f:
             if '#' not in line:
@@ -694,10 +697,10 @@ def main():
                     mesh['mesh']['vertex'].append([mx, my, mz])
 
 
-    print 'Length of invalid nodes = ' + str(len(invalid_nodes))
+    print('Length of invalid nodes = ' + str(len(invalid_nodes)))
 
     # read in the neighbour file, triangle topology
-    print 'Reading in neighbour file'
+    print('Reading in neighbour file')
     read_header = False
     mesh['mesh']['neigh'] = []
     with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
@@ -735,15 +738,15 @@ def main():
     layer.CreateField(ogr.FieldDefn("triangle", ogr.OFTInteger))  # holds the triangle id.
     layer.CreateField(ogr.FieldDefn("area", ogr.OFTReal))
 
-    for key, value in parameter_files.iteritems():
+    for key, value in parameter_files.items():
         layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
 
-    for key, value in initial_conditions.iteritems():
+    for key, value in initial_conditions.items():
         layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
 
     read_header = False
 
-    print 'Computing parameters and initial conditions'
+    print('Computing parameters and initial conditions')
 
     mesh['mesh']['elem'] = []
     mesh['mesh']['is_geographic'] = is_geographic
@@ -756,23 +759,23 @@ def main():
     # holds parameters and initial conditions for CHM
     params = {}
     ics = {}
-    for key, data in parameter_files.iteritems():
+    for key, data in parameter_files.items():
         params[key] = []
 
     params['area']=[]
 
-    for key, data in initial_conditions.iteritems():
+    for key, data in initial_conditions.items():
         ics[key] = []
 
     vtu_cells  = {'Elevation': vtk.vtkFloatArray()}
     vtu_cells['Elevation'].SetName("Elevation")
 
-    for key, data in parameter_files.iteritems():
+    for key, data in parameter_files.items():
         k = '[param] ' + key
         vtu_cells[k]=vtk.vtkFloatArray()
         vtu_cells[k].SetName(k)
 
-    for key, data in initial_conditions.iteritems():
+    for key, data in initial_conditions.items():
         k = '[ic] ' + key
         vtu_cells[k]=vtk.vtkFloatArray()
         vtu_cells[k].SetName(k)
@@ -810,7 +813,7 @@ def main():
                         if len(tmp) != 0:
                             mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
                             if verbose:
-                                print 'replaced invalid with ' + str(mesh['mesh']['vertex'][v0])
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
                             invalid_nodes = [x for x in invalid_nodes if x != v0]  # remove from out invalid nodes list.
 
                     if v1 in invalid_nodes:
@@ -821,7 +824,7 @@ def main():
                         if len(tmp) != 0:
                             mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
                             if verbose:
-                                print 'replaced invalid with ' + str(mesh['mesh']['vertex'][v1])
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
                             invalid_nodes = [x for x in invalid_nodes if x != v1]  # remove from out invalid nodes list.
 
                     if v2 in invalid_nodes:
@@ -832,7 +835,7 @@ def main():
                         if len(tmp) != 0:
                             mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
                             if verbose:
-                                print 'replaced invalid with ' + str(mesh['mesh']['vertex'][v2])
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
 
@@ -879,7 +882,7 @@ def main():
                         params['area'].append(area)
 
                     # get the value under each triangle from each parameter file
-                    for key, data in parameter_files.iteritems():
+                    for key, data in parameter_files.items():
                         output = rasterize_elem(data, feature, key)
 
                         if 'classifier' in data:
@@ -893,7 +896,7 @@ def main():
                             output = float('nan')
                         vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
-                    for key, data in initial_conditions.iteritems():
+                    for key, data in initial_conditions.items():
                         output = rasterize_elem(data, feature, key)
                         if 'classifier' in data:
                             output = data['classifier'](output)
@@ -974,23 +977,23 @@ def main():
 
     vtu.SetPoints(vtu_points)
     vtu.SetCells(vtk.VTK_TRIANGLE,vtu_triangles)
-    for p in vtu_cells.itervalues():
+    for p in vtu_cells.values():
         vtu.GetCellData().AddArray(p)
     vtuwriter.Write()
 
     output_usm = None  # close the file
-    print 'Saving mesh to file ' + base_name + '.mesh'
+    print('Saving mesh to file ' + base_name + '.mesh')
     with open(user_output_dir+base_name + '.mesh', 'w') as outfile:
         json.dump(mesh, outfile, indent=4)
 
-    print 'Saving parameters to file ' + base_name + '.param'
+    print('Saving parameters to file ' + base_name + '.param')
     with open(user_output_dir+base_name + '.param', 'w') as outfile:
         json.dump(params, outfile, indent=4)
 
-    print 'Saving initial conditions  to file ' + base_name + '.ic'
+    print('Saving initial conditions  to file ' + base_name + '.ic')
     with open(user_output_dir+base_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
-    print 'Done'
+    print('Done')
 
 
 # Print iterations progress
@@ -1175,7 +1178,7 @@ def rasterize_elem(data, feature, key):
             output = float(
                 masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
     else:
-        print 'Error: unknown data aggregation method %s' % data['method']
+        print('Error: unknown data aggregation method %s' % data['method'])
 
     feature.SetField(key, output)
 

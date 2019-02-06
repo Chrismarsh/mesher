@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 2.8)
 project(mesher)
 
+option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
+
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
 # Get the current working branch
@@ -36,18 +38,24 @@ configure_file(
 set( CGAL_DONT_OVERRIDE_CMAKE_FLAGS TRUE )
 
 
+if(BUILD_CGAL)
+    configure_file(${CMAKE_SOURCE_DIR}/cgal.4.11.patch ${CMAKE_BINARY_DIR}/cgal.4.11.patch COPYONLY)
 
-configure_file(${CMAKE_SOURCE_DIR}/cgal.4.11.patch ${CMAKE_BINARY_DIR}/cgal.4.11.patch COPYONLY)
+    configure_file(CMakeLists_external.txt.in
+            lib/CMakeLists.txt)
+    execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/lib )
+    execute_process(COMMAND ${CMAKE_COMMAND} --build .
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/lib )
 
-configure_file(CMakeLists_external.txt.in
-        lib/CMakeLists.txt)
-execute_process(COMMAND ${CMAKE_COMMAND} -G "${CMAKE_GENERATOR}" .
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/lib )
-execute_process(COMMAND ${CMAKE_COMMAND} --build .
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/lib )
+    set(CGAL_DIR "${CMAKE_BINARY_DIR}/lib/CGAL/lib64/CGAL")
+    find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
+else()
+    set(CGAL_DIR "")
+endif()
 
-set(CGAL_DIR "${CMAKE_BINARY_DIR}/lib/CGAL/lib64/CGAL")
 find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
+
 if(CGAL_FOUND)
     message(STATUS "Found CGAL ")
     message(STATUS "${CGAL_INCLUDE_DIRS}")
