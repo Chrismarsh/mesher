@@ -1,21 +1,24 @@
 import json
 import vtk
 
-# base file name
-basename = 'DEM_cuenca_Laura'
+import sys
+
+if len(sys.argv) != 4:
+    print('requires 3 arguments: .mesh file, .param file, output vtu file')
+    exit(-1)
 
 #open topology file
-with open(basename+'.mesh') as f:
+with open(sys.argv[1]) as f:
     mesh = json.load(f)
 
 #open parameter file
-with open(basename+'.param') as f:
+with open(sys.argv[2]) as f:
     param = json.load(f)
 
 #init the vtk datastructure
 vtu = vtk.vtkUnstructuredGrid()
 vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
-vtuwriter.SetFileName(basename+'.vtu')
+vtuwriter.SetFileName(sys.argv[3])
 vtuwriter.SetInputData(vtu)
 
 vtu_points = vtk.vtkPoints()
