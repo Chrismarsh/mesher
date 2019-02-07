@@ -862,7 +862,7 @@ def main():
                     triangle.GetPointIds().SetId(2, v2)
 
                     vtu_triangles.InsertNextCell(triangle)
-                    vtu_cells['Elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
+                    vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
                                                              mesh['mesh']['vertex'][v1][2] +
                                                              mesh['mesh']['vertex'][v2][2]) / 3.)
 
