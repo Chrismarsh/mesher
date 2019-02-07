@@ -767,8 +767,11 @@ def main():
     for key, data in initial_conditions.items():
         ics[key] = []
 
-    vtu_cells  = {'Elevation': vtk.vtkFloatArray()}
-    vtu_cells['Elevation'].SetName("Elevation")
+    vtu_cells  = {'elevation': vtk.vtkFloatArray(),
+                  'area': vtk.vtkFloatArray()
+    }
+    vtu_cells['elevation'].SetName('elevation')
+    vtu_cells['area'].SetName('area')
 
     for key, data in parameter_files.items():
         k = '[param] ' + key
@@ -872,14 +875,21 @@ def main():
 
                     feature.SetField('triangle', int(items[0]) - 1)
 
+                    area=0
                     #if the input was geographic, we need to project to get a reasonable area
                     if is_geographic:
                         transform = osr.CoordinateTransformation(srs, srs_out)
                         p = tpoly.Clone()
                         p.Transform(transform)
+                    
                         area = p.GetArea()
-                        feature.SetField('area', area)
-                        params['area'].append(area)
+                    else:
+                        area = tpoly.GetArea()
+
+                    feature.SetField('area', area)
+                    params['area'].append(area)
+                    vtu_cells['area'].InsertNextTuple1(area)
+
 
                     # get the value under each triangle from each parameter file
                     for key, data in parameter_files.items():
