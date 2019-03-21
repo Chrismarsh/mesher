@@ -271,7 +271,8 @@ def main():
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" '  % (extent[0],extent[1],extent[2],extent[3] ,srs.ExportToProj4())
         src_ds = None
 
-    subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str % (
+    e = 'gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
+    subprocess.check_call([ e % (
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
