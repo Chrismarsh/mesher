@@ -172,6 +172,16 @@ void triangle::make_rasterized(vertex v0_in, vertex v1_in, vertex v2_in, const r
     rasterized_triangle = boost::make_shared<raster>();
     rasterized_triangle->setDs(rvds); //rvds owned now
 
+    //with massive triangles the size of the bounding box over flows an int
+    // GDAL uses ints so we're DOA at this point.
+    if(xsize*ysize < 0)
+    {
+//        double max_area = sqrt(std::numeric_limits<int>::max())/pixel_width;
+        std::cout << "The specified max-area of a triangle resulted in too many pixels."<< std::endl;
+//        std::cout << "A max upper limit of < " << max_area << "^2 should be tried." << std::endl;
+
+        exit(-1);
+    }
     float* mask = new float[xsize*ysize]; //mask will be owned
     //copy the mask into the float array for the mask
     rasterized_triangle->getBand()->RasterIO(GF_Read, 0, 0, xsize, ysize,

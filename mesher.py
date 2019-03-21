@@ -192,6 +192,13 @@ def main():
               "     AUTHORITY[\"EPSG\",\"102008\"]]"
     if hasattr(X,'wkt_out'):
         wkt_out = X.wkt_out
+
+    # use a custom extent instead of the entire input DEM to define the meshing region
+    # extent = [xmin, ymin, xmax, ymax] in source SRS
+
+    extent = None
+    if hasattr(X,'extent'):
+        extent=X.extent
     ########################################################
 
     base_name = os.path.basename(dem_filename)
@@ -235,8 +242,6 @@ def main():
     if src_ds.GetProjection() == '':
         raise RuntimeError("Input DEM must have spatial reference information.")
 
-
-
     if use_input_prj:
         wkt_out = src_ds.GetProjection()
 
@@ -256,7 +261,17 @@ def main():
     else:
         output_file_name = '_projected.tif'
 
-    subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' % (
+    ext_str=''
+    if extent is not None:
+        src_ds = gdal.Open(dem_filename)
+        wkt = src_ds.GetProjection()
+        srs = osr.SpatialReference()
+        srs.ImportFromWkt(wkt)
+
+        ext_str = ' -te %s %s %s %s -te_srs \"%s\" '  % (extent[0],extent[1],extent[2],extent[3] ,srs.ExportToProj4())
+        src_ds = None
+
+    subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str % (
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
@@ -401,7 +416,7 @@ def main():
     dst_ds = None  # close file
 
     # raster -> polygon
-    subprocess.check_call(['gdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (tmp_raster, tmp_raster,
+    subprocess.check_call(['python2 /usr/local/opt/gdal2-python/bin/gdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (tmp_raster, tmp_raster,
                                                                                            base_dir +
                                                                                            plgs_shp)], shell=True)
     driver = ogr.GetDriverByName('ESRI Shapefile')
