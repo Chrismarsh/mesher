@@ -417,7 +417,7 @@ def main():
     dst_ds = None  # close file
 
     # raster -> polygon
-    subprocess.check_call(['python2 /usr/local/opt/gdal2-python/bin/gdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (tmp_raster, tmp_raster,
+    subprocess.check_call(['gdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (tmp_raster, tmp_raster,
                                                                                            base_dir +
                                                                                            plgs_shp)], shell=True)
     driver = ogr.GetDriverByName('ESRI Shapefile')
