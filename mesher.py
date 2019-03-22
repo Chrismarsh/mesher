@@ -339,24 +339,61 @@ def main():
         if use_weights and 'weight' in data:
             total_weights += data['weight']
 
-        #we need to handle a path being passed in
-        output_param_fname = os.path.basename(data['file'])
-        output_param_fname = os.path.splitext(output_param_fname)[0]
+        #there can be multiple files per param output that we use a classifier to merge into one.
+        # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
 
-        if gdal.Open(data['file']).GetProjection() == '':
-            print("Parameter " + data['file'] + " must have spatial reference information.")
-            exit(1)
+        if isinstance(data['file'], list) and len(data['file'])==1:
+            print('Error @ ' + key + ': Do not use [ ] for a single file.')
+            exit(-1)
 
-        # force all the paramter files to have the same extent as the input DEM
-        subprocess.check_call([estr % (
-                data['file'], base_dir + output_param_fname + '_projected.tif', srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width,
-                pixel_height)], shell=True)
+        if not 'classifier' in data and isinstance(data['file'], list):
+            print('Error @ ' + key+': If multiple input files are specified for a single parameter a classifer must be provided.')
+            exit(-1)
 
-        parameter_files[key]['filename'] = base_dir + output_param_fname + '_projected.tif'  # save the file name if needed for mesher
-        parameter_files[key]['file'] = gdal.Open(base_dir + output_param_fname + '_projected.tif')
+        if 'tolerance'in data and isinstance(data['file'], list):
+            print('Error @ ' + key + ': If multiple input files are specified for a single parameter this cannot be used with a tolerance.')
+            exit(-1)
 
-        if parameter_files[key]['file'] is None:
-            raise RuntimeError('Error: Unable to open raster for: %s' % key)
+        if isinstance(data['file'], list) and not isinstance(data['method'], list):
+            print('Error @ ' + key + ': If multiple input files are specified for a single parameter you need to specify each aggregation method.')
+            exit(-1)
+
+        if not isinstance(data['file'], list) and isinstance(data['method'], list):
+            print('Error @ ' + key + ': If a single input file is specified you cannot specify multiple aggregation methods.')
+            exit(-1)
+
+        if not isinstance(data['file'], list):
+            data['file'] = [data['file']]
+
+        if not isinstance(data['method'], list):
+            data['method'] = [data['method']]
+
+
+        i=0
+        parameter_files[key]['filename']=[]
+        for f in data['file']:
+
+            #we need to handle a path being passed in
+            output_param_fname = os.path.basename(f)
+            output_param_fname = os.path.splitext(output_param_fname)[0]
+
+            if gdal.Open(f).GetProjection() == '':
+                print("Parameter " + f + " must have spatial reference information.")
+                exit(1)
+
+            out_name = base_dir + output_param_fname + '_projected.tif'
+
+            # force all the paramter files to have the same extent as the input DEM
+            subprocess.check_call([estr % (
+                    f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width,
+                    pixel_height)], shell=True)
+
+            parameter_files[key]['filename'].append(out_name)  # save the file name if needed for mesher
+            parameter_files[key]['file'][i] = gdal.Open(out_name)
+
+            if parameter_files[key]['file'][i] is None:
+                raise RuntimeError('Error: Unable to open raster for: %s' % key)
+            i = i + 1
 
     for key, data in initial_conditions.items():
         if initial_conditions[key]['method'] == 'mode':
@@ -647,9 +684,9 @@ def main():
         for key, data in parameter_files.items():
             if 'tolerance'in data:
                 if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
+                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data['tolerance'])  # we need [0] on raster as it's been made iterable by this point
                 else:
-                    execstr += ' --raster %s --tolerance %s' % (data['filename'], data['tolerance'])
+                    execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
             if 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
@@ -665,6 +702,14 @@ def main():
         print(execstr)
         subprocess.check_call(execstr, shell=True)
 
+    # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use remove them
+    keys_to_drop = []
+    for key, data in parameter_files.items():
+        if 'drop' in data and data['drop'] == True:
+            keys_to_drop.append(key)
+    for key in keys_to_drop:
+        print('Dropping parameter ' + key + ' and not writting to mesh due to user request')
+        del parameter_files[key]
     # read in the node, ele, and neigh from
 
     # holds our main mesh structure which we will write out to json to read into CHM
@@ -909,10 +954,15 @@ def main():
 
                     # get the value under each triangle from each parameter file
                     for key, data in parameter_files.items():
-                        output = rasterize_elem(data, feature, key)
+
+                        output = []
+                        for f,m in zip(data['file'],data['method']):
+                            output.append(rasterize_elem(f, feature, key, m))
 
                         if 'classifier' in data:
-                            output = data['classifier'](output)
+                            output = data['classifier'](*output)
+                        else:
+                            output = output[0] #flatten the list for the append below
                         params[key].append(output)
 
                         feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
@@ -923,7 +973,7 @@ def main():
                         vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
                     for key, data in initial_conditions.items():
-                        output = rasterize_elem(data, feature, key)
+                        output = rasterize_elem(data['file'], feature, key,data['method'])
                         if 'classifier' in data:
                             output = data['classifier'](output)
 
@@ -1137,8 +1187,8 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def rasterize_elem(data, feature, key):
-    raster = data['file']
+def rasterize_elem(raster, feature, key, aggMethod):
+    # raster = data['file']
     wkt = raster.GetProjection()
     srs = osr.SpatialReference()
     srs.ImportFromWkt(wkt)
@@ -1197,20 +1247,21 @@ def rasterize_elem(data, feature, key):
     # if masked.count() == 0:
     #     masked = np.ma.masked_where(
     #         src_array == rb.GetNoDataValue(), src_array)
-    if data['method'] == 'mode':
+    if aggMethod == 'mode':
         output = sp.mode(masked.flatten())[0][0]
-    elif data['method'] == 'mean':
+    elif aggMethod == 'mean':
         if masked.count() > 0:
             output = float(
                 masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
-    elif data['method'] == 'max':
+    elif aggMethod == 'max':
         if masked.count() > 0:
             output = float(masked.max())
-    elif data['method'] == 'min':
+    elif aggMethod == 'min':
         if masked.count() > 0:
             output = float(masked.min())
     else:
-        print('Error: unknown data aggregation method %s' % data['method'])
+        print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
+        exit(-1)
 
     feature.SetField(key, output)
 
