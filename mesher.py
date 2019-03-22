@@ -1203,6 +1203,12 @@ def rasterize_elem(data, feature, key):
         if masked.count() > 0:
             output = float(
                 masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
+    elif data['method'] == 'max':
+        if masked.count() > 0:
+            output = float(masked.max())
+    elif data['method'] == 'min':
+        if masked.count() > 0:
+            output = float(masked.min())
     else:
         print('Error: unknown data aggregation method %s' % data['method'])
 
