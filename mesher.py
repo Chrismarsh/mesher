@@ -271,7 +271,7 @@ def main():
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" '  % (extent[0],extent[1],extent[2],extent[3] ,srs.ExportToProj4())
         src_ds = None
 
-    e = 'gdalwarp %s %s -ot Float32 -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
+    e = 'gdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
     subprocess.check_call([ e % (
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
@@ -303,7 +303,7 @@ def main():
             if itr+1 == max_smooth_iter: #last iteration, change output
                 out_name = base_dir + base_name + '_projected.tif'
 
-            subprocess.check_call(['gdalwarp %s %s -ot Float32 -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+            subprocess.check_call(['gdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
                 in_name, out_name, abs(pixel_width) / scaling_factor,
                 abs(pixel_height) / scaling_factor)], shell=True)
 
@@ -323,7 +323,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = 'gdalwarp %s %s -ot Float32 -overwrite -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -tr %s %s -r '
+    exec_str = 'gdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -tr %s %s -r '
 
     #ensure all the weights sum to 1
     total_weights=0
