@@ -16,13 +16,13 @@ def print_usage():
     print('  permutation_tools.py <json_mesh_input_file> [json_mesh_output_file]')
     return
 
-def append_local_cell_id_to_mesh_file(infile,outfile):
+def append_global_cell_id_to_mesh_file(infile,outfile):
     """Read file, find a desired permutation of cell faces, add new permuted ids to json file"""
 
     with open(infile) as f:
         mesh = json.load(f)
 
-    mesh['mesh']['cell_local_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
+    mesh['mesh']['cell_global_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
 
     with open(outfile,'w') as f:
         json.dump(mesh, f, indent=4)
@@ -116,4 +116,4 @@ if __name__=="__main__":
     if len(sys.argv) == 3:
         outfile = sys.argv[2]
 
-    append_local_cell_id_to_mesh_file(infile, outfile)
+    append_global_cell_id_to_mesh_file(infile, outfile)
