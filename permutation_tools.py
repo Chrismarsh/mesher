@@ -22,7 +22,7 @@ def append_local_cell_id_to_mesh_file(infile,outfile):
     with open(infile) as f:
         mesh = json.load(f)
 
-    mesh['mesh']['cell_local_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
+    mesh['mesh']['cell_global_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
 
     with open(outfile,'w') as f:
         json.dump(mesh, f, indent=4)
