@@ -829,10 +829,12 @@ def main():
         ics[key] = []
 
     vtu_cells  = {'elevation': vtk.vtkFloatArray(),
+                  'cellid': vtk.vtkFloatArray(),
                   'area': vtk.vtkFloatArray()
     }
     vtu_cells['elevation'].SetName('elevation')
     vtu_cells['area'].SetName('area')
+    vtu_cells['cellid'].SetName('cellid')
 
     for key, data in parameter_files.items():
         k = '[param] ' + key
@@ -927,6 +929,7 @@ def main():
                                                              mesh['mesh']['vertex'][v1][2] +
                                                              mesh['mesh']['vertex'][v2][2]) / 3.)
 
+                    vtu_cells['cellid'].InsertNextTuple1(i)
 
                     tpoly = ogr.Geometry(ogr.wkbPolygon)
                     tpoly.AddGeometry(ring)
@@ -1055,6 +1058,14 @@ def main():
     vtu.SetCells(vtk.VTK_TRIANGLE,vtu_triangles)
     for p in vtu_cells.values():
         vtu.GetCellData().AddArray(p)
+
+    vtk_proj4 = vtk.vtkStringArray()
+    vtk_proj4.SetNumberOfComponents(1)
+    vtk_proj4.SetName("proj4")
+    vtk_proj4.InsertNextValue(srs_out.ExportToProj4())
+
+    vtu.GetFieldData().AddArray(vtk_proj4)
+
     vtuwriter.Write()
 
     output_usm = None  # close the file
