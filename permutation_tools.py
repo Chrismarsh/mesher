@@ -30,12 +30,14 @@ def append_global_cell_id_to_mesh_file(args):
     with open(args["infile"]) as f:
         mesh = json.load(f)
 
+
     if args["type"]=="rcm":
         print(" Performing RCM bandwidth minimization:")
         mesh['mesh']['cell_global_id'] = compute_rcm_permutation(mesh['mesh']['neigh'])
     elif args["type"]=="nd":
         print(" Performing ND fill-in minimization:")
         mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
+
 
     with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
