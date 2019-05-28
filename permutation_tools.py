@@ -45,7 +45,7 @@ def compute_rcm_permutation(neighbor_list):
     """Computes the permutation that minimizes the bandwidth of the connectivity matrix
     - uses Reverse CutHill-McKee (RCM) algorithm, which needs CSC or CSR sparse matrix format"""
 
-    A = convert_neighbor_list_to_csr_matrix(neighbor_list)
+    A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
 
     # Note we are always dealing with undirected (symmetric) graphs
     permutation = graph.reverse_cuthill_mckee(A,symmetric_mode=True)
@@ -59,8 +59,9 @@ def compute_nd_permutation(neighbor_list):
     pass
 ############################################################################
 
-def convert_neighbor_list_to_csr_matrix(neighbor_list):
-    """Get a scipy.sparse.csr_matrix from a list of neighbors"""
+def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
+    """Get a sparse compressed_format from a list of neighbors (assuming aij input)
+    - compressed_format is one of sparse.csr_matrix or sparse.csc_matrix"""
 
     N = len(neighbor_list)
     i = []
@@ -77,7 +78,7 @@ def convert_neighbor_list_to_csr_matrix(neighbor_list):
     val = np.ones(count)
     A = sparse.coo_matrix((val,(i,j)),shape=(N,N))
 
-    return sparse.csr_matrix(A)
+    return compressed_format(A)
 
 
 ## Bandwidth comparison
