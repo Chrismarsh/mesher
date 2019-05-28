@@ -5,37 +5,52 @@ import json
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.csgraph as graph
+import scipy.sparse.linalg as linalg
+
+# Set up CL arguments
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("-o", "--outfile", required=False,
+                help="File for output (default overwrites input file).")
+
+parser.add_argument("-t", "--type", required=False, choices={"rcm","nd"},
+                help="Type of reordering to perform.",
+                nargs='?', const="rcm", type=str, default="rcm")
+
+parser.add_argument("-i", "--infile", required=True,
+                help="File for input.")
 
 import matplotlib as mpl
 mpl.use('AGG')  # non-gui display (much faster)
 import matplotlib.pyplot as plt
 
+def append_global_cell_id_to_mesh_file(args):
+    """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
 
-def print_usage():
-    print('USAGE: ')
-    print('  permutation_tools.py <json_mesh_input_file> [json_mesh_output_file]')
-    return
-
-def append_local_cell_id_to_mesh_file(infile,outfile):
-    """Read file, find a desired permutation of cell faces, add new permuted ids to json file"""
-
-    with open(infile) as f:
+    with open(args["infile"]) as f:
         mesh = json.load(f)
 
-    mesh['mesh']['cell_global_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
 
-    with open(outfile,'w') as f:
+    if args["type"]=="rcm":
+        print(" Performing RCM bandwidth minimization:")
+        mesh['mesh']['cell_global_id'] = compute_rcm_permutation(mesh['mesh']['neigh'])
+    elif args["type"]=="nd":
+        print(" Performing ND fill-in minimization:")
+        mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
+
+
+    with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
 
     return
 
-
+############################################################################
 # permutation functions
-def compute_minimum_bandwidth_permutation(neighbor_list):
+def compute_rcm_permutation(neighbor_list):
     """Computes the permutation that minimizes the bandwidth of the connectivity matrix
-    - uses reverse CutHill-McKee algorithm, which needs CSC or CSR sparse matrix format"""
+    - uses Reverse CutHill-McKee (RCM) algorithm, which needs CSC or CSR sparse matrix format"""
 
-    A = convert_neighbor_list_to_csr_matrix(neighbor_list)
+    A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
 
     # Note we are always dealing with undirected (symmetric) graphs
     permutation = graph.reverse_cuthill_mckee(A,symmetric_mode=True)
@@ -44,8 +59,27 @@ def compute_minimum_bandwidth_permutation(neighbor_list):
 
     return permutation.tolist()
 
-def convert_neighbor_list_to_csr_matrix(neighbor_list):
-    """Get a scipy.sparse.csr_matrix from a list of neighbors"""
+def compute_nd_permutation(neighbor_list):
+    """Computes a nested-dissection permutation (minimizes fill-in of matrix factors)"""
+    A = convert_neighbor_list_to_compressed_matrix(neighbor_list,sparse.csc_matrix)
+
+    # permutation is determined during the factorization
+    LUperm = linalg.splu(A)
+
+    # Not really necessary, but curious
+    print_bandwidth_before_after_permutation(
+        convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix),
+        LUperm.perm_c )
+
+    print("  Non-zeros in factor L: " + str(LUperm.L.nnz))
+
+    return LUperm.perm_c.tolist()
+
+############################################################################
+
+def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
+    """Get a sparse compressed_format from a list of neighbors (assuming aij input)
+    - compressed_format is one of sparse.csr_matrix or sparse.csc_matrix"""
 
     N = len(neighbor_list)
     i = []
@@ -62,11 +96,10 @@ def convert_neighbor_list_to_csr_matrix(neighbor_list):
     val = np.ones(count)
     A = sparse.coo_matrix((val,(i,j)),shape=(N,N))
 
-    return sparse.csr_matrix(A)
+    return compressed_format(A)
 
 
 ## Bandwidth comparison
-
 def print_bandwidth_before_after_permutation(A,permutation):
     """Display bandwidth before and after permutation"""
     orig_band = compute_bandwidth_CSR(A)
@@ -106,14 +139,9 @@ def plot_mat_connectivity(A,filename,**kwargs):
 
 if __name__=="__main__":
 
-    if len(sys.argv) == 1:
-        print_usage()
-        exit(-1)
+    # Parse the input arguments
+    args = vars(parser.parse_args())
+    if (args["outfile"]==None):
+        args["outfile"] = args["infile"]
 
-    infile = sys.argv[1]
-
-    outfile = infile
-    if len(sys.argv) == 3:
-        outfile = sys.argv[2]
-
-    append_local_cell_id_to_mesh_file(infile, outfile)
+    append_global_cell_id_to_mesh_file(args)
