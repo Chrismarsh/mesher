@@ -60,7 +60,7 @@ def compute_rcm_permutation(neighbor_list):
     return permutation.tolist()
 
 def compute_nd_permutation(neighbor_list):
-    """Computes a nested-dissection permutation (minimizes fill-in of matrix factors)"""
+    """Computes a nested dissection permutation (minimizes fill-in of matrix factors)"""
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list,sparse.csc_matrix)
 
     # permutation is determined during the factorization
