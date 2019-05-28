@@ -5,6 +5,7 @@ import json
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.csgraph as graph
+import scipy.sparse.linalg as linalg
 
 # Set up CL arguments
 import argparse
@@ -30,8 +31,10 @@ def append_global_cell_id_to_mesh_file(args):
         mesh = json.load(f)
 
     if args["type"]=="rcm":
+        print(" Performing RCM bandwidth minimization:")
         mesh['mesh']['cell_global_id'] = compute_rcm_permutation(mesh['mesh']['neigh'])
     elif args["type"]=="nd":
+        print(" Performing ND fill-in minimization:")
         mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
 
     with open(args["outfile"],'w') as f:
@@ -56,7 +59,20 @@ def compute_rcm_permutation(neighbor_list):
 
 def compute_nd_permutation(neighbor_list):
     """Computes a nested-dissection permutation (minimizes fill-in of matrix factors)"""
-    pass
+    A = convert_neighbor_list_to_compressed_matrix(neighbor_list,sparse.csc_matrix)
+
+    # permutation is determined during the factorization
+    LUperm = linalg.splu(A)
+
+    # Not really necessary, but curious
+    print_bandwidth_before_after_permutation(
+        convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix),
+        LUperm.perm_c )
+
+    print("  Non-zeros in factor L: " + str(LUperm.L.nnz))
+
+    return LUperm.perm_c.tolist()
+
 ############################################################################
 
 def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
