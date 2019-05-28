@@ -6,15 +6,22 @@ import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.csgraph as graph
 
+# Set up CL arguments
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("-o", "--outfile", required=False,
+                help="File for output (default overwrites input file).")
+
+parser.add_argument("-t", "--type", required=False,
+                help="Type of reordering to perform.",
+                nargs='?', const="rcm", type=str, default="rcm")
+
+parser.add_argument("-i", "--infile", required=True,
+                help="File for input.")
+
 import matplotlib as mpl
 mpl.use('AGG')  # non-gui display (much faster)
 import matplotlib.pyplot as plt
-
-
-def print_usage():
-    print('USAGE: ')
-    print('  permutation_tools.py <json_mesh_input_file> [json_mesh_output_file]')
-    return
 
 def append_global_cell_id_to_mesh_file(infile,outfile):
     """Read file, find a desired permutation of cell faces, add new permuted ids to json file"""
@@ -106,14 +113,9 @@ def plot_mat_connectivity(A,filename,**kwargs):
 
 if __name__=="__main__":
 
-    if len(sys.argv) == 1:
-        print_usage()
-        exit(-1)
-
-    infile = sys.argv[1]
-
-    outfile = infile
-    if len(sys.argv) == 3:
-        outfile = sys.argv[2]
+    # Parse the input arguments
+    args = vars(parser.parse_args())
+    if (args["outfile"]==None):
+        args["outfile"] = args["infile"]
 
     append_global_cell_id_to_mesh_file(infile, outfile)
