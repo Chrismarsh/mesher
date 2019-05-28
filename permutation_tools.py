@@ -30,14 +30,12 @@ def append_global_cell_id_to_mesh_file(args):
     with open(args["infile"]) as f:
         mesh = json.load(f)
 
-
     if args["type"]=="rcm":
         print(" Performing RCM bandwidth minimization:")
         mesh['mesh']['cell_global_id'] = compute_rcm_permutation(mesh['mesh']['neigh'])
     elif args["type"]=="nd":
         print(" Performing ND fill-in minimization:")
         mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
-
 
     with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
@@ -84,6 +82,7 @@ def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
     N = len(neighbor_list)
     i = []
     j = []
+    val = []
 
     # easier to construct in coo format
     count = 0;
@@ -93,7 +92,7 @@ def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
                 i.append(ii)
                 j.append(jj)
                 count=count+1
-    val = np.ones(count)
+                val.append( (count % 2) + 1 ) # entries filled with 1s and 2s
     A = sparse.coo_matrix((val,(i,j)),shape=(N,N))
 
     return compressed_format(A)
