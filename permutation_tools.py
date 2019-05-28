@@ -23,19 +23,18 @@ import matplotlib as mpl
 mpl.use('AGG')  # non-gui display (much faster)
 import matplotlib.pyplot as plt
 
-def append_global_cell_id_to_mesh_file(infile,outfile):
-    """Read file, find a desired permutation of cell faces, add new permuted ids to json file"""
+def append_global_cell_id_to_mesh_file(args):
+    """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
 
-    with open(infile) as f:
+    with open(args["infile"]) as f:
         mesh = json.load(f)
 
     mesh['mesh']['cell_global_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
 
-    with open(outfile,'w') as f:
+    with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
 
     return
-
 
 # permutation functions
 def compute_minimum_bandwidth_permutation(neighbor_list):
@@ -118,4 +117,4 @@ if __name__=="__main__":
     if (args["outfile"]==None):
         args["outfile"] = args["infile"]
 
-    append_global_cell_id_to_mesh_file(infile, outfile)
+    append_global_cell_id_to_mesh_file(args)
