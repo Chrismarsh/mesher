@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-o", "--outfile", required=False,
                 help="File for output (default overwrites input file).")
 
-parser.add_argument("-t", "--type", required=False,
+parser.add_argument("-t", "--type", required=False, choices={"rcm","nd"},
                 help="Type of reordering to perform.",
                 nargs='?', const="rcm", type=str, default="rcm")
 
@@ -29,17 +29,21 @@ def append_global_cell_id_to_mesh_file(args):
     with open(args["infile"]) as f:
         mesh = json.load(f)
 
-    mesh['mesh']['cell_global_id'] = compute_minimum_bandwidth_permutation(mesh['mesh']['neigh'])
+    if args["type"]=="rcm":
+        mesh['mesh']['cell_global_id'] = compute_rcm_permutation(mesh['mesh']['neigh'])
+    elif args["type"]=="nd":
+        mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
 
     with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
 
     return
 
+############################################################################
 # permutation functions
-def compute_minimum_bandwidth_permutation(neighbor_list):
+def compute_rcm_permutation(neighbor_list):
     """Computes the permutation that minimizes the bandwidth of the connectivity matrix
-    - uses reverse CutHill-McKee algorithm, which needs CSC or CSR sparse matrix format"""
+    - uses Reverse CutHill-McKee (RCM) algorithm, which needs CSC or CSR sparse matrix format"""
 
     A = convert_neighbor_list_to_csr_matrix(neighbor_list)
 
@@ -49,6 +53,11 @@ def compute_minimum_bandwidth_permutation(neighbor_list):
     print_bandwidth_before_after_permutation(A,permutation)
 
     return permutation.tolist()
+
+def compute_nd_permutation(neighbor_list):
+    """Computes a nested-dissection permutation (minimizes fill-in of matrix factors)"""
+    pass
+############################################################################
 
 def convert_neighbor_list_to_csr_matrix(neighbor_list):
     """Get a scipy.sparse.csr_matrix from a list of neighbors"""
@@ -72,7 +81,6 @@ def convert_neighbor_list_to_csr_matrix(neighbor_list):
 
 
 ## Bandwidth comparison
-
 def print_bandwidth_before_after_permutation(A,permutation):
     """Display bandwidth before and after permutation"""
     orig_band = compute_bandwidth_CSR(A)
