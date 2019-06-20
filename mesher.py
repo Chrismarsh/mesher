@@ -331,7 +331,10 @@ def main():
         total_weights = topo_weight
 
     for key, data in parameter_files.items():
-        if parameter_files[key]['method'] == 'mode':
+        # make a copy as this exec string is reused for inital conditions
+        # and we don't want the changes made here to impact it
+        estr = exec_str
+        if data['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
             estr = exec_str + 'average'
@@ -413,6 +416,9 @@ def main():
             i = i + 1
 
     for key, data in initial_conditions.items():
+        #make a copy
+        estr = exec_str
+
         if initial_conditions[key]['method'] == 'mode':
             estr = exec_str + 'mode'
         else:
@@ -427,6 +433,9 @@ def main():
 
         if gdal.Open(data['file']).GetProjection() == '':
             raise RuntimeError("IC " + data['file'] + " must have spatial reference information.")
+
+        # resize the cells to match input DEM
+        estr = estr + ' -tr %s %s'
 
         # force all the initial condition files to have the same extent as the input DEM
         subprocess.check_call([estr % (
@@ -1261,6 +1270,11 @@ def rasterize_elem(raster, feature, key, aggMethod):
             np.logical_not(rv_array)
         )
     )
+    #same as masked, but includes the no values. Can be useful for total count, geometery, etc
+    masked_tri = np.ma.MaskedArray(
+        src_array,
+        mask=np.logical_not(rv_array)
+    )
     # feature_stats = {
     #     'min': float(masked.min()),
     #     'mean': float(masked.mean()),
@@ -1275,21 +1289,26 @@ def rasterize_elem(raster, feature, key, aggMethod):
     # if masked.count() == 0:
     #     masked = np.ma.masked_where(
     #         src_array == rb.GetNoDataValue(), src_array)
-    if aggMethod == 'mode':
-        output = sp.mode(masked.flatten())[0][0]
-    elif aggMethod == 'mean':
-        if masked.count() > 0:
-            output = float(
-                masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
-    elif aggMethod == 'max':
-        if masked.count() > 0:
-            output = float(masked.max())
-    elif aggMethod == 'min':
-        if masked.count() > 0:
-            output = float(masked.min())
+    if callable(aggMethod):
+        output = aggMethod(masked, masked_tri.count()) # count = number of raster cells in the triangle. may be more than masked.count() as it incl na values
+        if np.isnan(output):
+            output = rb.GetNoDataValue()
     else:
-        print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
-        exit(-1)
+        if aggMethod == 'mode':
+            output = sp.mode(masked.flatten())[0][0]
+        elif aggMethod == 'mean':
+            if masked.count() > 0:
+                output = float(
+                    masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
+        elif aggMethod == 'max':
+            if masked.count() > 0:
+                output = float(masked.max())
+        elif aggMethod == 'min':
+            if masked.count() > 0:
+                output = float(masked.min())
+        else:
+            print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
+            exit(-1)
 
     feature.SetField(key, output)
 
