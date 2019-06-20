@@ -323,7 +323,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = 'gdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -tr %s %s -r '
+    exec_str = 'gdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     #ensure all the weights sum to 1
     total_weights=0
@@ -338,6 +338,18 @@ def main():
 
         if use_weights and 'weight' in data:
             total_weights += data['weight']
+
+        # Allows us to turn off raster cell resizing for this parameter.
+        # This can result in some odd behaviours when doing multi-objective optimization so disable that
+        do_cell_resize = True
+        if 'do_cell_resize' in data:
+            do_cell_resize =  data['do_cell_resize']
+
+        if 'tolerance'in data and do_cell_resize:
+            print('Error @ '+key+': Cannot use tolerance & do_cell_resize simultaneously.')
+
+        if do_cell_resize:
+            estr = estr + ' -tr %s %s'
 
         #there can be multiple files per param output that we use a classifier to merge into one.
         # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
@@ -383,10 +395,15 @@ def main():
 
             out_name = base_dir + output_param_fname + '_projected.tif'
 
-            # force all the paramter files to have the same extent as the input DEM
-            subprocess.check_call([estr % (
-                    f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width,
-                    pixel_height)], shell=True)
+            if do_cell_resize:
+                # force all the paramter files to have the same extent as the input DEM
+                subprocess.check_call([estr % (
+                        f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width, pixel_height)], shell=True)
+            else:
+                # force all the paramter files to have the same extent as the input DEM
+                subprocess.check_call([estr % (
+                    f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax)], shell=True)
+
 
             parameter_files[key]['filename'].append(out_name)  # save the file name if needed for mesher
             parameter_files[key]['file'][i] = gdal.Open(out_name)
