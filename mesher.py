@@ -141,7 +141,14 @@ def main():
         if user_output_dir[-1] is not os.path.sep:
             user_output_dir += os.path.sep
 
+    # should we write a shape file of the USM, pretty costly on the big meshes
+    write_shp = True
+    if hasattr(X,'write_shp'):
+        write_shp = X.write_shp
 
+    write_vtu = True
+    if hasattr(X,'write_vtu'):
+        write_vtu = X.write_vtu
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
@@ -350,6 +357,7 @@ def main():
 
         if 'tolerance'in data and do_cell_resize:
             print('Error @ '+key+': Cannot use tolerance & do_cell_resize simultaneously.')
+            exit(-1)
 
         if do_cell_resize:
             estr = estr + ' -tr %s %s'
@@ -744,22 +752,22 @@ def main():
 
     read_header = False
 
-    vtu = vtk.vtkUnstructuredGrid()
+    if write_vtu:
+        vtu = vtk.vtkUnstructuredGrid()
 
-    output_vtk = base_dir + base_name + '.vtu'
-    vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
-    vtuwriter.SetFileName(output_vtk)
+        output_vtk = base_dir + base_name + '.vtu'
+        vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
+        vtuwriter.SetFileName(output_vtk)
 
-    #check what version of vtk we are using so we can avoid the api conflict
-    #http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
-    if vtk.vtkVersion.GetVTKMajorVersion() > 5:
-        vtuwriter.SetInputData(vtu)
-    else:
-        vtuwriter.SetInput(vtu)
+        #check what version of vtk we are using so we can avoid the api conflict
+        #http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
+        if vtk.vtkVersion.GetVTKMajorVersion() > 5:
+            vtuwriter.SetInputData(vtu)
+        else:
+            vtuwriter.SetInput(vtu)
 
-
-    vtu_points = vtk.vtkPoints()
-    vtu_triangles = vtk.vtkCellArray()
+        vtu_points = vtk.vtkPoints()
+        vtu_triangles = vtk.vtkCellArray()
 
     invalid_nodes = []  # any nodes that are outside of the domain.
     print('Reading nodes')
@@ -813,13 +821,14 @@ def main():
     except OSError:
         pass
 
+
     output_usm = driver.CreateDataSource(base_dir +
                                          base_name + '_USM.shp')
 
+    if write_vtu:
+        vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
 
-    vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
-
-    # create the layer
+    # create the layer. Even if we don't save the shp file, we need this for rasterization and area estimates
     layer = output_usm.CreateLayer(base_name, srs, ogr.wkbPolygon)
 
     layer.CreateField(ogr.FieldDefn("triangle", ogr.OFTInteger))  # holds the triangle id.
@@ -854,23 +863,26 @@ def main():
     for key, data in initial_conditions.items():
         ics[key] = []
 
-    vtu_cells  = {'elevation': vtk.vtkFloatArray(),
-                  'cellid': vtk.vtkFloatArray(),
-                  'area': vtk.vtkFloatArray()
-    }
-    vtu_cells['elevation'].SetName('elevation')
-    vtu_cells['area'].SetName('area')
-    vtu_cells['cellid'].SetName('cellid')
+    if write_vtu:
+        vtu_cells  = {'elevation': vtk.vtkFloatArray(),
+                      'cellid': vtk.vtkFloatArray(),
+                      'area': vtk.vtkFloatArray()
+        }
+        vtu_cells['elevation'].SetName('elevation')
+        vtu_cells['area'].SetName('area')
+        vtu_cells['cellid'].SetName('cellid')
 
     for key, data in parameter_files.items():
         k = '[param] ' + key
-        vtu_cells[k]=vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
+        if write_vtu:
+            vtu_cells[k]=vtk.vtkFloatArray()
+            vtu_cells[k].SetName(k)
 
     for key, data in initial_conditions.items():
         k = '[ic] ' + key
-        vtu_cells[k]=vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
+        if write_vtu:
+            vtu_cells[k]=vtk.vtkFloatArray()
+            vtu_cells[k].SetName(k)
 
     i = 0
     nelem = 0
@@ -931,6 +943,7 @@ def main():
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
 
+                    # regardless of shp file output, we need this to do the area calculation
                     ring = ogr.Geometry(ogr.wkbLinearRing)
                     ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
                     ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
@@ -938,25 +951,27 @@ def main():
                     ring.AddPoint(mesh['mesh']['vertex'][v0][0],
                                   mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
 
-                    vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1],
-                                        mesh['mesh']['vertex'][v0][2])
-                    vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1],
-                                        mesh['mesh']['vertex'][v1][2])
-                    vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1],
-                                        mesh['mesh']['vertex'][v2][2])
+                    if write_vtu:
+                        vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1],
+                                            mesh['mesh']['vertex'][v0][2])
+                        vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1],
+                                            mesh['mesh']['vertex'][v1][2])
+                        vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1],
+                                            mesh['mesh']['vertex'][v2][2])
 
-                    triangle = vtk.vtkTriangle()
-                    triangle.GetPointIds().SetId(0, v0)
-                    triangle.GetPointIds().SetId(1, v1)
-                    triangle.GetPointIds().SetId(2, v2)
+                        triangle = vtk.vtkTriangle()
+                        triangle.GetPointIds().SetId(0, v0)
+                        triangle.GetPointIds().SetId(1, v1)
+                        triangle.GetPointIds().SetId(2, v2)
 
-                    vtu_triangles.InsertNextCell(triangle)
-                    vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
-                                                             mesh['mesh']['vertex'][v1][2] +
-                                                             mesh['mesh']['vertex'][v2][2]) / 3.)
+                        vtu_triangles.InsertNextCell(triangle)
+                        vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
+                                                                 mesh['mesh']['vertex'][v1][2] +
+                                                                 mesh['mesh']['vertex'][v2][2]) / 3.)
 
-                    vtu_cells['cellid'].InsertNextTuple1(i)
+                        vtu_cells['cellid'].InsertNextTuple1(i)
 
+                    # need this for the area calculation
                     tpoly = ogr.Geometry(ogr.wkbPolygon)
                     tpoly.AddGeometry(ring)
 
@@ -977,13 +992,15 @@ def main():
                         area = tpoly.GetArea()
 
                     feature.SetField('area', area)
+
                     params['area'].append(area)
-                    vtu_cells['area'].InsertNextTuple1(area)
+
+                    if write_vtu:
+                        vtu_cells['area'].InsertNextTuple1(area)
 
 
                     # get the value under each triangle from each parameter file
                     for key, data in parameter_files.items():
-
                         output = []
                         for f,m in zip(data['file'],data['method']):
                             output.append(rasterize_elem(f, feature, key, m))
@@ -994,12 +1011,15 @@ def main():
                             output = output[0] #flatten the list for the append below
                         params[key].append(output)
 
-                        feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+                        if write_shp:
+                            feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
 
                         # we want to write actual NaN to vtu for better displaying
                         if output == -9999:
                             output = float('nan')
-                        vtu_cells['[param] ' + key].InsertNextTuple1(output)
+
+                        if write_vtu:
+                            vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
                     for key, data in initial_conditions.items():
                         output = rasterize_elem(data['file'], feature, key,data['method'])
@@ -1008,17 +1028,22 @@ def main():
 
                         ics[key].append(output)
 
-                        feature.SetField(key[0:10], float(output))
+                        if write_shp:
+                            feature.SetField(key[0:10], float(output))
 
                         # we want to write actual NaN to vtu for better displaying
                         if output == -9999:
                             output = float('nan')
-                        vtu_cells['[ic] ' + key].InsertNextTuple1(output)
 
-                    layer.CreateFeature(feature)
+                        if write_vtu:
+                            vtu_cells['[ic] ' + key].InsertNextTuple1(output)
+
+                    if write_shp:
+                        layer.CreateFeature(feature)
                     i = i + 1
                     # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
-    output_usm.FlushCache()
+    if write_shp:
+        output_usm.FlushCache()
     output_usm = None #close file
 
     if len(invalid_nodes) > 0:
@@ -1079,20 +1104,20 @@ def main():
 
 
 
+    if write_vtu:
+        vtu.SetPoints(vtu_points)
+        vtu.SetCells(vtk.VTK_TRIANGLE,vtu_triangles)
+        for p in vtu_cells.values():
+            vtu.GetCellData().AddArray(p)
 
-    vtu.SetPoints(vtu_points)
-    vtu.SetCells(vtk.VTK_TRIANGLE,vtu_triangles)
-    for p in vtu_cells.values():
-        vtu.GetCellData().AddArray(p)
+        vtk_proj4 = vtk.vtkStringArray()
+        vtk_proj4.SetNumberOfComponents(1)
+        vtk_proj4.SetName("proj4")
+        vtk_proj4.InsertNextValue(srs_out.ExportToProj4())
 
-    vtk_proj4 = vtk.vtkStringArray()
-    vtk_proj4.SetNumberOfComponents(1)
-    vtk_proj4.SetName("proj4")
-    vtk_proj4.InsertNextValue(srs_out.ExportToProj4())
+        vtu.GetFieldData().AddArray(vtk_proj4)
 
-    vtu.GetFieldData().AddArray(vtk_proj4)
-
-    vtuwriter.Write()
+        vtuwriter.Write()
 
     output_usm = None  # close the file
     print('Saving mesh to file ' + base_name + '.mesh')
