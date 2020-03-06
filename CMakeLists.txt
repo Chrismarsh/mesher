@@ -1,7 +1,8 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
+option(NO_CONAN "Build without using conan dependencies" FALSE)
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
@@ -32,11 +33,12 @@ configure_file(
         src/version.h
 )
 
+LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
+LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}")
 
 #as per http://cgal-discuss.949826.n4.nabble.com/CMake-and-flags-td949906.html
 #don't override internal settings
 set( CGAL_DONT_OVERRIDE_CMAKE_FLAGS TRUE )
-
 
 if(BUILD_CGAL)
     configure_file(${CMAKE_SOURCE_DIR}/cgal.4.11.patch ${CMAKE_BINARY_DIR}/cgal.4.11.patch COPYONLY)
@@ -50,13 +52,16 @@ if(BUILD_CGAL)
 
     set(CGAL_DIR "${CMAKE_BINARY_DIR}/lib/CGAL/lib64/CGAL")
     find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
+
 else()
-    set(CGAL_DIR "")
+    if(NO_CONAN)
+        find_package(CGAL REQUIRED )
+    else()
+        find_package(cgal REQUIRED ) #conan convention is lowercase
+    endif()
 endif()
 
-find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
-
-if(CGAL_FOUND)
+if(CGAL_FOUND AND NO_CONAN)
     message(STATUS "Found CGAL ")
     message(STATUS "${CGAL_INCLUDE_DIRS}")
     include(${CGAL_USE_FILE}) #as per https://www.cgal.org/releases.html release 4.2
@@ -77,35 +82,58 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O3 ")
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+if(NO_CONAN)
+    find_package(GDAL REQUIRED)
+else()
+    find_package(gdal REQUIRED)
+endif()
 
-#-fsanitize=address
-#add_definitions(-DCGAL_DISABLE_ROUNDING_MATH_CHECK=ON)
-
-find_package(GDAL REQUIRED)
 find_package(Boost
-        COMPONENTS
-        program_options
-        filesystem
-        REQUIRED)
-
-include_directories(
-        ${CMAKE_BINARY_DIR}/src # for clion generated files / out of source builds
-        ${GDAL_INCLUDE_DIR}
-        ${Boost_INCLUDE_DIR}
-        ${CGAL_INCLUDE_DIRS}
-        ${CGAL_3RD_PARTY_INCLUDE_DIRS}
-        )
-
-
-set(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE})
+            COMPONENTS
+            program_options
+            filesystem
+            REQUIRED)
 
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
+
+# only need fancy rpaths if we are shipping our libs alongside the binary via conan
+if(NO_CONAN)
+    # when we run make install all the RPATHs will be stripped out and set to these
+    # n.b. $ORIGIN should have its dollar sign escaped with a backslash to have it end up with proper
+    # syntax in the final executable.
+    # https://gitlab.kitware.com/cmake/community/-/wikis/doc/cmake/RPATH-handling
+    # !!!  these must be done before targets are defined in add_executable !!!!
+    if (APPLE)
+        set(CMAKE_INSTALL_RPATH "@executable_path/../lib")
+    else()
+        set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
+    endif()
+endif()
+
 add_executable(mesher ${SOURCE_FILES})
+target_compile_features(mesher PRIVATE cxx_std_14)
+target_include_directories(
+        mesher
+        PRIVATE
+        ${CMAKE_BINARY_DIR}/src # for clion generated files / out of source builds
+)
 target_link_libraries(
         mesher
         m
-        ${GDAL_LIBRARY}
-        ${Boost_LIBRARIES}
-        ${CGAL_3RD_PARTY_LIBRARIES}
+        gdal::gdal
+        Boost::Boost
+        cgal::cgal
 )
+set_target_properties(mesher
+        PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build-bin"
+        )
+
+
+install(TARGETS mersher RUNTIME)
+
+# only ship our libs if built with conan
+if(NOT NO_CONAN)
+    install(DIRECTORY ${CMAKE_BINARY_DIR}/lib/
+            DESTINATION ${CMAKE_INSTALL_PREFIX}/lib)
+endif()
