@@ -10,7 +10,7 @@ Welcome to mesher's documentation!
    :maxdepth: 2
    :caption: Contents:
 
-   build/Compile
+    Compile
 
 
 
