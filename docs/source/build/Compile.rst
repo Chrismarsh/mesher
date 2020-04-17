@@ -17,6 +17,7 @@ If bintray binaries can be used, the only requirements are:
 - cmake >= 3.16
 - C++11 compiler (gcc 7.x+ recommended)
 
+
 On MacOS, homebrew should be used to install cmake and conan. Macport based installs likely work, but have not been tested.
 
 Compile
@@ -26,6 +27,7 @@ Building mesher requires:
 - cmake (>3.16)
 - boost (>1.70)
 - cgal
+
 
 Throughout, this document assumes a working development environment, but a blank conan environment.
 
