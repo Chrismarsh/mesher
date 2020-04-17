@@ -14,7 +14,6 @@
  # You should have received a copy of the GNU General Public License
  # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#!/usr/bin/env python
 from osgeo import gdal, ogr, osr
 import subprocess
 import re
@@ -229,16 +228,6 @@ def main():
         except OSError:
             pass #If the folder doesn't exist, don't worry
 
-    # figure out what srs out input is in, we will reproject everything to this
-    # if hasattr(X, 'EPSG'):
-    #     EPSG = X.EPSG
-    # else:
-    #     src_ds = gdal.Open(dem_filename)
-    #     wkt = src_ds.GetProjection()
-    #     srs = osr.SpatialReference()
-    #     srs.ImportFromWkt(wkt)
-    #     EPSG = int(srs.GetAttrValue("AUTHORITY", 1))
-
     try:
         src_ds = gdal.Open(dem_filename)
     except RuntimeError as e:
@@ -249,19 +238,12 @@ def main():
     if src_ds.GetProjection() == '':
         raise RuntimeError("Input DEM must have spatial reference information.")
 
+    # if we are using the input DEM's projection, grab it here from the source DEM
     if use_input_prj:
         wkt_out = src_ds.GetProjection()
 
     srs_out = osr.SpatialReference()
     srs_out.ImportFromWkt(wkt_out)
-
-
-    # ensures we are in UTM and fills the nodata with -9999. tif default no data is a pain to compare against and is often giving the wrong answer.
-    # subprocess.check_call(['gdalwarp %s %s -overwrite -dstnodata -9999 -t_srs "EPSG:%d"' % (
-    #     dem_filename, base_dir + base_name + '_projected.tif', EPSG)], shell=True)
-
-
-    # Get into the projected coordinate space
 
     if do_smoothing:
         output_file_name = '_projected_0.tif'
@@ -269,6 +251,8 @@ def main():
         output_file_name = '_projected.tif'
 
     ext_str=''
+
+    #clip to a user-specified extent
     if extent is not None:
         src_ds = gdal.Open(dem_filename)
         wkt = src_ds.GetProjection()
@@ -288,7 +272,7 @@ def main():
         print('Unable to open %s' % dem_filename)
         exit(1)
 
-    # #######
+    ########
 
     gt = src_ds.GetGeoTransform()
 
@@ -1051,58 +1035,6 @@ def main():
         errstr +=  'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
         errstr +=  'Try reducing simplify_tol.'
         raise RuntimeError(errstr)
-
-    #optionally smooth the mesh
-    #this can likely be removed, but is here if the newly added cubic filtering of the input dem is deemed not enough
-    # smooth = False
-    # if smooth:
-    #     for i in range(10):
-    #         for neigh,face in itertools.izip(mesh['mesh']['neigh'], mesh['mesh']['elem']):
-    #
-    #             new_z = []
-    #             #recompute z value of each vertex of current face using neighbours
-    #             for vertex_id in face:
-    #
-    #                 #vertex we need to update
-    #                 vertex = mesh['mesh']['vertex'][vertex_id]
-    #
-    #                 neigh_verts_x = []
-    #                 neigh_verts_y = []
-    #                 neigh_verts_z = []
-    #
-    #                 #each n-th neighbour id of our face
-    #                 for n in neigh:
-    #                     if n != -1:  #only actual neighbours
-    #                         neigh_face = mesh['mesh']['elem'][n]
-    #
-    #                         #each vertex in the neighbour face
-    #                         for neigh_vertex in neigh_face:
-    #                             v = mesh['mesh']['vertex'][neigh_vertex]
-    #                             if not np.allclose(v, vertex):
-    #                                 neigh_verts_x.append(v[0])
-    #                                 neigh_verts_y.append(v[1])
-    #                                 neigh_verts_z.append(v[2])
-    #
-    #                 d = collections.OrderedDict.fromkeys(zip(neigh_verts_x, neigh_verts_y,neigh_verts_z))
-    #                 neigh_verts_x = [k[0] for k in d]
-    #                 neigh_verts_y = [k[1] for k in d]
-    #                 neigh_verts_z = [k[2] for k in d]
-    #
-    #                 #if we have enough points, interpolated
-    #                 z=0
-    #                 # if( len(neigh_verts_x) == 5):
-    #                 #     interp = sp_interp.interp2d(neigh_verts_x,neigh_verts_y,neigh_verts_z,'linear')
-    #                 #     z = interp(vertex[0],vertex[1])[0]
-    #                 # else:
-    #                 #     #try the average?
-    #                 z = np.mean(neigh_verts_z)
-    #                 new_z.append(z)
-    #
-    #             for nz,vertex_id in itertools.izip(new_z,face):
-    #                 mesh['mesh']['vertex'][vertex_id][2] = nz
-
-
-
 
     if write_vtu:
         vtu.SetPoints(vtu_points)
