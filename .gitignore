@@ -10,3 +10,4 @@ docs/build/*
 *.param
 *.ic
 *.mesh
+examples/*

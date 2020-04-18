@@ -14,7 +14,8 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
-
+import sphinx_rtd_theme
+from sphinx.locale import _
 # -- Project information -----------------------------------------------------
 
 project = 'mesher'
@@ -28,6 +29,7 @@ author = 'Chris Marsh'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+ "sphinx_rtd_theme",
 ]
 
 master_doc = 'index'
@@ -57,3 +59,31 @@ html_theme_options = {
     'collapse_navigation': False,
     'sticky_navigation': True,
 }
+
+
+# Extensions to theme docs
+def setup(app):
+    from sphinx.domains.python import PyField
+    from sphinx.util.docfields import Field
+
+    app.add_object_type(
+        'confval',
+        'confval',
+        objname='configuration value',
+        indextemplate='pair: %s; configuration value',
+        doc_field_types=[
+            PyField(
+                'type',
+                label=_('Type'),
+                has_arg=False,
+                names=('type',),
+                bodyrolename='class'
+            ),
+            Field(
+                'default',
+                label=_('Default'),
+                has_arg=False,
+                names=('default',),
+            ),
+        ]
+    )
