@@ -87,8 +87,8 @@ Environment variables
 
 Instead of specifying a mesher_path in the configuration file, the environment variable ``MESHER_EXE`` may be set to the binary. If both ``MESHER_EXE`` and ``mesher_path`` are defined, the configuration file path takes precedence.
 
-Misc.
-=========
+Lloyd iterations
+================
 
 .. confval:: lloyd_itr
 
