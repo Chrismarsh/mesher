@@ -10,7 +10,7 @@ Welcome to mesher's documentation!
    :maxdepth: 3
    :caption: Contents:
 
-   compile
+   build
    algorithm
    configuration
 
