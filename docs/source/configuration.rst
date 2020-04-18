@@ -197,7 +197,7 @@ Domain simplification
    :type: boolean
    :default: False
 
-As described in the `algorithm <algorithm.html>` section, the input DEM defines the area to be meshed. If no-data values are present, then the largest continuous area defines the area to be meshed. As a result, complex basin shapes will likely result in the creation of many triangles along the complex edges. This option can  be used to simplify the basin outline. Setting `simplify` to `True` requires setting a value for ``simplify_tol``.
+As described in the `algorithm <algorithm.html>`_ section, the input DEM defines the area to be meshed. If no-data values are present, then the largest continuous area defines the area to be meshed. As a result, complex basin shapes will likely result in the creation of many triangles along the complex edges. This option can  be used to simplify the basin outline. Setting `simplify` to `True` requires setting a value for ``simplify_tol``.
 
 Once the domain to be meshed is determined (and is represented by a polyline), this polyline is simplified so-as to have no more than ``simplify_tol`` meters of error. By default will enable ``simplify_buffer``. See ``no_simplify_buffer``.
 
@@ -221,7 +221,7 @@ Sets a negative buffer (i.e., contracts the meshing domain) to give ``simplify_t
 
 Disables ``simplify_buffer`` when ``simplify=True``
 
-..confval:: extent
+.. confval:: extent
 
    :type: list[4]
    :default: []
@@ -369,9 +369,25 @@ Multiple input rasters can be combined in to a single parameter using a more com
 
 
 
+Using as constraint
+*******************
 
+By setting an optional ``tolerance`` value in the dictionary, a raster can be used to constrain the mesh generation. If ``method`` is ``mode``, then this is a fractional percent of the dominate cell values to cover the triangle area. Otherwise, it is RMSE in the units of the raster's value.
 
+For example:
+::
 
+   parameter_files ={ 
+      'soils' : {'file':'/path/to/soils.tif','method':'mean','tolerance':0.6},
+      'canopy_height' : {'file':'/path/to/veg.tif','method':'mean','tolerance':2}
+      }
+
+Assuming the soils raster is a classification map, then each triangle must have 60% of one soil type **as well as** be within 2 m RMSE to the canopy height.
+
+Any number of rasters may have a tolerance. Further, if used with a user-defined classifier, then the tolerance check occurs after the classifier has run
+
+.. note::
+   As more tolerances are added, or tolerances become tighter, more and more triangles will be produced. Past a certain point, it does not become meaningful to use an approximating mesh!  
 
 
 
