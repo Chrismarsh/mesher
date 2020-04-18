@@ -276,16 +276,26 @@ Parameters, such as vegetation cover, flow accumulation, or soils, can be used i
 No constraint
 *************
 
-Parameters are given by key-value pairs in a dictionary:
+Parameters are given by key-value pairs in a dictionary, where ``value`` is a dict that contains a file name and an aggregation method:
+::
+
+   parameter_files = { 'param_name' : {'file':'file.tif','method':'mean'}}
+
+
+For example:
 ::
 
    parameter_files ={ 
-      'soils' : {'file':'/path/to/soils.tif',
-      method':'mean'},
-      'canopy_height' : {'file':'/path/to/veg.tif',
-      method':'mean'}
+      'soils' : {'file':'/path/to/soils.tif','method':'mean'},
+      'canopy_height' : {'file':'/path/to/veg.tif','method':'mean'}
       }
 
+
+.. confval:: param_name
+
+   :type: string
+
+This is the name of the parameter as it will appear in the final mesh output. I.e., what you want this to be called for use in a model.
 
 .. confval:: file
    
@@ -324,7 +334,7 @@ For example, perhaps a vegetation density metric as derived from remote sensing 
                      }
 
 
-Alternatively, a binary tree/no-tree metric could be derived
+Alternatively, a binary tree/no-tree parameter could be derived
 ::
 
    def Tree_cover_2_Simple_Canopy(value):
@@ -334,13 +344,28 @@ Alternatively, a binary tree/no-tree metric could be derived
            value = 1 # open
        return value
 
-        parameter_files ={ 'landcover': {'file':'60N_120W_treecover2010_v3.tif',
-                                          'method':'mean',
-                                          'classifier':Tree_cover_2_Simple_Canopy
-                                        } }
+  parameter_files ={ 'landcover': {'file':'60N_120W_treecover2010_v3.tif',
+                                    'method':'mean',
+                                    'classifier':Tree_cover_2_Simple_Canopy
+                                  } }
 
 
 
+Multiple input rasters can be combined in to a single parameter using a more complex classified. This works by passing ``file`` and ``method`` a list of length *n* of the files and aggregation methods. The classifier then takes *n* arguments. For example:
+::
+
+   def make_landcover(water,veg):
+     if water == 1:
+       return 0 #keep it water
+
+     if veg < 0.2:
+       return 1 #this will be clearing/open
+
+     return 2 # this is tree cover
+
+   parameter_files = { 'landcover':{'file':['waterMask.tif','Simard_Pinto_3DGlobalVeg_L3C.tif'],
+                                    'method':['mode','mean'],
+                                    'classifier':make_landcover}}
 
 
 
