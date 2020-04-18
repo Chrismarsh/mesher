@@ -351,7 +351,7 @@ Alternatively, a binary tree/no-tree parameter could be derived
 
 
 
-Multiple input rasters can be combined in to a single parameter using a more complex classified. This works by passing ``file`` and ``method`` a list of length *n* of the files and aggregation methods. The classifier then takes *n* arguments. For example:
+Multiple input rasters can be combined in to a single parameter using a more complex classifier. This works by passing ``file`` and ``method`` a list of length *n* of the files and aggregation methods. The classifier then takes *n* arguments and returns a singlge value. The following examples shows using a water mask and a landcover map to make a water/open/treed dataset.
 ::
 
    def make_landcover(water,veg):
