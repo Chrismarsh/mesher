@@ -1,8 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
+
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
 option(NO_CONAN "Build without using conan dependencies" FALSE)
+
+if(NOT NO_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
+
+    message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
+    file(DOWNLOAD "https://github.com/conan-io/cmake-conan/raw/v0.15/conan.cmake"
+            "${CMAKE_BINARY_DIR}/conan.cmake")
+endif()
+include(${CMAKE_BINARY_DIR}/conan.cmake)
+
+
+
+conan_cmake_run(CONANFILE conanfile.py
+        BASIC_SETUP CMAKE_TARGETS KEEP_RPATHS NO_OUTPUT_DIRS
+        BUILD missing)
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
@@ -97,7 +112,7 @@ find_package(Boost
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
 # only need fancy rpaths if we are shipping our libs alongside the binary via conan
-if(NO_CONAN)
+#if(NOT NO_CONAN)
     # when we run make install all the RPATHs will be stripped out and set to these
     # n.b. $ORIGIN should have its dollar sign escaped with a backslash to have it end up with proper
     # syntax in the final executable.
@@ -108,9 +123,13 @@ if(NO_CONAN)
     else()
         set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
     endif()
-endif()
+#endif()
 
 add_executable(mesher ${SOURCE_FILES})
+set_target_properties(mesher
+        PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build-bin"
+        )
 target_compile_features(mesher PRIVATE cxx_std_14)
 target_include_directories(
         mesher
@@ -124,13 +143,10 @@ target_link_libraries(
         Boost::Boost
         cgal::cgal
 )
-set_target_properties(mesher
-        PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build-bin"
-        )
 
 
-install(TARGETS mersher RUNTIME)
+
+install(TARGETS mesher RUNTIME)
 
 # only ship our libs if built with conan
 if(NOT NO_CONAN)
