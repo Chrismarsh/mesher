@@ -1,3 +1,4 @@
+#!/usr/bin/env python
  # Mesher
  # Copyright (C) 2017 Christopher Marsh
 
@@ -110,7 +111,7 @@ def main():
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
 
-    mesher_path = '../../bin/Release/mesher'
+    mesher_path = './mesher'
 
     #look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc over this
     using_mesher_environ=False
