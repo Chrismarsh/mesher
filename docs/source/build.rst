@@ -1,8 +1,14 @@
 Compilation
 -----------
 
-Background
-=============
+Build from source
+=================
+
+Building mesher from source has two parts 
+
+1) compile the backend C++ binary and
+2) setup a python environment for the python frontend.
+
 The easiest way to build mesher is to use `conan <https://www.conan.io/>`_ for dependency management. 
 
 All of the mesher dependencies are built on Travis-CI and uploaded to the bintray repository to serve prebuilt binaries. This means that if the mesher build is done with supported compilers and operating system (described later), the dependencies do not need to be built by the end user.
@@ -63,12 +69,12 @@ to detect the new compiler settings. The `cppstd` and `libcxx` settings need to 
 
 Intel compiler
 ==============
-Ensure the Intel compilervars is sourced, e.g.,
+If you're using the Intel compiler, ensure ``compilervars.sh`` is sourced, e.g.,
 ::
 
     source /opt/intel/bin/compilervars.sh intel64
 
-prior to running the conan. Use the above gcc settings for conan.
+prior to running conan. Use the above gcc settings for conan.
 
 
 Clone repo
