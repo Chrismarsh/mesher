@@ -35,6 +35,6 @@ setup(name='mesher',
       url="https://github.com/Chrismarsh/mesher",
       include_package_data=True,
       cmake_args=['-DCMAKE_BUILD_TYPE=Release'],
-      scripts=["mesher.py","permutation_tools.py"],
+      scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
       install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy']
      )

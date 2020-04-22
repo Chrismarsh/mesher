@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 #Given a mesh in a .shp file and a set of raster, this computes various error metrics of the mesh to the raster
 
 from osgeo import gdal,ogr,osr

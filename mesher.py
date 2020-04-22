@@ -35,7 +35,7 @@ def main():
     # Check user defined configuration file
 
     if len(sys.argv) == 1:
-        print('ERROR: mesher.py requires one argument [configuration file] (i.e. mesher.py Bow)')
+        print('ERROR: mesher.py requires one argument [configuration file] (i.e. mesher.py Bow.py)')
         return
 
     # Get name of configuration file/module

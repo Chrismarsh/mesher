@@ -14,7 +14,8 @@ The easiest way to build mesher is to use `conan <https://www.conan.io/>`_ for d
 All of the mesher dependencies are built on Travis-CI and uploaded to the bintray repository to serve prebuilt binaries. This means that if the mesher build is done with supported compilers and operating system (described later), the dependencies do not need to be built by the end user.
 
 Build Requirements
-===================
+*******************
+
 Linux and MacOS are the only supported environments.
 
 If bintray binaries can be used, the only requirements are:
@@ -26,7 +27,8 @@ If bintray binaries can be used, the only requirements are:
 On MacOS, homebrew should be used to install cmake and conan. Macport based installs likely work, but have not been tested.
 
 Compile
-========
+********
+
 Building mesher requires:
 
 - cmake (>3.16)
@@ -37,7 +39,8 @@ Building mesher requires:
 Throughout, this document assumes a working development environment, but a blank conan environment.
 
 Setup conan
-===========
+***********
+
 Initialize a new profile
 ::
 
@@ -68,7 +71,7 @@ If you change compilers, such as on a cluster with a modules system, you can rer
 to detect the new compiler settings. The `cppstd` and `libcxx` settings need to be reapplied once this is done.
 
 Intel compiler
-==============
+**************
 If you're using the Intel compiler, ensure ``compilervars.sh`` is sourced, e.g.,
 ::
 
@@ -78,7 +81,7 @@ prior to running conan. Use the above gcc settings for conan.
 
 
 Clone repo
-===========
+***********
 An out of source build is recommended. For example:
 ::
 
@@ -87,7 +90,7 @@ An out of source build is recommended. For example:
     mkdir ~/build && cd ~/build
 
 Setup dependencies
-===================
+******************
 Install the dependencies into your local conan cache (`~/.conan/data`) 
 ::
     
@@ -103,7 +106,7 @@ If you need to build dependencies from source, use the `--build missing` option 
     conan install ~/mesher -if=. --build missing
 
 Run cmake
-=========
+*********
 You can set the install prefix to be anywhere, such as shown in the example below
 ::
 
@@ -119,22 +122,79 @@ If using the Intel compiler, add the following cmake flags:
     -DCMAKE_CXX_COMPILER=icpc -DCMAKE_C_COMPILER=icc -DCMAKE_FORTRAN_COMPILER=ifort
 
 Building
-========
+*********
 Using make
 ::
 
     make install 
 
 
+Setup Python
+============
+
+
+The python vtk bindings (see below) are most easily installed using the `wheels packages <https://pypi.org/project/vtk/#files>`_. However, vtk wheels only exist for Python 3.5, 3.6, and 3.7.
+Therefore it's highly recommended to use Python 3.7. Doing so can easily be done with `pyenv <https://github.com/pyenv/pyenv>`_ to manage python versions:
+::
+
+   pyenv install 3.7.6
+   pyenv shell 3.7.6 # activate this version of python for this shell
+
+
+If `pyenv` is used, then the excellent `pyenv-virtualenv <https://github.com/pyenv/pyenv-virtualenv>`_ wrapper can easily streamline `virtualenv` creation 
+::
+
+   pyenv virtualenv mesher-3.7.6
+   pyenv activate mesher-3.7.6
+
+
+Regardless of how the virtualenv is setup, install the following:
+
+
+vtk
+***
+
+vtk `wheels <https://prabhuramachandran.blogspot.com/2018/01/vtk-810-wheels-for-all-platforms-on-pypi.html>`_ only `exist <https://pypi.org/project/vtk/#files>`_ for Python 3.5, 3.6, and 3.7. If building from source, ensure vtk development files (e.g., `vtk-devel`) are installed through your system's package manager.
+
+::
+
+   pip install vtk
+
+
+gdal 
+****
+
+It's recommended that gdal python bindings are installed via `pygdal <https://github.com/nextgis/pygdal>`_. gdal doesn't provide wheels, so `pygdal` will need to build from source. Therefore ensure gdal development files (e.g., `gdal-devel`) are installed through your system's package manager. 
+
+.. note::
+   The python gdal bindings uses a system-wide gdal rather than the conan gdal the mesher C++ backend links against. This will hopefully be resolved in the future. However, as no data passes between the C++ and Python, having different gdal versions poses no problem.
+
+
+other libraries
+***************
+:: 
+   
+   pip install numpy scipy
 
 
 
+Deployment
+==========
+Notes for how to deploy to Pypi:
+
+:: 
+   
+   pip install scikit-build
+   pip install twine
+   pip install wheel
+
+::
+
+   python setup.py sdist bdist_wheel
+   twine upload  dist/*
 
 
-
-
-
-
+Note that version number needs to be incremented for each Pypi upload
 
 
 
