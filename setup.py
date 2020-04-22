@@ -1,5 +1,8 @@
 from skbuild import setup
 import subprocess
+from packaging.version import LegacyVersion
+from skbuild.exceptions import SKBuildError
+from skbuild.cmaker import get_cmake_version
 
 def get_installed_gdal_version():
     try:
@@ -14,6 +17,14 @@ def get_installed_gdal_version():
             )
 
 
+# Add CMake as a build requirement if cmake is not installed or is too low a version
+# https://scikit-build.readthedocs.io/en/latest/usage.html#adding-cmake-as-building-requirement-only-if-not-installed-or-too-low-a-version
+setup_requires = []
+try:
+    if LegacyVersion(get_cmake_version()) < LegacyVersion("3.16"):
+        setup_requires.append('cmake')
+except SKBuildError:
+    setup_requires.append('cmake')
 
 
 setup(name='mesher',
@@ -33,8 +44,9 @@ setup(name='mesher',
       author='Chris Marsh',
       author_email='chris.marsh@usask.ca',
       url="https://github.com/Chrismarsh/mesher",
-      include_package_data=True,
+      # include_package_data=True,
       cmake_args=['-DCMAKE_BUILD_TYPE=Release'],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy']
+      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy'],
+      setup_requires=setup_requires
      )

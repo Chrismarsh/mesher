@@ -14,10 +14,29 @@ endif()
 include(${CMAKE_BINARY_DIR}/conan.cmake)
 
 
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    set(CONAN_LIB_STD "libstdc++11")
+    message(STATUS "Detected gnu compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
+elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
+    set(CONAN_LIB_STD "libc++")
+    message(STATUS "Detected clang compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
+endif ()
+
+conan_add_remote(NAME bincrafters
+            URL https://api.bintray.com/conan/bincrafters/public-conan
+        )
+conan_add_remote(NAME CHM
+        URL https://api.bintray.com/conan/chrismarsh/CHM
+        )
 
 conan_cmake_run(CONANFILE conanfile.py
-        BASIC_SETUP CMAKE_TARGETS KEEP_RPATHS NO_OUTPUT_DIRS
-        BUILD missing)
+                SETTINGS compiler.cppstd=14
+                SETTINGS compiler.libcxx=${CONAN_LIB_STD}
+                BASIC_SETUP
+                CMAKE_TARGETS
+                KEEP_RPATHS
+                NO_OUTPUT_DIRS
+                BUILD missing)
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
