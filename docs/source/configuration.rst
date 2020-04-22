@@ -197,7 +197,7 @@ Domain simplification
    :type: boolean
    :default: False
 
-As described in the `algorithm <algorithm.html>`_ section, the input DEM defines the area to be meshed. If no-data values are present, then the largest continuous area defines the area to be meshed. As a result, complex basin shapes will likely result in the creation of many triangles along the complex edges. This option can  be used to simplify the basin outline. Setting `simplify` to `True` requires setting a value for ``simplify_tol``.
+As described in the `algorithm <algorithm.html>`_ section, the input DEM defines the area to be meshed. If no-data values are present, then the largest continuous area defines the area to be meshed. As a result, complex basin shapes will likely result in the creation of many triangles along the complex edges. This option can  be used to simplify the basin outline. Setting ``simplify`` to ``True`` requires setting a value for ``simplify_tol``.
 
 Once the domain to be meshed is determined (and is represented by a polyline), this polyline is simplified so-as to have no more than ``simplify_tol`` meters of error. By default will enable ``simplify_buffer``. See ``no_simplify_buffer``.
 
@@ -205,7 +205,7 @@ Once the domain to be meshed is determined (and is represented by a polyline), t
 
    :type: double
 
-The maximum error (m) the polygon simplification of `simplify` can introduce. Be careful as too high a tolerance will cause triangles to be crated that are outside of the bounds of the raster.
+The maximum error (m) the polygon simplification of ``simplify`` can introduce. Be careful as too high a tolerance will cause triangles to be crated that are outside of the bounds of the raster.
 
 .. confval:: simplify_buffer
 
@@ -236,7 +236,7 @@ If the DEM quality is poor or if triangles close to the elevation raster cell si
 
 .. image:: images/dem_no_smoothing.png
 
-Repeated smoothing iterations can be done. Each smoothing iteration using cubic spline and resamples by ```iter * smoothing_scaling_factor```.
+Repeated smoothing iterations can be done. Each smoothing iteration using cubic spline and resamples by ``iter * smoothing_scaling_factor``.
 
  This is the result of 1 smoothing iteration. 
 

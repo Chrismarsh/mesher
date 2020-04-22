@@ -68,7 +68,7 @@ If you change compilers, such as on a cluster with a modules system, you can rer
     conan profile new default --detect --force
 
 
-to detect the new compiler settings. The `cppstd` and `libcxx` settings need to be reapplied once this is done.
+to detect the new compiler settings. The ``cppstd`` and ``libcxx`` settings need to be reapplied once this is done.
 
 Intel compiler
 **************
@@ -98,7 +98,7 @@ Install the dependencies into your local conan cache (`~/.conan/data`)
     conan install ~/mesher -if=.
 
 
-The `-if=.` will produce the `FindXXX.cmake` files required for the mesher build in the current directory. 
+The `-if=.` will produce the ``FindXXX.cmake`` files required for the mesher build in the current directory. 
 
 If you need to build dependencies from source, use the `--build missing` option like:
 ::
@@ -141,10 +141,10 @@ Therefore it's highly recommended to use Python 3.7. Doing so can easily be done
    pyenv shell 3.7.6 # activate this version of python for this shell
 
 
-If `pyenv` is used, then the excellent `pyenv-virtualenv <https://github.com/pyenv/pyenv-virtualenv>`_ wrapper can easily streamline `virtualenv` creation 
+If ``pyenv`` is used, then the excellent `pyenv-virtualenv <https://github.com/pyenv/pyenv-virtualenv>`_ wrapper can easily streamline ``virtualenv`` creation 
 ::
 
-   pyenv virtualenv mesher-3.7.6
+   pyenv virtualenv 3.7.6 mesher-3.7.6
    pyenv activate mesher-3.7.6
 
 
@@ -164,7 +164,7 @@ vtk `wheels <https://prabhuramachandran.blogspot.com/2018/01/vtk-810-wheels-for-
 gdal 
 ****
 
-It's recommended that gdal python bindings are installed via `pygdal <https://github.com/nextgis/pygdal>`_. gdal doesn't provide wheels, so `pygdal` will need to build from source. Therefore ensure gdal development files (e.g., `gdal-devel`) are installed through your system's package manager. 
+It's recommended that gdal python bindings are installed via `pygdal <https://github.com/nextgis/pygdal>`_. gdal doesn't provide wheels, so ``pygdal`` will need to build from source. Therefore ensure gdal development files (e.g., ``gdal-devel``) are installed through your system's package manager. 
 
 .. note::
    The python gdal bindings uses a system-wide gdal rather than the conan gdal the mesher C++ backend links against. This will hopefully be resolved in the future. However, as no data passes between the C++ and Python, having different gdal versions poses no problem.

@@ -30,7 +30,11 @@ author = 'Chris Marsh'
 # ones.
 extensions = [
  "sphinx_rtd_theme",
+ 'sphinx.ext.autosectionlabel'
 ]
+
+autosectionlabel_prefix_document = True
+autosectionlabel_maxdepth = 3
 
 master_doc = 'index'
 
