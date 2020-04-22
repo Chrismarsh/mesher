@@ -31,7 +31,7 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
 
 
 Full working example
-====================
+**********************
 
 This provides a full example of setting up a python environemtn with the assumption the user does not have a python environment setup. 
 
@@ -81,7 +81,7 @@ Now, if you wish to run mesher activate the virtualenv
 
 
 Automatic virtualenv activation
-================================
+*******************************
 
 The automatic virtualenv activation provided by ``pyenv-virtualenv`` can make it easier to work with virual environments. 
 
