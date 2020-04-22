@@ -1,0 +1,12 @@
+graft src
+graft tools
+
+include .gitignore
+include CMakeLists.txt
+include CMakeLists_external.txt.in
+include LICENSE
+include README.md
+include conanfile.py
+include mesher.py
+include pyproject.toml
+include setup.py
