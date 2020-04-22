@@ -13,6 +13,10 @@ The easiest way to build mesher is to use `conan <https://www.conan.io/>`_ for d
 
 All of the mesher dependencies are built on Travis-CI and uploaded to the bintray repository to serve prebuilt binaries. This means that if the mesher build is done with supported compilers and operating system (described later), the dependencies do not need to be built by the end user.
 
+.. warning::
+   Using mesher this way will require setting the ``mesher`` binary path as described in :ref:`Configuration:Environment Variables`.
+
+
 Build Requirements
 *******************
 
