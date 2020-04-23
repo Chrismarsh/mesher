@@ -70,7 +70,7 @@ def main():
     if hasattr(X, 'simplify'):
         simplify = X.simplify
 
-        if hasattr(X, 'simplify'):
+        if hasattr(X, 'simplify_tol'):
             simplify_tol = X.simplify_tol
 
     #simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
