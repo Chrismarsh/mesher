@@ -10,6 +10,6 @@ docs/build/*
 *.param
 *.ic
 *.mesh
-
+MANIFEST
 dist/*
 mesher.egg-info/*
