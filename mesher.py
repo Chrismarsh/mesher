@@ -111,7 +111,7 @@ def main():
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
 
-    mesher_path = './mesher'
+    mesher_path = os.path.dirname(os.path.abspath(__file__) )+ '/mesher'
 
     #look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc over this
     using_mesher_environ=False
@@ -208,6 +208,15 @@ def main():
         extent=X.extent
     ########################################################
 
+    # we need to make sure we pickup the right paths to all the gdal scripts
+    gdal_prefix=''
+    try:
+        gdal_prefix = subprocess.check_output(["gdal-config","--prefix"],text=True)
+        gdal_prefix = gdal_prefix.replace('\n', '')
+        gdal_prefix += '/bin/'
+    except:
+        raise BaseException(""" ERROR: Could not find gdal-config, please ensure it is installed and on $PATH """)
+
     base_name = os.path.basename(dem_filename)
     base_name = os.path.splitext(base_name)[0]
 
@@ -263,8 +272,8 @@ def main():
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" '  % (extent[0],extent[1],extent[2],extent[3] ,srs.ExportToProj4())
         src_ds = None
 
-    e = 'gdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
-    subprocess.check_call([ e % (
+    e = '%sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
+    subprocess.check_call([ e % ( gdal_prefix,
         dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
@@ -295,7 +304,8 @@ def main():
             if itr+1 == max_smooth_iter: #last iteration, change output
                 out_name = base_dir + base_name + '_projected.tif'
 
-            subprocess.check_call(['gdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+            subprocess.check_call(['%sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+                gdal_prefix,
                 in_name, out_name, abs(pixel_width) / scaling_factor,
                 abs(pixel_height) / scaling_factor)], shell=True)
 
@@ -315,7 +325,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = 'gdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
+    exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     #ensure all the weights sum to 1
     total_weights=0
@@ -393,11 +403,11 @@ def main():
 
             if do_cell_resize:
                 # force all the paramter files to have the same extent as the input DEM
-                subprocess.check_call([estr % (
+                subprocess.check_call([estr % (gdal_prefix,
                         f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width, pixel_height)], shell=True)
             else:
                 # force all the paramter files to have the same extent as the input DEM
-                subprocess.check_call([estr % (
+                subprocess.check_call([estr % (gdal_prefix,
                     f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax)], shell=True)
 
 
@@ -431,7 +441,7 @@ def main():
         estr = estr + ' -tr %s %s'
 
         # force all the initial condition files to have the same extent as the input DEM
-        subprocess.check_call([estr % (
+        subprocess.check_call([estr % (gdal_prefix,
                 data['file'], base_dir + output_ic_fname + '_projected.tif', srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width,
                 pixel_height)], shell=True)
 
@@ -473,7 +483,7 @@ def main():
     dst_ds = None  # close file
 
     # raster -> polygon
-    subprocess.check_call(['gdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (tmp_raster, tmp_raster,
+    subprocess.check_call(['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix,tmp_raster, tmp_raster,
                                                                                            base_dir +
                                                                                            plgs_shp)], shell=True)
     driver = ogr.GetDriverByName('ESRI Shapefile')
@@ -550,7 +560,7 @@ def main():
         outname = base_dir + 'constraint_' + output_constraint_fname
 
         # force all the constraints to have the same extent as the input DEM
-        exec_string = 'ogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (outname+'.shp', data['file'], wkt_out)
+        exec_string = '%sogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (gdal_prefix,outname+'.shp', data['file'], wkt_out)
 
         if 'simplify' in data:
             exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
@@ -560,7 +570,7 @@ def main():
         # if we simplified with a buffer, clip the constraint shp to that extent. Do this after we project it above.
         if simplify and not no_simplify_buffer:
             clip_outname = base_dir + 'clip_constraint_' + output_constraint_fname
-            exec_string = 'ogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (outputBufferfn, clip_outname+ '.shp' ,outname+ '.shp')  #clip src, output, input
+            exec_string = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (gdal_prefix,outputBufferfn, clip_outname+ '.shp' ,outname+ '.shp')  #clip src, output, input
             subprocess.check_call(exec_string, shell=True)
 
             #update outname to be the clipped one so we can use it below
@@ -569,7 +579,7 @@ def main():
 
         # convert to geoJSON because it's easy to parse
         # ensure it's all line strings and explode the multilines into linestrings
-        subprocess.check_call(['ogr2ogr -f GeoJSON   -nlt LINESTRING -explodecollections  %s %s' % (outname + '.geojson', outname + '.shp')], shell=True)
+        subprocess.check_call(['%sogr2ogr -f GeoJSON   -nlt LINESTRING -explodecollections  %s %s' % (gdal_prefix, outname + '.geojson', outname + '.shp')], shell=True)
 
         constraints[key]['filename'] = outname + '.geojson'
 
@@ -579,7 +589,7 @@ def main():
 
 
     print('Converting polygon to linestring')
-    exec_string = 'ogr2ogr -overwrite %s %s  -nlt LINESTRING' % (base_dir + 'line_' + plgs_shp, outputBufferfn)
+    exec_string = '%sogr2ogr -overwrite %s %s  -nlt LINESTRING' % (gdal_prefix, base_dir + 'line_' + plgs_shp, outputBufferfn)
 
     if simplify:
         exec_string = exec_string + ' -simplify ' + str(simplify_tol)
@@ -588,7 +598,7 @@ def main():
 
     # convert to geoJSON because it's easy to parse
     poly_plgs = base_name + '.geojson'
-    subprocess.check_call(['ogr2ogr -f GeoJSON %s %s' % (base_dir +
+    subprocess.check_call(['%sogr2ogr -f GeoJSON %s %s' % (gdal_prefix,base_dir +
                                                          poly_plgs, base_dir + 'line_' + plgs_shp)], shell=True)
 
     with open(base_dir + poly_plgs) as f:
