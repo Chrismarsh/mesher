@@ -399,7 +399,7 @@ Any number of rasters may have a tolerance. Further, if used with a user-defined
 
 
 Initial conditions
-*******************
+===================
 
 Initial conditions work exactly the same way as paramters. However, they are written to a seperate file than the parameters and are intended to be used as intial conditions in a numerical model. They may be used to constrain the mesh.
 
@@ -409,13 +409,14 @@ Initial conditions work exactly the same way as paramters. However, they are wri
 
 
 Shape file constraints
-**********************
+=======================
 
-Shape files may be used to further constrain the mesh. The line segments in the shape file are treated as barries that triangles cannot cross, so that triangle edges represent the edge exactly. As such, it may be benificial to simplify these edges somewhat so-as to avoid the creation of many small triangles.
+Shape files may be used to further constrain the mesh, for example to rivers or basin outlines. The line segments in the shape file are treated as barries that triangles cannot cross; thus triangle edges represent the shapefile edges exactly. It may be benificial to simplify these edges somewhat so-as to avoid the creation of many small triangles.
 
-For example,
+This is further shown in :ref:`examples:flat_stream`.
 
 ::
+
    constraints = { 'river_network' :
                   {
                      'file': '../data/Stream.shp'
@@ -424,7 +425,13 @@ For example,
             }
 
 
-This is further shown in :ref:`examples:flat_stream`.
+.. confval:: constraints.keyname.simplify
+
+   :type: double
+
+Amount to simplify the shapefile edges by. Measured as maximum error between old and new lines. In the units of the shp file.
+
+
 
 
 
