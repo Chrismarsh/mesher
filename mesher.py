@@ -351,8 +351,8 @@ def main():
             do_cell_resize =  data['do_cell_resize']
 
         if 'tolerance'in data and do_cell_resize:
-            print('Error @ '+key+': Cannot use tolerance & do_cell_resize simultaneously.')
-            exit(-1)
+            print('Warning @ '+key+': Cannot use tolerance & do_cell_resize simultaneously. Setting do_cell_resize = False')
+            do_cell_resize = False
 
         if do_cell_resize:
             estr = estr + ' -tr %s %s'
