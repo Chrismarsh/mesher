@@ -66,10 +66,12 @@ def main():
     # that the error between the simplified geom and the original is no more than simplify_tol.
     # This allows the mesh generator more lee way in not creating small triangles allong the boundary
     simplify = False
-    simplify_tol = 0
+    simplify_tol = 10
     if hasattr(X, 'simplify'):
         simplify = X.simplify
-        simplify_tol = X.simplify_tol
+
+        if hasattr(X, 'simplify'):
+            simplify_tol = X.simplify_tol
 
     #simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
     bufferDist=-10 #default to -10, will only trigger is simplify is set to T

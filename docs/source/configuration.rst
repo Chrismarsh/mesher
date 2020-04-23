@@ -204,6 +204,7 @@ Once the domain to be meshed is determined (and is represented by a polyline), t
 .. confval:: simplify_tol
 
    :type: double
+   :default: 10 m
 
 The maximum error (m) the polygon simplification of ``simplify`` can introduce. Be careful as too high a tolerance will cause triangles to be crated that are outside of the bounds of the raster.
 
