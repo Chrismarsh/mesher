@@ -28,8 +28,8 @@ except SKBuildError:
 
 
 setup(name='mesher',
-      version='1.0.3',
-      description='Landsurface scheme mesh generation',
+      version='1.1.0',
+      description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
       Triangle quality is guaranteed as well as a smooth graduation from small to large triangles. Including these additional features resulted in a better representation of spatial heterogeneity versus classic topography-only mesh generation.
@@ -37,7 +37,7 @@ setup(name='mesher',
 
         Key points
         
-        *  A novel multi-objective unstructured mesh generation software, Mesher, is presented
+        *  A novel multi-objective unstructured mesh generation software, Mesher
         *  Heterogeneity in topography is resolved as well as hydrologically important surface and sub-surface attributes
         *  Spatial heterogeneity is better preserved compared to existing mesh generators
       """,
