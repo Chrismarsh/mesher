@@ -4,7 +4,7 @@ import subprocess
 from osgeo import gdal, ogr
 
 
-dem = rd.LoadGDAL("dem.tif")
+dem = rd.LoadGDAL("granger1m.tif")
 dem =  dem.astype(np.float32,copy=False)
 #Fill depressions with epsilon gradient to ensure drainage
 rd.FillDepressions(dem, epsilon = True, in_place=True)

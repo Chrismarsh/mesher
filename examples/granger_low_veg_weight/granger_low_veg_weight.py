@@ -1,6 +1,3 @@
-
-#Example configuration file using the sample data
-
 dem_filename = '../data/granger1m.tif'
 
 max_area= 50000**2  #Effectively unlimited upper area -- allow tolerance check to refine it further
@@ -18,16 +15,5 @@ parameter_files = {
 }
 
 
-# lloyd_itr=100
-#Simplify the outter boundary allowing at most simplify_tol difference between boundary and simplified boundary
+lloyd_itr=1
 simplify=True
-simplify_tol=500
-simplify_buffer=-100
-#If only the parameter files have changed, this will reuse the triangulation to reduce run time
-reuse_mesh = False
-
-#error metric for triangle tolerance. rmse is default
-errormetric = 'rmse'
-
-#path to the mesher binary
-mesher_path = '../mesher'

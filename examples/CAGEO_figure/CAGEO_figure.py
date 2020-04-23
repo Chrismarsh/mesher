@@ -22,12 +22,4 @@ parameter_files = {
 simplify=True
 simplify_tol=10
 
-#If only the parameter files have changed, this will reuse the triangulation to reduce run time
-reuse_mesh = False
-
-#error metric for triangle tolerance. rmse is default
-errormetric = 'rmse'
-
-#path to the mesher binary
-mesher_path = '../mesher'
 
