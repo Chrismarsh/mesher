@@ -7,8 +7,22 @@ Mesher is a novel multi-objective unstructured mesh generation software that all
 *	Heterogeneity in topography is resolved as well as hydrologically important surface and sub-surface attributes
 *	Spatial heterogeneity is better preserved compared to existing mesh generators
 
+### Documentation
 
-An example of a mesh that has been generated to represent topography and vegetation is shown below for the Rocky Mountains around the Bow valley, west of Calgary, Canada. This area is approximate 90,000 km^2 and the mesh has approximately 130k triangles. The mesh is shown with triangle edges coloured in grey, and the faces coloured by elevation. Areas of significant heterogeneity, such as the steep ridge lines and the tree-line, have increased triangle density. Areas with low heterogeneity, such as the valleys, have large triangles. This mesh is currently used for the [SnowCast](http://www.snowcast.ca) product.
+Detailed documentation on how to install is given in the [documentation](https://mesher-hydro.readthedocs.io).
+
+In short:
+  - Install GDAL development files from package manager (e.g., `gdal-devel`)
+  - Have Python 3.x and a C++14 compliant gcc (gcc 7.3+ is good)
+  - If you **aren't** using Python 3.5, 3.6, or 3.7, install `vtk-devel` from package manager
+  
+Then:
+
+```
+$ pip install mesher
+```
+
+
 
 ![](docs/source/images/mesher_veg.png)
 
