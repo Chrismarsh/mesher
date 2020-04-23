@@ -44,7 +44,7 @@ def main():
     # Load in configuration file as module
     X = imp.load_source('',configfile)
 
-    dem_filename = X.dem_filename
+    dem_filename = X.dem_filename.strip()
     max_area = X.max_area
 
     #load any user given parameter files
@@ -52,15 +52,24 @@ def main():
     if hasattr(X, 'parameter_files'):
         parameter_files = X.parameter_files
 
+        for key, data in parameter_files.items():
+            parameter_files[key]['file'] = parameter_files[key]['file'].strip()
+
     #initial conditions to apply to the triangles with
     initial_conditions = {}
     if hasattr(X, 'initial_conditions'):
         initial_conditions = X.initial_conditions
 
+        for key, data in initial_conditions.items():
+            initial_conditions[key]['file'] = initial_conditions[key]['file'].strip()
+
     # any extra user-specific constraints. E.g., streams
     constraints = {}
     if hasattr(X, 'constraints'):
         constraints = X.constraints
+
+        for key, data in constraints.items():
+            constraints[key]['file'] = constraints[key]['file'].strip()
 
     # simplify applies a simplification routine in GDAL to the outer boundary such
     # that the error between the simplified geom and the original is no more than simplify_tol.
