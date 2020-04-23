@@ -560,7 +560,7 @@ def main():
         outname = base_dir + 'constraint_' + output_constraint_fname
 
         # force all the constraints to have the same extent as the input DEM
-        exec_string = '%sogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (gdal_prefix,outname+'.shp', data['file'], wkt_out)
+        exec_string = '%sogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (gdal_prefix,outname+'.shp', data['file'], wkt_out.replace('"','\\"'))
 
         if 'simplify' in data:
             exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
