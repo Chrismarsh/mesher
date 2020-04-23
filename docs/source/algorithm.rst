@@ -10,6 +10,10 @@ An example of this iterative refinement of the mesh is shown below for a gaussia
 
 .. image:: images/gauss.gif
 
+And an example for the Granger sub-basin
+
+.. image:: images/granger.gif
+
 As the tolerance is made smaller, less error is introduced, and the mesh better approximates the underlying surface. However, the total number of triangles increases. There is therefore a user's choice in balancing the total number of triangles, which will require more computational effort to use in a simulation, versus limiting the total error introduced.
 
 Consider the following three meshes where each has a progressively larger tolerance to approximate a base 30 m SRTM DEM. 

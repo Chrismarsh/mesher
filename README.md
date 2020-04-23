@@ -10,5 +10,5 @@ Mesher is a novel multi-objective unstructured mesh generation software that all
 
 An example of a mesh that has been generated to represent topography and vegetation is shown below for the Rocky Mountains around the Bow valley, west of Calgary, Canada. This area is approximate 90,000 km^2 and the mesh has approximately 130k triangles. The mesh is shown with triangle edges coloured in grey, and the faces coloured by elevation. Areas of significant heterogeneity, such as the steep ridge lines and the tree-line, have increased triangle density. Areas with low heterogeneity, such as the valleys, have large triangles. This mesh is currently used for the [SnowCast](http://www.snowcast.ca) product.
 
-![](images/mesh.png)
+![](docs/source/images/mesher_veg.png)
 
