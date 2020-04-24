@@ -9,7 +9,8 @@ Welcome to mesher's documentation!
 .. toctree::
    :maxdepth: 3
    :caption: Contents:
-
+   :hidden:
+   
    algorithm
    installation
    build
