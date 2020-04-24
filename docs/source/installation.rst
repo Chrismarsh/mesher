@@ -1,7 +1,9 @@
 Installation
 ============
 
-Installation of mesher is possible via ``pip``.
+Installation of mesher is possible via ``pip``. 
+
+Mesher is only supported on Macos and Linux
 
 ::
 
@@ -14,10 +16,8 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
 
 .. warning::
    Ensure the following are installed via package manager:
-      - gdal development libaries (e.g., ``gdal-devel``)
-      - vtk development libaries (e.g., ``vtk-devel``) **if not** Python 3.5., 3.6, or 3.7
-
-
+      - gdal development libaries (e.g., ``dnf install gdal-devel`` or ``brew install gdal``)
+      - vtk development libaries (e.g., ``dnf install vtk-devel`` or ``brew install vtk``) **if not** Python 3.5., 3.6, or 3.7
 
 
 .. note::
@@ -83,7 +83,7 @@ Now, if you wish to run mesher activate the virtualenv
 Automatic virtualenv activation
 *******************************
 
-The automatic virtualenv activation provided by ``pyenv-virtualenv`` can make it easier to work with virual environments. 
+The automatic virtualenv activation provided by ``pyenv-virtualenv`` can make it easier to work with virtual environments. 
 
 Follow point 2 `here <https://github.com/pyenv/pyenv-virtualenv>`_ to enable this feature.
 
@@ -95,7 +95,7 @@ Any folder with a ``.python-version`` that contains a  valid virtualenv specific
    echo "mesher-3.7.6" >> .python-version
 
 
-will automatically activate the above-created virtualenv everytime that folder is entered, and deactivate when leaving.
+will automatically activate the above-created virtualenv every time that folder is entered, and deactivate when leaving.
 
 
 
