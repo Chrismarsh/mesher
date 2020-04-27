@@ -29,6 +29,8 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
 
    These are needed to download the required dependencies for the backend
 
+.. note::
+   Depending on your python install, ``pip`` may be ``pip3``
 
 Full working example
 **********************
