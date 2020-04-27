@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 
-#Given a mesh in a .shp file and a set of raster, this computes various error metrics of the mesh to the raster
-
 from osgeo import gdal,ogr,osr
 import os
 import numpy as np
-# import matplotlib.pyplot as plt
 import math
 import sys
 import csv
@@ -18,7 +15,7 @@ def main():
     # Get name of configuration file/module
     mesher_output_dir = sys.argv[-1]
 
-    print 'Reading in files'
+    print('Reading in files')
 
     #############
 
@@ -30,7 +27,7 @@ def main():
 
     raster_ds = gdal.Open(raster_file)
     if raster_ds is None:
-        print 'Could not open %s' % raster_ds
+        print('Could not open %s' % raster_ds)
         exit(1)
 
 
@@ -43,25 +40,22 @@ def main():
     masked = None
     rb = None
     if c == 0:
-        print "Only no data present in raster"
+        print ("Only no data present in raster")
         exit(1)
 
 
-    print "Number of raster cells = " + str(c)
+    print ("Number of raster cells = " + str(c))
 
-
-    # driver = ogr.GetDriverByName('ESRI Shapefile')
     mesh = ogr.Open(shp_file, update=True)
     if mesh is None:
-        print 'Could not open %s' % mesh
+        print( 'Could not open %s' % mesh)
         exit(1)
-
 
     layer = mesh.GetLayer()
     num_elem = layer.GetFeatureCount()
-    print "Number of triangles = %d" % num_elem
+    print( "Number of triangles = %d" % num_elem)
 
-    print "# triangles v. raster = " + str( num_elem / float(c) * 100.) + '%'
+    print ("# triangles v. raster = " + str( num_elem / float(c) * 100.) + '%')
 
     area = []
     angles = []
@@ -215,8 +209,8 @@ def tri_rmse(raster_ds,feature):
         return None
 
     max_diff = -9999
-    for y in xrange(rtri.shape[0]):
-        for x in xrange(rtri.shape[1]):
+    for y in range(rtri.shape[0]):
+        for x in range(rtri.shape[1]):
             if not np.ma.is_masked(rtri[y,x]):
                 pred = -(a*x+b*y-d)/c #plane eqn solved for z. allows us to predict z values via x,y coords
                 value = rtri[y,x]
@@ -342,25 +336,6 @@ def rasterize_elem(raster, feature):
             np.logical_not(rv_array)
         )
     )
-    # feature_stats = {
-    #     'min': float(masked.min()),
-    #     'mean': float(masked.mean()),
-    #     'max': float(masked.max()),
-    #     'std': float(masked.std()),
-    #     'sum': float(masked.sum()),
-    #     'count': int(masked.count()),
-    #     'fid': int(feat.GetFID())
-    # }
-    # output = rb.GetNoDataValue()
-    #
-    # if data['method'] == 'mode':
-    #     output = sp.mode(masked.flatten())[0][0]
-    # elif data['method'] == 'mean':
-    #     if masked.count() > 0:
-    #         output = float(
-    #             masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
-    # else:
-    #     print 'Error: unknown data aggregation method %s' % data['method']
 
     return new_gt,masked,src_offset[2],src_offset[3]
 def extract_point(raster,mx,my):
@@ -415,7 +390,7 @@ def extract_point(raster,mx,my):
         z = [x for x in z if x != rb.GetNoDataValue()]
 
         if len(z) == 0:
-            print 'Warning: The point (%f,%f) and its 8-neighbours lies outside of the DEM domain' %(mx,my)
+            print ('Warning: The point (%f,%f) and its 8-neighbours lies outside of the DEM domain' %(mx,my))
             return rb.GetNoDataValue()
             #exit(1)
 
