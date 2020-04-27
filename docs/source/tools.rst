@@ -72,8 +72,30 @@ File for output. Overwrite input file
 ``nd`` Performing ND fill-in minimization
 
 
+meshstats.py
+*************
+
+Produces a csv file of detailed per-triangle information: the error ('rmse' is computed), triangle area (units^2), min and max inner angles (degrees).
+These values are also written to the ``_USM.shp`` file in the mesher output directory.
+
+Expects that the ``.mesh`` is in a projected CRS.
+
+Note that the triangles' RMSE is recomputed, so can be a bit slow on very large meshes.
+
+.. note::
+
+   Requires ``write_shp=True`` as the shp file is used to load triangle geometry. 
 
 
+Usage:
+::
+
+   meshstats.py dir 
+
+
+.. confval:: dir
+
+Directory to output directory produced by mesher.
 
 
 
