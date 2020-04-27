@@ -6,7 +6,7 @@ import numpy as np
 import math
 import sys
 import csv
-
+gdal.UseExceptions()  # Enable exception support
 def main():
     if len(sys.argv) == 1:
         print('ERROR: meshstats requires one argument, the directory of the output from a mesher run (e.g.,  mesher.py Bow)')
@@ -55,11 +55,7 @@ def main():
     num_elem = layer.GetFeatureCount()
     print( "Number of triangles = %d" % num_elem)
 
-    print ("# triangles v. raster = " + str( num_elem / float(c) * 100.) + '%')
-
-    area = []
-    angles = []
-    rmse_value = []
+    print ("# triangles v. raster = " + str( round(num_elem / float(c) * 100.,2)) + '%')
 
     layerDefinition = layer.GetLayerDefn()
     field_names = []
@@ -72,66 +68,49 @@ def main():
         layer.CreateField(ogr.FieldDefn('min_angle', ogr.OFTReal))
     if 'max_angle' not in field_names:
         layer.CreateField(ogr.FieldDefn('max_angle', ogr.OFTReal))
-    if 'rmse' not in field_names:
-        layer.CreateField(ogr.FieldDefn('rmse', ogr.OFTReal))
+    if 'error' not in field_names:
+        layer.CreateField(ogr.FieldDefn('error', ogr.OFTReal))
 
     i=0
-    for feature in layer:
-        printProgress(i,num_elem)
+    with open(base_shp_name+'_stats.csv','w') as f:
+        header = ["error", "area", "min_angle","max_angle"]
+        writer = csv.writer(f)
+        writer.writerow(header)
 
-        geom = feature.GetGeometryRef()
-        ring = geom.GetGeometryRef(0)
+        for feature in layer:
+            printProgress(i,num_elem)
 
-        # tri_id = feature.GetField('triangle')
+            geom = feature.GetGeometryRef()
+            ring = geom.GetGeometryRef(0)
 
-        geom_area = geom.GetArea()
-        area.append(geom_area)
-        feature.SetField('area', geom_area)
+            # tri_id = feature.GetField('triangle')
 
-        angle = tri_angles(raster_ds, ring)
-        #if angles comes back none, we've hit an edge case where the triangle slightly sits outside of the domain.
-        #this would have been fixed in the output mesh from mesher, but just ignore it here
+            geom_area = geom.GetArea()
+            feature.SetField('area', geom_area)
 
-        triangle=[] #this triangles angles
-        if angle is not None:
-            for a in angle:
-                angles.append(a)
-                triangle.append(a)
+            angle = tri_angles(raster_ds, ring)
+            #if angles comes back none, we've hit an edge case where the triangle slightly sits outside of the domain.
+            #this would have been fixed in the output mesh from mesher, but just ignore it here
 
-            feature.SetField('min_angle',min(triangle))
-            feature.SetField('max_angle',max(triangle))
+            if angle is not None:
+              feature.SetField('min_angle',min(angle))
+              feature.SetField('max_angle',max(angle))
 
-        rmse = tri_rmse(raster_ds, feature)
-        if rmse is not None:
-            rmse_value.append(rmse)
-            feature.SetField('rmse',rmse)
+            rmse = tri_rmse(raster_ds, feature)
+            if rmse is not None:
+                feature.SetField('error',rmse)
 
-        layer.SetFeature(feature)
-        i+=1
+            layer.SetFeature(feature)
+
+            row = [rmse, geom_area, min(angle), max(angle)]
+            writer.writerow(row)
+
+            i+=1
 
     mesh= None
 
-    #
-    with open(base_shp_name+'_stats.csv','w') as f:
-        writer = csv.writer(f)
-        writer.writerow(["rmse", "area", "angle"])
-        max_len = max(len(rmse_value), len(area), len(angles))
-        for i in range(max_len):
-            try:
-                cur_rmse_value = rmse_value[i]
-            except IndexError:
-                cur_rmse_value = None
-            try:
-                cur_area = area[i]
-            except IndexError:
-                cur_area = None
 
-            try:
-                cur_angle = angles[i]
-            except IndexError:
-                cur_angle = None
 
-            writer.writerow([cur_rmse_value, cur_area, cur_angle])
 
 def tri_angles(raster_ds, ring):
     x1, y1, z = ring.GetPoint(0)  # this z is 0,
@@ -163,7 +142,7 @@ def tri_angles(raster_ds, ring):
     v = (y3 - y2, x3 - x2)
     angle13 = math.acos(dp(u, v) / (vl(u) * vl(v))) * 180. / math.pi
 
-    return angle32, angle12, angle13
+    return [angle32, angle12, angle13]
 
 
 def tri_rmse(raster_ds,feature):
