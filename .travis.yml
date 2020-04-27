@@ -3,13 +3,14 @@ python:
   - "3.5"
   - "3.6"
   - "3.7"
+  - 
+addons:
+  apt:
+    packages:
+      - libgdal1-dev
 linux: &linux
   os: linux
   dist: xenial
-  addons:
-    apt:
-      packages:
-        - libgdal1-dev
 matrix:
   include:
     - <<: *linux
