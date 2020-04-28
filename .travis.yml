@@ -16,4 +16,7 @@ matrix:
 
 install:
   - pip install mesher
-  - mesher.py
+script:
+  - wget https://github.com/Chrismarsh/mesher/raw/master/examples.zip
+  - unzip examples
+  - mesher.py examples/flat/flat.py
