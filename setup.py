@@ -6,7 +6,8 @@ from skbuild.cmaker import get_cmake_version
 
 def get_installed_gdal_version():
     try:
-        version = subprocess.check_output(["gdal-config","--version"],text=True)
+        version = subprocess.run(["gdal-config","--version"], stdout=subprocess.PIPE).stdout.decode()
+
         version = version.replace('\n', '')
         version = "=="+version+".*"
         return version
