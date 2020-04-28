@@ -13,10 +13,17 @@ linux: &linux
 matrix:
   include:
     - <<: *linux
-
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+          packages:
+            - g++-7
+      env:
+        - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
 install:
   - pip install mesher
 script:
   - wget https://github.com/Chrismarsh/mesher/raw/master/examples.zip
-  - unzip examples
+  - unzip -o examples
   - mesher.py examples/flat/flat.py
