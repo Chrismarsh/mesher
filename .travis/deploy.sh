@@ -12,6 +12,7 @@ pip install twine
 pip install conan
 pip install scikit-build==0.10.0
 pip install ninja
+pip install wheel
 
 if [ "$TRAVIS_OS_NAME" = "osx" ]; then
   python setup.py sdist bdist_wheel
