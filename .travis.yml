@@ -30,13 +30,12 @@ before_install:
   - (cd mesher && git checkout $TRAVIS_BRANCH)
 install:
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
-  - python --version
   - pip install --upgrade pip
   - pip install ./mesher/
 script:
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
-  - python --version
-  - mesher.py ./mesher/examples/flat/flat.py
+  - cd mesher/examples
+  - bash ./runall.sh
 deploy:
   provider: script
   script: bash .travis/deploy.sh
