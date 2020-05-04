@@ -13,7 +13,6 @@ if(NOT NO_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
 endif()
 include(${CMAKE_BINARY_DIR}/conan.cmake)
 
-
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     set(CONAN_LIB_STD "libstdc++11")
     message(STATUS "Detected gnu compiler, setting compiler.libcxx=${CONAN_LIB_STD}")

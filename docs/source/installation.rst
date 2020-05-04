@@ -3,21 +3,22 @@ Installation
 
 Installation of mesher is possible via ``pip``. 
 
-Mesher is only supported on Macos and Linux
+Mesher is only supported on Macos and Linux for Python >= 3.6
 
 ::
 
    pip install mesher
 
 
-It is easiest if Python 3.5., 3.6, or 3.7 is used (see :ref:`build:vtk` for details on wheel availability). 
+It is easiest if Python 3.6, or 3.7 is used (see :ref:`build:vtk` for details on wheel availability). 
 Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version manager as described in the :ref:`build:Setup Python` section. 
 
 
 .. warning::
    Ensure the following are installed via package manager:
-      - gdal development libaries (e.g., ``dnf install gdal-devel`` or ``brew install gdal``)
-      - vtk development libaries (e.g., ``dnf install vtk-devel`` or ``brew install vtk``) **if not** Python 3.5., 3.6, or 3.7
+      - gdal development libaries (e.g., ``dnf install gdal-devel`` or ``brew install gdal``). See other notes :ref:`build:gdal` as you may also need the binary package.
+      - vtk development libaries (e.g., ``dnf install vtk-devel`` or ``brew install vtk``) **if not** Python 3.6, or 3.7
+
 
 
 .. note::

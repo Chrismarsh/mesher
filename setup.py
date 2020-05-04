@@ -17,7 +17,6 @@ def get_installed_gdal_version():
                 """
             )
 
-
 # Add CMake as a build requirement if cmake is not installed or is too low a version
 # https://scikit-build.readthedocs.io/en/latest/usage.html#adding-cmake-as-building-requirement-only-if-not-installed-or-too-low-a-version
 setup_requires = []
@@ -29,7 +28,7 @@ except SKBuildError:
 
 
 setup(name='mesher',
-      version='1.2.0',
+      version='1.2.2',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
@@ -49,5 +48,6 @@ setup(name='mesher',
       cmake_args=['-DCMAKE_BUILD_TYPE=Release'],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
       install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib'],
-      setup_requires=setup_requires
+      setup_requires=setup_requires,
+      python_requires='>=3.6'
      )

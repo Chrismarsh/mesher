@@ -44,6 +44,10 @@ def main():
     # Load in configuration file as module
     X = imp.load_source('',configfile)
 
+    # get config file dire
+    cwd = os.path.join(os.getcwd(),os.path.dirname(configfile))
+    os.chdir(cwd)
+
     dem_filename = X.dem_filename.strip()
     max_area = X.max_area
 
@@ -222,7 +226,7 @@ def main():
     # we need to make sure we pickup the right paths to all the gdal scripts
     gdal_prefix=''
     try:
-        gdal_prefix = subprocess.check_output(["gdal-config","--prefix"],text=True)
+        gdal_prefix = subprocess.run(["gdal-config","--prefix"], stdout=subprocess.PIPE).stdout.decode()
         gdal_prefix = gdal_prefix.replace('\n', '')
         gdal_prefix += '/bin/'
     except:

@@ -1,29 +1,44 @@
-language: python
-python:
-  - "3.5"
-  - "3.6"
-  - "3.7"
-addons:
-  apt:
-    packages:
-      - libgdal1-dev
 linux: &linux
   os: linux
-  dist: xenial
+  dist: bionic
+  language: python
+  env: CC=gcc-7 CXX=g++-7
+
+osx: &osx
+  os: osx
+  language: generic
+
 matrix:
   include:
     - <<: *linux
-      addons:
-        apt:
-          sources:
-            - ubuntu-toolchain-r-test
-          packages:
-            - g++-7
-      env:
-        - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
+      python: "3.6"
+    - <<: *linux
+      python: "3.7"
+    - <<: *osx
+      osx_image: xcode11.3
+      env: pyv="3.6.10"
+    - <<: *osx
+      osx_image: xcode11.3
+      env: pyv="3.7.6"
+
+
+
+before_install:
+  - chmod +x .travis/install.sh
+  - ./.travis/install.sh
+  - git clone https://github.com/Chrismarsh/mesher.git
+  - (cd mesher && git checkout $TRAVIS_BRANCH)
 install:
-  - pip install mesher
+  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
+  - python --version
+  - pip install --upgrade pip
+  - pip install ./mesher/
 script:
-  - wget https://github.com/Chrismarsh/mesher/raw/master/examples.zip
-  - unzip -o examples
-  - mesher.py examples/flat/flat.py
+  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
+  - python --version
+  - mesher.py ./mesher/examples/flat/flat.py
+deploy:
+  provider: script
+  script: bash .travis/deploy.sh
+  on:
+    tags: true
