@@ -10,7 +10,9 @@ function run
 
 run 'dem_smoothing'
 run 'flat'
-run 'flat_stream'
+if [[ -z "${TRAVIS}" ]]; then
+  run 'flat_stream'
+fi
 run 'flat_veg'
 
 #don't run these on travis as they take too long
@@ -20,7 +22,10 @@ if [[ -z "${TRAVIS}" ]]; then
 fi
 run 'gaussian_hill'
 run 'granger'
-run 'granger_high_veg_weight'
+if [[ -z "${TRAVIS}" ]]; then
+  run 'granger_high_veg_weight'
+fi
+
 run 'granger_low_veg_weight'
 run 'ideal_ridge'
 run 'ideal_ridge_low_tol'
