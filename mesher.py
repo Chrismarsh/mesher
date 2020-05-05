@@ -148,13 +148,17 @@ def main():
     if hasattr(X,'verbose'):
         verbose = X.verbose
 
-    # output to the specific directory, instead of the root dir of the calling python script
-    user_output_dir = configfile[:-3] +'/' # use the config filename as output path
+    user_output_dir = cwd + os.path.sep
 
-    if hasattr(X,'user_output_dir'):
-        user_output_dir = X.user_output_dir
-        if user_output_dir[-1] is not os.path.sep:
-            user_output_dir += os.path.sep
+    if hasattr(X,'user_output_dir'): # output to the specific directory, instead of the root dir of the calling python script
+        user_output_dir +=  X.user_output_dir
+    else:
+        # use the config filename as output path
+        (file,ext) = os.path.splitext(os.path.basename(configfile))
+        user_output_dir += file
+
+    if user_output_dir[-1] is not os.path.sep:
+        user_output_dir += os.path.sep
 
     # should we write a shape file of the USM, pretty costly on the big meshes
     write_shp = True
@@ -328,6 +332,18 @@ def main():
 
     # now, reopen the file
     src_ds = gdal.Open(base_dir + base_name + '_projected.tif')
+
+    # create the spatial reference from the raster dataset
+    wkt = src_ds.GetProjection()
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(wkt)
+
+    is_geographic = srs.IsGeographic()
+
+    if is_geographic and simplify:
+        print('Error: Simplify=True and a geographic output CRS is not currently supported.')
+        exit(1)
+
     gt = src_ds.GetGeoTransform()
     # x,y origin
     xmin = gt[0]
@@ -602,7 +618,6 @@ def main():
         with open(outname + '.geojson') as f:
             constraints[key]['file'] =  json.load(f)
 
-
     print('Converting polygon to linestring')
     exec_string = '%sogr2ogr -overwrite %s %s  -nlt LINESTRING' % (gdal_prefix, base_dir + 'line_' + plgs_shp, outputBufferfn)
 
@@ -624,7 +639,14 @@ def main():
     i = 0
     cmax = -1
     l=0
+
+
+
     for features in plgs['features']:
+        if features['geometry'] is None:
+            print('Error: the choice of simplify buffer and tolerance has resulted in oversimplifying the domain. Please choose a tighter tolerance')
+            exit(1)
+
         if features['geometry']['type'] == 'LineString':
             l = len(features['geometry']['coordinates'])
         elif features['geometry']['type'] == 'MultiLineString':
@@ -697,12 +719,7 @@ def main():
 
         f.write('0\n')
 
-    # create the spatial reference from the raster dataset
-    wkt = src_ds.GetProjection()
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(wkt)
 
-    is_geographic = srs.IsGeographic()
 
     #if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:

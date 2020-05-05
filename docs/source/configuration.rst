@@ -201,6 +201,8 @@ As described in the `algorithm <algorithm.html>`_ section, the input DEM defines
 
 Once the domain to be meshed is determined (and is represented by a polyline), this polyline is simplified so-as to have no more than ``simplify_tol`` meters of error. By default will enable ``simplify_buffer``. See ``no_simplify_buffer``.
 
+Can only be used with a ``wkt_out`` that is a projected CRS.
+
 .. confval:: simplify_tol
 
    :type: double

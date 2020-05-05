@@ -1,5 +1,6 @@
 #!/bin/bash
-
+set -x
+set -e
 function run
 {
 	cd $1
@@ -11,8 +12,12 @@ run 'dem_smoothing'
 run 'flat'
 run 'flat_stream'
 run 'flat_veg'
-run 'flow_accumulation'
-run 'flow_accumulation_granger'
+
+#don't run these on travis as they take too long
+if [[ -z "${TRAVIS}" ]]; then
+  run 'flow_accumulation'
+  run 'flow_accumulation_granger'
+fi
 run 'gaussian_hill'
 run 'granger'
 run 'granger_high_veg_weight'
