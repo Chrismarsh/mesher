@@ -35,7 +35,8 @@ install:
 script:
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
   - cd mesher/examples
-  - bash ./runall.sh
+  - echo "running tests"
+  - bash ./runall.sh &> /dev/null
 deploy:
   provider: script
   script: bash .travis/deploy.sh
