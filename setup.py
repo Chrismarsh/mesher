@@ -28,7 +28,7 @@ except SKBuildError:
 
 
 setup(name='mesher',
-      version='1.3.0',
+      version='1.3.1',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
