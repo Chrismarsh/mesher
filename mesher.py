@@ -1,19 +1,19 @@
 #!/usr/bin/env python
- # Mesher
- # Copyright (C) 2017 Christopher Marsh
+# Mesher
+# Copyright (C) 2017 Christopher Marsh
 
- # This program is free software: you can redistribute it and/or modify
- # it under the terms of the GNU General Public License as published by
- # the Free Software Foundation, either version 3 of the License, or
- # (at your option) any later version.
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 
- # This program is distributed in the hope that it will be useful,
- # but WITHOUT ANY WARRANTY; without even the implied warranty of
- # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- # GNU General Public License for more details.
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
 
- # You should have received a copy of the GNU General Public License
- # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from osgeo import gdal, ogr, osr
 import subprocess
@@ -29,10 +29,12 @@ import vtk
 import warnings
 from concurrent import futures
 import time
+
 gdal.UseExceptions()  # Enable exception support
 
+
 def main():
-    #######  load user configurable paramters here    #######
+    # load user configurable paramters here
     # Check user defined configuration file
 
     if len(sys.argv) == 1:
@@ -43,16 +45,16 @@ def main():
     configfile = sys.argv[-1]
 
     # Load in configuration file as module
-    X = imp.load_source('',configfile)
+    X = imp.load_source('', configfile)
 
     # get config file dire
-    cwd = os.path.join(os.getcwd(),os.path.dirname(configfile))
+    cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
     os.chdir(cwd)
 
     dem_filename = X.dem_filename.strip()
     max_area = X.max_area
 
-    #load any user given parameter files
+    # load any user given parameter files
     parameter_files = {}
     if hasattr(X, 'parameter_files'):
         parameter_files = X.parameter_files
@@ -60,7 +62,7 @@ def main():
         for key, data in parameter_files.items():
             parameter_files[key]['file'] = parameter_files[key]['file'].strip()
 
-    #initial conditions to apply to the triangles with
+    # initial conditions to apply to the triangles with
     initial_conditions = {}
     if hasattr(X, 'initial_conditions'):
         initial_conditions = X.initial_conditions
@@ -87,12 +89,12 @@ def main():
         if hasattr(X, 'simplify_tol'):
             simplify_tol = X.simplify_tol
 
-    #simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
-    bufferDist=-10 #default to -10, will only trigger is simplify is set to T
+    # simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
+    bufferDist = -10  # default to -10, will only trigger is simplify is set to T
     if hasattr(X, 'simplify_buffer'):
         bufferDist = X.simplify_buffer
 
-    #Can set simplify_buffer to 0, but we can also just disable this here
+    # Can set simplify_buffer to 0, but we can also just disable this here
     no_simplify_buffer = False
     if hasattr(X, 'no_simplify_buffer'):
         bufferDist = X.no_simplify_buffer
@@ -101,61 +103,64 @@ def main():
         print('Buffer must be < 0 as we need to shrink the extent.')
         exit(-1)
 
-    #Enable lloyd iterations
-    #"The goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees."
-    # 100 iterations is a suggested amount
-    #https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization
+    # Enable lloyd iterations "The goal of this mesh optimization is to improve the angles inside the mesh,
+    # and make them as close as possible to 60 degrees." 100 iterations is a suggested amount
+    # https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization
     lloyd_itr = 0
-    if hasattr(X,'lloyd_itr'):
+    if hasattr(X, 'lloyd_itr'):
         lloyd_itr = X.lloyd_itr
 
-    #Maximum tolerance, as measured by the error metric, between the triangle and the elevation raster.
+    # maximum tolerance, as measured by the error metric, between the triangle and the elevation raster.
     # -1 skips the tolerance check -- useful for producing uniform triangles
     max_tolerance = None
     if hasattr(X, 'max_tolerance'):
         max_tolerance = X.max_tolerance
 
-    #Choice of error metric.
+    # Choice of error metric.
     # Can be RMSE or tolerance
-    errormetric='rmse'
-    if hasattr(X,'errormetric'):
+    errormetric = 'rmse'
+    if hasattr(X, 'errormetric'):
         errormetric = X.errormetric
 
-    #if a mesh was already generated, and only applying a new parametrization is required,
+    # if a mesh was already generated, and only applying a new parametrization is required,
     # enabling this skips the mesh generation step
     reuse_mesh = False
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
 
-    mesher_path = os.path.dirname(os.path.abspath(__file__) )+ '/mesher'
+    mesher_path = os.path.dirname(os.path.abspath(__file__)) + '/mesher'
 
-    #look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc over this
-    using_mesher_environ=False
+    # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
+    # over this
+    using_mesher_environ = False
     try:
         mesher_path = os.environ['MESHER_EXE']
-        using_mesher_environ=True
+        using_mesher_environ = True
     except KeyError as E:
         pass
 
     # path to mesher executable
-    if hasattr(X,'mesher_path'):
+    if hasattr(X, 'mesher_path'):
         mesher_path = X.mesher_path
 
         if using_mesher_environ:
-            warnings.warn("Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from the configuration file")
+            warnings.warn(
+                "Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from "
+                "the configuration file")
 
-    #enable verbose output for debugging
+            # enable verbose output for debugging
     verbose = False
-    if hasattr(X,'verbose'):
+    if hasattr(X, 'verbose'):
         verbose = X.verbose
 
     user_output_dir = cwd + os.path.sep
 
-    if hasattr(X,'user_output_dir'): # output to the specific directory, instead of the root dir of the calling python script
-        user_output_dir +=  X.user_output_dir
+    # output to the specific directory, instead of the root dir of the calling python script
+    if hasattr(X, 'user_output_dir'):
+        user_output_dir += X.user_output_dir
     else:
         # use the config filename as output path
-        (file,ext) = os.path.splitext(os.path.basename(configfile))
+        (file, ext) = os.path.splitext(os.path.basename(configfile))
         user_output_dir += file
 
     if user_output_dir[-1] is not os.path.sep:
@@ -163,18 +168,18 @@ def main():
 
     # should we write a shape file of the USM, pretty costly on the big meshes
     write_shp = True
-    if hasattr(X,'write_shp'):
+    if hasattr(X, 'write_shp'):
         write_shp = X.write_shp
 
     write_vtu = True
-    if hasattr(X,'write_vtu'):
+    if hasattr(X, 'write_vtu'):
         write_vtu = X.write_vtu
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
     use_input_prj = True
-    if hasattr(X,'use_input_prj'):
-        use_input_prj=X.use_input_prj
+    if hasattr(X, 'use_input_prj'):
+        use_input_prj = X.use_input_prj
 
     # Do smoothing of the input DEM to create a more smooth mesh. This can help if the DEM quality is poor or if
     # triangles close to the elevation raster cell size is required
@@ -187,17 +192,17 @@ def main():
     if hasattr(X, 'smoothing_scaling_factor'):
         scaling_factor = X.smoothing_scaling_factor
 
-    #number of iterations to smooth over, each smoothing using cubic spline,
+    # number of iterations to smooth over, each smoothing using cubic spline,
     # and resamples by iter * scaling_factor for each iteration
     max_smooth_iter = 1
     if hasattr(X, 'max_smooth_iter'):
         max_smooth_iter = X.max_smooth_iter
 
-    #use the convex combination of weights method
+    # use the convex combination of weights method
     use_weights = False
     topo_weight = 1
     weight_threshold = 0
-    if hasattr(X,'use_weights'):
+    if hasattr(X, 'use_weights'):
         use_weights = X.use_weights
         topo_weight = X.topo_weight
         weight_threshold = X.weight_threshold
@@ -217,21 +222,21 @@ def main():
               "     PARAMETER[\"latitude_of_center\",40]," \
               "     UNIT[\"Meter\",1]," \
               "     AUTHORITY[\"EPSG\",\"102008\"]]"
-    if hasattr(X,'wkt_out'):
+    if hasattr(X, 'wkt_out'):
         wkt_out = X.wkt_out
 
     # use a custom extent instead of the entire input DEM to define the meshing region
     # extent = [xmin, ymin, xmax, ymax] in source SRS
 
     extent = None
-    if hasattr(X,'extent'):
-        extent=X.extent
+    if hasattr(X, 'extent'):
+        extent = X.extent
     ########################################################
 
     # we need to make sure we pickup the right paths to all the gdal scripts
-    gdal_prefix=''
+    gdal_prefix = ''
     try:
-        gdal_prefix = subprocess.run(["gdal-config","--prefix"], stdout=subprocess.PIPE).stdout.decode()
+        gdal_prefix = subprocess.run(["gdal-config", "--prefix"], stdout=subprocess.PIPE).stdout.decode()
         gdal_prefix = gdal_prefix.replace('\n', '')
         gdal_prefix += '/bin/'
     except:
@@ -251,19 +256,19 @@ def main():
         # make new output dir
         os.makedirs(base_dir)
 
-    # we want to reuse an already generated mesh, but we will need to clean up the shp file as gdal won't overwrite an existing one
+    # we want to reuse an already generated mesh, but we will need to clean up the shp file as gdal won't overwrite
+    # an existing one
     if reuse_mesh:
         try:
             os.remove(base_dir + base_name + '_USM.shp')
         except OSError:
-            pass #If the folder doesn't exist, don't worry
+            pass  # If the folder doesn't exist, don't worry
 
     try:
         src_ds = gdal.Open(dem_filename)
     except RuntimeError as e:
         print('Unable to open file ' + dem_filename)
         raise e
-
 
     if src_ds.GetProjection() == '':
         raise RuntimeError("Input DEM must have spatial reference information.")
@@ -280,21 +285,22 @@ def main():
     else:
         output_file_name = '_projected.tif'
 
-    ext_str=''
+    ext_str = ''
 
-    #clip to a user-specified extent
+    # clip to a user-specified extent
     if extent is not None:
         src_ds = gdal.Open(dem_filename)
         wkt = src_ds.GetProjection()
         srs = osr.SpatialReference()
         srs.ImportFromWkt(wkt)
 
-        ext_str = ' -te %s %s %s %s -te_srs \"%s\" '  % (extent[0],extent[1],extent[2],extent[3] ,srs.ExportToProj4())
+        ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
         src_ds = None
 
     e = '%sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
-    subprocess.check_call([ e % ( gdal_prefix,
-        dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())], shell=True)
+    subprocess.check_call([e % (gdal_prefix,
+                                dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())],
+                          shell=True)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
 
@@ -312,24 +318,26 @@ def main():
     if hasattr(X, 'min_area'):
         min_area = X.min_area
     else:
+        # if the user doesn't specify, then limit to the underlying resolution. No point going past this!
         min_area = abs(
-            pixel_width * pixel_height)  # if the user doesn't specify, then limit to the underlying resolution. No point going past this!
+            pixel_width * pixel_height)
 
     if do_smoothing:
         for itr in range(max_smooth_iter):
 
             in_name = base_dir + base_name + '_projected_%d.tif' % itr
-            out_name = base_dir + base_name +'_projected_%d.tif' % (itr + 1)
+            out_name = base_dir + base_name + '_projected_%d.tif' % (itr + 1)
 
-            if itr+1 == max_smooth_iter: #last iteration, change output
+            if itr + 1 == max_smooth_iter:  # last iteration, change output
                 out_name = base_dir + base_name + '_projected.tif'
 
-            subprocess.check_call(['%sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
-                gdal_prefix,
-                in_name, out_name, abs(pixel_width) / scaling_factor,
-                abs(pixel_height) / scaling_factor)], shell=True)
+            subprocess.check_call(
+                ['%sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+                    gdal_prefix,
+                    in_name, out_name, abs(pixel_width) / scaling_factor,
+                    abs(pixel_height) / scaling_factor)], shell=True)
 
-            scaling_factor *= (itr+1)
+            scaling_factor *= (itr + 1)
 
     # now, reopen the file
     src_ds = gdal.Open(base_dir + base_name + '_projected.tif')
@@ -353,14 +361,13 @@ def main():
     pixel_width = gt[1]
     pixel_height = gt[5]
 
-
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
-                                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
+                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
 
     regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
                       srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
@@ -369,9 +376,8 @@ def main():
 
     dem = src_ds.GetRasterBand(1)
 
-    # Create a mask raster that has a uniform value for all cells
-    # read all elevation data. Might be worth changing to the for-loop approach we use below so we don't have to read in all into ram.
-    # some raster
+    # Create a mask raster that has a uniform value for all cells read all elevation data. Might be worth changing to
+    # the for-loop approach we use below so we don't have to read in all into ram. some raster
     Z = dem.ReadAsArray()
 
     # set all the non-nodata values to our mask value
@@ -392,26 +398,27 @@ def main():
     dst_ds = None  # close file
 
     # raster -> polygon
-    subprocess.check_call(['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix,tmp_raster, tmp_raster,
-                                                                                           base_dir +
-                                                                                           plgs_shp)], shell=True)
+    subprocess.check_call(
+        ['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix, tmp_raster, tmp_raster,
+                                                                           base_dir +
+                                                                           plgs_shp)], shell=True)
     driver = ogr.GetDriverByName('ESRI Shapefile')
-    dataSource = driver.Open( base_dir + plgs_shp, 1)
+    dataSource = driver.Open(base_dir + plgs_shp, 1)
 
-    #If the input has multiple polygon regions, find the largest polygon and use that as the meshing domain
+    # If the input has multiple polygon regions, find the largest polygon and use that as the meshing domain
     layer = dataSource.GetLayer()
     max_geom_area = -1
     max_feature_ID = None
     for feature in layer:
         geom = feature.GetGeometryRef()
         area = geom.GetArea()
-        #print 'FID = ' + str(feature.GetFID()) + ' area = ' + str(area)
+        # print 'FID = ' + str(feature.GetFID()) + ' area = ' + str(area)
         if area > max_geom_area:
             max_feature_ID = feature.GetFID()
             max_geom_area = area
 
     print('Using FID = ' + str(max_feature_ID) + " as the largest continuous area.")
-    feats = np.arange(0,layer.GetFeatureCount())
+    feats = np.arange(0, layer.GetFeatureCount())
     for f in feats:
         if f != max_feature_ID:
             layer.DeleteFeature(f)
@@ -422,11 +429,12 @@ def main():
     # allow us to be able to use this directly in the exec_string below if we don't simplify
     outputBufferfn = base_dir + plgs_shp
 
-    #simplify the outter domain constraint and contract by X m, which allows more flexibility in fitting larger triangles to the outter domain.
+    # simplify the outter domain constraint and contract by X m, which allows more flexibility in fitting larger
+    # triangles to the outter domain.
     if simplify and not no_simplify_buffer:
         # buffering code from http://pcjericks.github.io/py-gdalogr-cookbook/vector_layers.html?highlight=buffer
         inputfn = base_dir + plgs_shp
-        outputBufferfn = base_dir + "buffered_"+plgs_shp
+        outputBufferfn = base_dir + "buffered_" + plgs_shp
 
         print('Simplifying extents by buffer distance = ' + str(bufferDist))
         inputds = ogr.Open(inputfn)
@@ -447,12 +455,12 @@ def main():
             outFeature.SetGeometry(geomBuffer)
             bufferlyr.CreateFeature(outFeature)
             outFeature = None
-        #close the files
+        # close the files
         inputds = None
         outputBufferds = None
 
-    #this needs to be done after we optionally simplify the outer domain. If we do, we need to ensure any interior constraints are clipped to this new domain as the
-    #triangulation does not like intersecting constraints.
+    # this needs to be done after we optionally simplify the outer domain. If we do, we need to ensure any interior
+    # constraints are clipped to this new domain as the triangulation does not like intersecting constraints.
     for key, data in constraints.items():
         # we need to handle a path being passed in
         output_constraint_fname = os.path.basename(data['file'])
@@ -469,35 +477,39 @@ def main():
         outname = base_dir + 'constraint_' + output_constraint_fname
 
         # force all the constraints to have the same extent as the input DEM
-        exec_string = '%sogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (gdal_prefix,outname+'.shp', data['file'], wkt_out.replace('"','\\"'))
+        exec_string = '%sogr2ogr -overwrite %s %s  -t_srs \"%s\"' % (
+            gdal_prefix, outname + '.shp', data['file'], wkt_out.replace('"', '\\"'))
 
         if 'simplify' in data:
-            exec_string = exec_string + ' -simplify ' + str(data['simplify'])  #because of ogr2ogr, the simplification is done in the units of the original data
+            exec_string = exec_string + ' -simplify ' + str(
+                data['simplify'])  # because of ogr2ogr, the simplification is done in the units of the original data
 
         subprocess.check_call(exec_string, shell=True)
 
         # if we simplified with a buffer, clip the constraint shp to that extent. Do this after we project it above.
         if simplify and not no_simplify_buffer:
             clip_outname = base_dir + 'clip_constraint_' + output_constraint_fname
-            exec_string = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (gdal_prefix,outputBufferfn, clip_outname+ '.shp' ,outname+ '.shp')  #clip src, output, input
+            exec_string = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (
+                gdal_prefix, outputBufferfn, clip_outname + '.shp', outname + '.shp')  # clip src, output, input
             subprocess.check_call(exec_string, shell=True)
 
-            #update outname to be the clipped one so we can use it below
+            # update outname to be the clipped one so we can use it below
             outname = clip_outname
-
 
         # convert to geoJSON because it's easy to parse
         # ensure it's all line strings and explode the multilines into linestrings
-        subprocess.check_call(['%sogr2ogr -f GeoJSON   -nlt LINESTRING -explodecollections  %s %s' % (gdal_prefix, outname + '.geojson', outname + '.shp')], shell=True)
+        subprocess.check_call(['%sogr2ogr -f GeoJSON   -nlt LINESTRING -explodecollections  %s %s' % (
+            gdal_prefix, outname + '.geojson', outname + '.shp')], shell=True)
 
         constraints[key]['filename'] = outname + '.geojson'
 
-        #since all the project has already happened in the ogr2ogr step, we can just read it in now
+        # since all the project has already happened in the ogr2ogr step, we can just read it in now
         with open(outname + '.geojson') as f:
-            constraints[key]['file'] =  json.load(f)
+            constraints[key]['file'] = json.load(f)
 
     print('Converting polygon to linestring')
-    exec_string = '%sogr2ogr -overwrite %s %s  -nlt LINESTRING' % (gdal_prefix, base_dir + 'line_' + plgs_shp, outputBufferfn)
+    exec_string = '%sogr2ogr -overwrite %s %s  -nlt LINESTRING' % (
+        gdal_prefix, base_dir + 'line_' + plgs_shp, outputBufferfn)
 
     if simplify:
         exec_string = exec_string + ' -simplify ' + str(simplify_tol)
@@ -506,8 +518,8 @@ def main():
 
     # convert to geoJSON because it's easy to parse
     poly_plgs = base_name + '.geojson'
-    subprocess.check_call(['%sogr2ogr -f GeoJSON %s %s' % (gdal_prefix,base_dir +
-                                                         poly_plgs, base_dir + 'line_' + plgs_shp)], shell=True)
+    subprocess.check_call(['%sogr2ogr -f GeoJSON %s %s' % (gdal_prefix, base_dir +
+                                                           poly_plgs, base_dir + 'line_' + plgs_shp)], shell=True)
 
     with open(base_dir + poly_plgs) as f:
         plgs = json.load(f)
@@ -516,13 +528,13 @@ def main():
     idx = -1
     i = 0
     cmax = -1
-    l=0
-
-
+    l = 0
 
     for features in plgs['features']:
         if features['geometry'] is None:
-            print('Error: the choice of simplify buffer and tolerance has resulted in oversimplifying the domain. Please choose a tighter tolerance')
+            print(
+                'Error: the choice of simplify buffer and tolerance has resulted in oversimplifying the domain. '
+                'Please choose a tighter tolerance')
             exit(1)
 
         if features['geometry']['type'] == 'LineString':
@@ -532,14 +544,14 @@ def main():
 
             idx_ml = 0
             len_ml = -1
-            j=0
-            #find the largest of the multi lines, ignore holes!
+            j = 0
+            # find the largest of the multi lines, ignore holes!
             for lines in features['geometry']['coordinates']:
                 l = len(lines)
                 if l > len_ml:
                     len_ml = l
                     idx_ml = j
-                j+=1
+                j += 1
 
             for l in features['geometry']['coordinates'][idx_ml]:
                 coords.append(l)
@@ -551,7 +563,7 @@ def main():
         if l > cmax:
             cmax = l
             idx = i
-        i+=1
+        i += 1
 
     # assuming just the biggest feature is what we want. Need to add in more to support rivers and lakes
     if plgs['features'][idx]['geometry']['type'] != 'LineString':
@@ -559,19 +571,20 @@ def main():
 
     coords = plgs['features'][idx]['geometry']['coordinates']
 
-    # We can't just insert this into the global PLGS datastructure as we need that to define the convex hull
-    # so merge all the constraints into 1 geojson file so we can just load in the main cpp mesher code to define the interior PLGS
-    # TODO: in the future this and the convex hull PLGS should all be in 1 PLGS and the Triangle compatibility should be removed
+    # We can't just insert this into the global PLGS datastructure as we need that to define the convex hull so merge
+    # all the constraints into 1 geojson file so we can just load in the main cpp mesher code to define the interior
+    # PLGS TODO: in the future this and the convex hull PLGS should all be in 1 PLGS and the Triangle compatibility
+    #  should be removed
     interior_PLGS = {
-            "type": "FeatureCollection",
-            "name": "interior_PLGS",
-            "features": []}
+        "type": "FeatureCollection",
+        "name": "interior_PLGS",
+        "features": []}
 
-    for key, data in constraints.items(): #over each constraint
-        for feat in data['file']['features']: #over the features present in each constraint
+    for key, data in constraints.items():  # over each constraint
+        for feat in data['file']['features']:  # over the features present in each constraint
             interior_PLGS['features'].append(feat)
 
-    with open(base_dir+'interior_PLGS.geojson', 'w') as fp:
+    with open(base_dir + 'interior_PLGS.geojson', 'w') as fp:
         json.dump(interior_PLGS, fp)
 
     # Create the outer PLGS to constrain the triangulation
@@ -596,9 +609,7 @@ def main():
 
         f.write('0\n')
 
-
-
-    #if we aren't reusing the mesh, generate a new one
+    # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
         execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                   (mesher_path,
@@ -620,9 +631,10 @@ def main():
             execstr += ' --weight-threshold %s' % weight_threshold
 
         for key, data in parameter_files.items():
-            if 'tolerance'in data:
+            if 'tolerance' in data:
                 if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data['tolerance'])  # we need [0] on raster as it's been made iterable by this point
+                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data[
+                        'tolerance'])  # we need [0] on raster as it's been made iterable by this point
                 else:
                     execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
             if 'weight' in data:
@@ -640,7 +652,8 @@ def main():
         print(execstr)
         subprocess.check_call(execstr, shell=True)
 
-    # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use remove them
+    # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
+    # remove them
     keys_to_drop = []
     for key, data in parameter_files.items():
         if 'drop' in data and data['drop'] == True:
@@ -662,8 +675,8 @@ def main():
         vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
         vtuwriter.SetFileName(output_vtk)
 
-        #check what version of vtk we are using so we can avoid the api conflict
-        #http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
+        # check what version of vtk we are using so we can avoid the api conflict
+        # http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
         if vtk.vtkVersion.GetVTKMajorVersion() > 5:
             vtuwriter.SetInputData(vtu)
         else:
@@ -694,7 +707,6 @@ def main():
 
                     mesh['mesh']['vertex'].append([mx, my, mz])
 
-
     print('Length of invalid nodes = ' + str(len(invalid_nodes)))
 
     # read in the neighbour file, triangle topology
@@ -724,7 +736,6 @@ def main():
     except OSError:
         pass
 
-
     output_usm = driver.CreateDataSource(base_dir +
                                          base_name + '_USM.shp')
 
@@ -750,10 +761,10 @@ def main():
     mesh['mesh']['elem'] = []
     mesh['mesh']['is_geographic'] = is_geographic
 
-    #need to save the UTM coordinates so-as to be able to generate lat/long of points if needed later (e.g., CHM)
+    # need to save the UTM coordinates so-as to be able to generate lat/long of points if needed later (e.g., CHM)
     if not is_geographic:
-        mesh['mesh']['proj4']  = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()  #negative in southern hemisphere
+        mesh['mesh']['proj4'] = srs.ExportToProj4()
+        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()  # negative in southern hemisphere
 
     # holds parameters and initial conditions for CHM
     params = {}
@@ -761,16 +772,16 @@ def main():
     for key, data in parameter_files.items():
         params[key] = []
 
-    params['area']=[]
+    params['area'] = []
 
     for key, data in initial_conditions.items():
         ics[key] = []
 
     if write_vtu:
-        vtu_cells  = {'elevation': vtk.vtkFloatArray(),
-                      'cellid': vtk.vtkFloatArray(),
-                      'area': vtk.vtkFloatArray()
-        }
+        vtu_cells = {'elevation': vtk.vtkFloatArray(),
+                     'cellid': vtk.vtkFloatArray(),
+                     'area': vtk.vtkFloatArray()
+                     }
         vtu_cells['elevation'].SetName('elevation')
         vtu_cells['area'].SetName('area')
         vtu_cells['cellid'].SetName('cellid')
@@ -778,19 +789,19 @@ def main():
     for key, data in parameter_files.items():
         k = '[param] ' + key
         if write_vtu:
-            vtu_cells[k]=vtk.vtkFloatArray()
+            vtu_cells[k] = vtk.vtkFloatArray()
             vtu_cells[k].SetName(k)
 
     for key, data in initial_conditions.items():
         k = '[ic] ' + key
         if write_vtu:
-            vtu_cells[k]=vtk.vtkFloatArray()
+            vtu_cells[k] = vtk.vtkFloatArray()
             vtu_cells[k].SetName(k)
 
     i = 0
     nelem = 0
 
-    #loop through all the triangles and assign the parameter and ic values to the triangle
+    # loop through all the triangles and assign the parameter and ic values to the triangle
     start_time = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
         for line in elem:
@@ -801,18 +812,15 @@ def main():
                     mesh['mesh']['nelem'] = nelem
                     read_header = True  # skip header
                 else:
-
-                    printProgress(i, nelem)
-
                     items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
                     v0 = int(items[1]) - 1  # convert to zero indexing
                     v1 = int(items[2]) - 1
                     v2 = int(items[3]) - 1
 
-                    #if the node we have is invalid (out side of domain) we can try to fix it by interpolating from the surrounding nodes.
-                    # this can happen when the outter domain constraint is effectively the limit of the DEM and the node ends up *just* outside of the domain due to
-                    # numerical imprecision.
-                    # estimate an invalid node's z coord from this triangles other nodes' z value
+                    # if the node we have is invalid (out side of domain) we can try to fix it by interpolating from
+                    # the surrounding nodes. this can happen when the outter domain constraint is effectively the
+                    # limit of the DEM and the node ends up *just* outside of the domain due to numerical
+                    # imprecision. estimate an invalid node's z coord from this triangles other nodes' z value
                     if v0 in invalid_nodes:
                         z_v1 = mesh['mesh']['vertex'][v1][2]
                         z_v2 = mesh['mesh']['vertex'][v2][2]
@@ -846,10 +854,10 @@ def main():
                                 print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
-    print('Reading mesh took %s s' % str(round(time.perf_counter()- start_time,2)))
+    print('Reading mesh took %s s' % str(round(time.perf_counter() - start_time, 2)))
     start_time2 = time.perf_counter()
 
-    i=0
+    i = 0
     for ele in range(mesh['mesh']['nelem']):
         v0 = mesh['mesh']['elem'][ele][0]
         v1 = mesh['mesh']['elem'][ele][1]
@@ -891,8 +899,8 @@ def main():
 
         feature.SetField('triangle', int(i))
 
-        area=0
-        #if the input was geographic, we need to project to get a reasonable area
+        area = 0
+        # if the input was geographic, we need to project to get a reasonable area
         if is_geographic:
             transform = osr.CoordinateTransformation(srs, srs_out)
             p = tpoly.Clone()
@@ -909,22 +917,22 @@ def main():
         if write_vtu:
             vtu_cells['area'].InsertNextTuple1(area)
 
-
         # get the value under each triangle from each parameter file
         for key, data in parameter_files.items():
             output = []
 
-            for f,m in zip(data['file'],data['method']):
+            for f, m in zip(data['file'], data['method']):
                 output.append(rasterize_elem(f, feature, key, m))
 
             if 'classifier' in data:
                 output = data['classifier'](*output)
             else:
-                output = output[0] #flatten the list for the append below
+                output = output[0]  # flatten the list for the append below
             params[key].append(output)
 
             if write_shp:
-                feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+                feature.SetField(key[0:10],
+                                 output)  # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
 
             # we want to write actual NaN to vtu for better displaying
             if output == -9999:
@@ -936,13 +944,13 @@ def main():
         for key, data in initial_conditions.items():
             output = []
 
-            for f,m in zip(data['file'],data['method']):
+            for f, m in zip(data['file'], data['method']):
                 output.append(rasterize_elem(f, feature, key, m))
 
             if 'classifier' in data:
                 output = data['classifier'](*output)
             else:
-                output = output[0] #flatten the list for the append below
+                output = output[0]  # flatten the list for the append below
 
             ics[key].append(output)
 
@@ -961,23 +969,22 @@ def main():
         i = i + 1
         # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
 
-    print('Doing params took %s s' % str(round(time.perf_counter()- start_time2,2)))
-    print('Total time took %s s' % str(time.perf_counter()- start_time ))
-
+    print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
+    print('Total time took %s s' % str(time.perf_counter() - start_time))
 
     if write_shp:
         output_usm.FlushCache()
-    output_usm = None #close file
+    output_usm = None  # close file
 
     if len(invalid_nodes) > 0:
         errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr +=  'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
-        errstr +=  'Try reducing simplify_tol.'
+        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
+        errstr += 'Try reducing simplify_tol.'
         raise RuntimeError(errstr)
 
     if write_vtu:
         vtu.SetPoints(vtu_points)
-        vtu.SetCells(vtk.VTK_TRIANGLE,vtu_triangles)
+        vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
         for p in vtu_cells.values():
             vtu.GetCellData().AddArray(p)
 
@@ -992,15 +999,15 @@ def main():
 
     output_usm = None  # close the file
     print('Saving mesh to file ' + base_name + '.mesh')
-    with open(user_output_dir+base_name + '.mesh', 'w') as outfile:
+    with open(user_output_dir + base_name + '.mesh', 'w') as outfile:
         json.dump(mesh, outfile, indent=4)
 
     print('Saving parameters to file ' + base_name + '.param')
-    with open(user_output_dir+base_name + '.param', 'w') as outfile:
+    with open(user_output_dir + base_name + '.param', 'w') as outfile:
         json.dump(params, outfile, indent=4)
 
     print('Saving initial conditions  to file ' + base_name + '.ic')
-    with open(user_output_dir+base_name + '.ic', 'w') as outfile:
+    with open(user_output_dir + base_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
     print('Done')
 
@@ -1039,8 +1046,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
 
 
 def _future_regularize_inputs(args):
-
-    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out,xmax, xmin, ymax, ymin = args
+    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin = args
 
     # make a copy as this exec string is reused for inital conditions
     # and we don't want the changes made here to impact it
@@ -1087,10 +1093,9 @@ def _future_regularize_inputs(args):
     if not isinstance(data['method'], list):
         data['method'] = [data['method']]
 
-
     ret_df = dict()
     ret_df['filename'] = []
-    ret_df['key']=key
+    ret_df['key'] = key
 
     for f in data['file']:
         # we need to handle a path being passed in
@@ -1225,16 +1230,14 @@ def extract_point(raster, mx, my):
         z = [x for x in z if x != rb.GetNoDataValue()]
 
         if len(z) == 0:
-            #print 'Warning: The point (%s,%s) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
+            # print 'Warning: The point (%s,%s) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
             return rb.GetNoDataValue()
-
 
         mz = float(np.mean(z))
     return mz
 
 
 def rasterize_elem(raster, feature, key, aggMethod):
-
     wkt = raster.GetProjection()
     srs = osr.SpatialReference()
     srs.ImportFromWkt(wkt)
@@ -1261,42 +1264,27 @@ def rasterize_elem(raster, feature, key, aggMethod):
 
     # Rasterize it
     driver = gdal.GetDriverByName('MEM')
-    rvds = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
-    rvds.SetGeoTransform(new_gt)
-    rvds.SetProjection(wkt)
-    err = gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
+    mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
+    mask.SetGeoTransform(new_gt)
+    mask.SetProjection(wkt)
+    err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
     if err != 0:
         raise Exception("error rasterizing layer: %s" % err)
 
-    rv_array = rvds.ReadAsArray()  # holds a mask of where the triangle is on the raster
+    mask_arr = mask.ReadAsArray()  # holds a mask of where the triangle is on the raster
+
     # Mask the source data array with our current feature
+    src_array[(mask_arr == 0) | (mask_arr == rb.GetNoDataValue())] = np.nan
 
-    src_array[ (rv_array == 0) | (rv_array == rb.GetNoDataValue())] = np.nan
-
-
-    # feature_stats = {
-    #     'min': float(masked.min()),
-    #     'mean': float(masked.mean()),
-    #     'max': float(masked.max()),
-    #     'std': float(masked.std()),
-    #     'sum': float(masked.sum()),
-    #     'count': int(masked.count()),
-    #     'fid': int(feat.GetFID())
-    # }
     output = rb.GetNoDataValue()
 
     if callable(aggMethod):
-        #same as masked, but includes the no values. Can be useful for total count, geometery, etc
-        masked_tri = np.ma.MaskedArray(
-            src_array,
-            mask=np.logical_not(rv_array)
-        )
-        output = aggMethod(masked, masked_tri.count()) # count = number of raster cells in the triangle. may be more than masked.count() as it incl na values
+        output = float(aggMethod(src_array))
         if np.isnan(output):
             output = rb.GetNoDataValue()
     else:
         if aggMethod == 'mode':
-            vals,counts = np.unique(src_array, return_counts=True)
+            vals, counts = np.unique(src_array, return_counts=True)
             output = float(vals[np.argmax(counts)])
 
         elif aggMethod == 'mean':
@@ -1311,7 +1299,7 @@ def rasterize_elem(raster, feature, key, aggMethod):
 
     feature.SetField(key, output)
 
-#testing code
+    # testing code
     # if output < 0:
     #     print "Found < 0"
     #
@@ -1338,8 +1326,8 @@ def rasterize_elem(raster, feature, key, aggMethod):
     #     mem_layer = None
     #     exit(1)
 
-
     return output
+
 
 if __name__ == "__main__":
     main()
