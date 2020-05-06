@@ -846,7 +846,10 @@ def main():
                                 print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
+    print('Reading mesh took %s s' % str(round(time.perf_counter()- start_time,2)))
+    start_time2 = time.perf_counter()
 
+    i=0
     for ele in range(mesh['mesh']['nelem']):
         v0 = mesh['mesh']['elem'][ele][0]
         v1 = mesh['mesh']['elem'][ele][1]
@@ -886,7 +889,7 @@ def main():
         feature = ogr.Feature(layer.GetLayerDefn())
         feature.SetGeometry(tpoly)
 
-        feature.SetField('triangle', int(items[0]) - 1)
+        feature.SetField('triangle', int(i))
 
         area=0
         #if the input was geographic, we need to project to get a reasonable area
@@ -957,7 +960,11 @@ def main():
             layer.CreateFeature(feature)
         i = i + 1
         # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
-    print('Took %s s' % str(time.perf_counter()- start_time ))
+
+    print('Doing params took %s s' % str(round(time.perf_counter()- start_time2,2)))
+    print('Total time took %s s' % str(time.perf_counter()- start_time ))
+
+
     if write_shp:
         output_usm.FlushCache()
     output_usm = None #close file
@@ -1227,7 +1234,7 @@ def extract_point(raster, mx, my):
 
 
 def rasterize_elem(raster, feature, key, aggMethod):
-    # raster = data['file']
+
     wkt = raster.GetProjection()
     srs = osr.SpatialReference()
     srs.ImportFromWkt(wkt)
@@ -1263,20 +1270,10 @@ def rasterize_elem(raster, feature, key, aggMethod):
 
     rv_array = rvds.ReadAsArray()  # holds a mask of where the triangle is on the raster
     # Mask the source data array with our current feature
-    # we take the logical_not to flip 0<->1 to get the correct mask effect
-    # we also mask out nodata values explictly
-    masked = np.ma.MaskedArray(
-        src_array,
-        mask=np.logical_or(
-            src_array == rb.GetNoDataValue(),
-            np.logical_not(rv_array)
-        )
-    )
-    #same as masked, but includes the no values. Can be useful for total count, geometery, etc
-    masked_tri = np.ma.MaskedArray(
-        src_array,
-        mask=np.logical_not(rv_array)
-    )
+
+    src_array[ (rv_array == 0) | (rv_array == rb.GetNoDataValue())] = np.nan
+
+
     # feature_stats = {
     #     'min': float(masked.min()),
     #     'mean': float(masked.mean()),
@@ -1287,27 +1284,27 @@ def rasterize_elem(raster, feature, key, aggMethod):
     #     'fid': int(feat.GetFID())
     # }
     output = rb.GetNoDataValue()
-    # we have a triangle that only touches a no-value. So give up and use surrounding values.
-    # if masked.count() == 0:
-    #     masked = np.ma.masked_where(
-    #         src_array == rb.GetNoDataValue(), src_array)
+
     if callable(aggMethod):
+        #same as masked, but includes the no values. Can be useful for total count, geometery, etc
+        masked_tri = np.ma.MaskedArray(
+            src_array,
+            mask=np.logical_not(rv_array)
+        )
         output = aggMethod(masked, masked_tri.count()) # count = number of raster cells in the triangle. may be more than masked.count() as it incl na values
         if np.isnan(output):
             output = rb.GetNoDataValue()
     else:
         if aggMethod == 'mode':
-            output = sp.mode(masked.flatten())[0][0]
+            vals,counts = np.unique(src_array, return_counts=True)
+            output = float(vals[np.argmax(counts)])
+
         elif aggMethod == 'mean':
-            if masked.count() > 0:
-                output = float(
-                    masked.mean())  # if it's entirely masked, then we get nan and a warning printed to stdout. would like to avoid showing this warning.
+            output = float(np.nanmean(src_array))
         elif aggMethod == 'max':
-            if masked.count() > 0:
-                output = float(masked.max())
+            output = float(np.nanmax(src_array))
         elif aggMethod == 'min':
-            if masked.count() > 0:
-                output = float(masked.min())
+            output = float(np.nanmin(src_array))
         else:
             print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
             exit(-1)
