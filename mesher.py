@@ -359,78 +359,11 @@ def main():
 
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
-    #ensure all the weights sum to 1
-    total_weights=0
-    if use_weights:
-        total_weights = topo_weight
+    regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
+                                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
 
-    param_args =[]
-    ret = []
-    for key, data in parameter_files.items():
-        if use_weights and 'weight' in data:
-            total_weights += data['weight']
-        param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
-                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
-
-    if use_weights and total_weights != 1:
-        raise RuntimeError("Parameter weights must equal 1")
-
-    with futures.ProcessPoolExecutor(max_workers=4) as executor:
-        for (r) in executor.map(prepare_inputs, param_args):
-            ret.append(r)
-
-    for r in ret:
-        key = r['key']
-        parameter_files[key]['filename'] = r['filename']
-        parameter_files[key]['file'] = []
-
-        if not isinstance(parameter_files[key]['method'], list):
-            parameter_files[key]['method'] = [parameter_files[key]['method']]
-        for f in r['filename']:
-            ds = gdal.Open(f)
-            if ds is None:
-                raise RuntimeError('Error: Unable to open raster for: %s' % key)
-            parameter_files[key]['file'].append( ds )
-
-
-
-    for key, data in initial_conditions.items():
-        #make a copy
-        estr = exec_str
-
-        if initial_conditions[key]['method'] == 'mode':
-            estr = exec_str + 'mode'
-        else:
-            estr = exec_str + 'average'
-
-        if use_weights and 'weight' in data:
-            total_weights += data['weight']
-
-        #we need to handle a path being passed in
-        output_ic_fname = os.path.basename(data['file'])
-        output_ic_fname = os.path.splitext(output_ic_fname)[0]
-
-        if gdal.Open(data['file']).GetProjection() == '':
-            raise RuntimeError("IC " + data['file'] + " must have spatial reference information.")
-
-        # resize the cells to match input DEM
-        estr = estr + ' -tr %s %s'
-
-        # force all the initial condition files to have the same extent as the input DEM
-        subprocess.check_call([estr % (gdal_prefix,
-                data['file'], base_dir + output_ic_fname + '_projected.tif', srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width,
-                pixel_height)], shell=True)
-
-        initial_conditions[key]['filename'] = base_dir + output_ic_fname + '_projected.tif'
-        initial_conditions[key]['file'] = gdal.Open(base_dir + output_ic_fname + '_projected.tif')
-
-        if initial_conditions[key]['file'] is None:
-            print('Error: Unable to open raster for: %s' % key)
-            exit(1)
-
-    if use_weights and total_weights != 1:
-        raise RuntimeError("Weights must equal 1")
-
+    regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
+                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
 
     plgs_shp = base_name + '.shp'
 
@@ -995,9 +928,15 @@ def main():
                             vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
                     for key, data in initial_conditions.items():
-                        output = rasterize_elem(data['file'], feature, key,data['method'])
+                        output = []
+
+                        for f,m in zip(data['file'],data['method']):
+                            output.append(rasterize_elem(f, feature, key, m))
+
                         if 'classifier' in data:
-                            output = data['classifier'](output)
+                            output = data['classifier'](*output)
+                        else:
+                            output = output[0] #flatten the list for the append below
 
                         ics[key].append(output)
 
@@ -1055,7 +994,40 @@ def main():
     print('Done')
 
 
-def prepare_inputs(args):
+def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out, topo_weight,
+                      use_weights, xmax, xmin, ymax, ymin):
+    # ensure all the weights sum to 1
+    total_weights = 0
+    if use_weights:
+        total_weights = topo_weight
+    param_args = []
+    ret = []
+    for key, data in input_files.items():
+        if use_weights and 'weight' in data:
+            total_weights += data['weight']
+        param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
+                           pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
+    if use_weights and total_weights != 1:
+        raise RuntimeError("Parameter weights must equal 1")
+    with futures.ProcessPoolExecutor(max_workers=4) as executor:
+        for (r) in executor.map(_future_regularize_inputs, param_args):
+            ret.append(r)
+    for r in ret:
+        key = r['key']
+        input_files[key]['filename'] = r['filename']
+        input_files[key]['file'] = []
+
+        if not isinstance(input_files[key]['method'], list):
+            input_files[key]['method'] = [input_files[key]['method']]
+        for f in r['filename']:
+            ds = gdal.Open(f)
+            if ds is None:
+                raise RuntimeError('Error: Unable to open raster for: %s' % key)
+            input_files[key]['file'].append(ds)
+    return total_weights
+
+
+def _future_regularize_inputs(args):
 
     base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out,xmax, xmin, ymax, ymin = args
 
