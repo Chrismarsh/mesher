@@ -314,6 +314,8 @@ This is a fully qualified path to the raster file
 
 The method controls how the various raster cells that make up the triangle are combined together to give. One of ``mode`` or ``mean`` (``average`` works too). The ``mean`` is the mean of all values, whereas ``mode`` takes the value that has the greatest number of cells. The ``mode`` is good for classified data, such as soil or vegetation type.
 
+Optionally, ``method`` may be a user-specified function that accepts a numpy array and returns one value.
+
 
 .. confval:: do_cell_resize
    
