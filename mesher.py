@@ -28,7 +28,7 @@ import imp
 import vtk
 import warnings
 from concurrent import futures
-
+import time
 gdal.UseExceptions()  # Enable exception support
 
 def main():
@@ -574,10 +574,9 @@ def main():
     with open(base_dir+'interior_PLGS.geojson', 'w') as fp:
         json.dump(interior_PLGS, fp)
 
-    # Create the outter PLGS to constrain the triangulation
+    # Create the outer PLGS to constrain the triangulation
     poly_file = 'PLGS' + base_name + '.poly'
-    with open(base_dir +
-                      poly_file, 'w') as f:
+    with open(base_dir + poly_file, 'w') as f:
         header = '%d 2 0 0\n' % (len(coords))
         f.write(header)
         vert = 1
@@ -647,9 +646,8 @@ def main():
         if 'drop' in data and data['drop'] == True:
             keys_to_drop.append(key)
     for key in keys_to_drop:
-        print('Dropping parameter ' + key + ' and not writting to mesh due to user request')
+        print('Dropping parameter ' + key + ' and not writing to mesh due to user request')
         del parameter_files[key]
-    # read in the node, ele, and neigh from
 
     # holds our main mesh structure which we will write out to json to read into CHM
     mesh = {'mesh': {}}
@@ -792,7 +790,8 @@ def main():
     i = 0
     nelem = 0
 
-    #loop through all the tirangles and assign the parameter and ic values to the t riangle
+    #loop through all the triangles and assign the parameter and ic values to the triangle
+    start_time = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
         for line in elem:
             if '#' not in line:
@@ -848,112 +847,117 @@ def main():
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
 
-                    # regardless of shp file output, we need this to do the area calculation
-                    ring = ogr.Geometry(ogr.wkbLinearRing)
-                    ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
-                    ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
-                    ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
-                    ring.AddPoint(mesh['mesh']['vertex'][v0][0],
-                                  mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
+    for ele in range(mesh['mesh']['nelem']):
+        v0 = mesh['mesh']['elem'][ele][0]
+        v1 = mesh['mesh']['elem'][ele][1]
+        v2 = mesh['mesh']['elem'][ele][2]
+        # regardless of shp file output, we need this to do the area calculation
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0],
+                      mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
 
-                    if write_vtu:
-                        vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1],
-                                            mesh['mesh']['vertex'][v0][2])
-                        vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1],
-                                            mesh['mesh']['vertex'][v1][2])
-                        vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1],
-                                            mesh['mesh']['vertex'][v2][2])
+        if write_vtu:
+            vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1],
+                                mesh['mesh']['vertex'][v0][2])
+            vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1],
+                                mesh['mesh']['vertex'][v1][2])
+            vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1],
+                                mesh['mesh']['vertex'][v2][2])
 
-                        triangle = vtk.vtkTriangle()
-                        triangle.GetPointIds().SetId(0, v0)
-                        triangle.GetPointIds().SetId(1, v1)
-                        triangle.GetPointIds().SetId(2, v2)
+            triangle = vtk.vtkTriangle()
+            triangle.GetPointIds().SetId(0, v0)
+            triangle.GetPointIds().SetId(1, v1)
+            triangle.GetPointIds().SetId(2, v2)
 
-                        vtu_triangles.InsertNextCell(triangle)
-                        vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
-                                                                 mesh['mesh']['vertex'][v1][2] +
-                                                                 mesh['mesh']['vertex'][v2][2]) / 3.)
+            vtu_triangles.InsertNextCell(triangle)
+            vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
+                                                     mesh['mesh']['vertex'][v1][2] +
+                                                     mesh['mesh']['vertex'][v2][2]) / 3.)
 
-                        vtu_cells['cellid'].InsertNextTuple1(i)
+            vtu_cells['cellid'].InsertNextTuple1(i)
 
-                    # need this for the area calculation
-                    tpoly = ogr.Geometry(ogr.wkbPolygon)
-                    tpoly.AddGeometry(ring)
+        # need this for the area calculation
+        tpoly = ogr.Geometry(ogr.wkbPolygon)
+        tpoly.AddGeometry(ring)
 
-                    feature = ogr.Feature(layer.GetLayerDefn())
-                    feature.SetGeometry(tpoly)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(tpoly)
 
-                    feature.SetField('triangle', int(items[0]) - 1)
+        feature.SetField('triangle', int(items[0]) - 1)
 
-                    area=0
-                    #if the input was geographic, we need to project to get a reasonable area
-                    if is_geographic:
-                        transform = osr.CoordinateTransformation(srs, srs_out)
-                        p = tpoly.Clone()
-                        p.Transform(transform)
-                    
-                        area = p.GetArea()
-                    else:
-                        area = tpoly.GetArea()
+        area=0
+        #if the input was geographic, we need to project to get a reasonable area
+        if is_geographic:
+            transform = osr.CoordinateTransformation(srs, srs_out)
+            p = tpoly.Clone()
+            p.Transform(transform)
 
-                    feature.SetField('area', area)
+            area = p.GetArea()
+        else:
+            area = tpoly.GetArea()
 
-                    params['area'].append(area)
+        feature.SetField('area', area)
 
-                    if write_vtu:
-                        vtu_cells['area'].InsertNextTuple1(area)
+        params['area'].append(area)
+
+        if write_vtu:
+            vtu_cells['area'].InsertNextTuple1(area)
 
 
-                    # get the value under each triangle from each parameter file
-                    for key, data in parameter_files.items():
-                        output = []
+        # get the value under each triangle from each parameter file
+        for key, data in parameter_files.items():
+            output = []
 
-                        for f,m in zip(data['file'],data['method']):
-                            output.append(rasterize_elem(f, feature, key, m))
+            for f,m in zip(data['file'],data['method']):
+                output.append(rasterize_elem(f, feature, key, m))
 
-                        if 'classifier' in data:
-                            output = data['classifier'](*output)
-                        else:
-                            output = output[0] #flatten the list for the append below
-                        params[key].append(output)
+            if 'classifier' in data:
+                output = data['classifier'](*output)
+            else:
+                output = output[0] #flatten the list for the append below
+            params[key].append(output)
 
-                        if write_shp:
-                            feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+            if write_shp:
+                feature.SetField(key[0:10], output) # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
 
-                        # we want to write actual NaN to vtu for better displaying
-                        if output == -9999:
-                            output = float('nan')
+            # we want to write actual NaN to vtu for better displaying
+            if output == -9999:
+                output = float('nan')
 
-                        if write_vtu:
-                            vtu_cells['[param] ' + key].InsertNextTuple1(output)
+            if write_vtu:
+                vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
-                    for key, data in initial_conditions.items():
-                        output = []
+        for key, data in initial_conditions.items():
+            output = []
 
-                        for f,m in zip(data['file'],data['method']):
-                            output.append(rasterize_elem(f, feature, key, m))
+            for f,m in zip(data['file'],data['method']):
+                output.append(rasterize_elem(f, feature, key, m))
 
-                        if 'classifier' in data:
-                            output = data['classifier'](*output)
-                        else:
-                            output = output[0] #flatten the list for the append below
+            if 'classifier' in data:
+                output = data['classifier'](*output)
+            else:
+                output = output[0] #flatten the list for the append below
 
-                        ics[key].append(output)
+            ics[key].append(output)
 
-                        if write_shp:
-                            feature.SetField(key[0:10], float(output))
+            if write_shp:
+                feature.SetField(key[0:10], float(output))
 
-                        # we want to write actual NaN to vtu for better displaying
-                        if output == -9999:
-                            output = float('nan')
+            # we want to write actual NaN to vtu for better displaying
+            if output == -9999:
+                output = float('nan')
 
-                        if write_vtu:
-                            vtu_cells['[ic] ' + key].InsertNextTuple1(output)
+            if write_vtu:
+                vtu_cells['[ic] ' + key].InsertNextTuple1(output)
 
-                    if write_shp:
-                        layer.CreateFeature(feature)
-                    i = i + 1
-                    # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
+        if write_shp:
+            layer.CreateFeature(feature)
+        i = i + 1
+        # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
+    print('Took %s s' % str(time.perf_counter()- start_time ))
     if write_shp:
         output_usm.FlushCache()
     output_usm = None #close file
