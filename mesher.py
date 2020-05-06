@@ -27,6 +27,7 @@ import shutil
 import imp
 import vtk
 import warnings
+from concurrent import futures
 
 gdal.UseExceptions()  # Enable exception support
 
@@ -363,91 +364,35 @@ def main():
     if use_weights:
         total_weights = topo_weight
 
+    param_args =[]
+    ret = []
     for key, data in parameter_files.items():
-        # make a copy as this exec string is reused for inital conditions
-        # and we don't want the changes made here to impact it
-        estr = exec_str
-        if data['method'] == 'mode':
-            estr = exec_str + 'mode'
-        else:
-            estr = exec_str + 'average'
-
         if use_weights and 'weight' in data:
             total_weights += data['weight']
+        param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
+                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
 
-        # Allows us to turn off raster cell resizing for this parameter.
-        # This can result in some odd behaviours when doing multi-objective optimization so disable that
-        do_cell_resize = True
-        if 'do_cell_resize' in data:
-            do_cell_resize =  data['do_cell_resize']
+    if use_weights and total_weights != 1:
+        raise RuntimeError("Parameter weights must equal 1")
 
-        if 'tolerance'in data and do_cell_resize:
-            print('Warning @ '+key+': Cannot use tolerance & do_cell_resize simultaneously. Setting do_cell_resize = False')
-            do_cell_resize = False
+    with futures.ProcessPoolExecutor(max_workers=4) as executor:
+        for (r) in executor.map(prepare_inputs, param_args):
+            ret.append(r)
 
-        if do_cell_resize:
-            estr = estr + ' -tr %s %s'
+    for r in ret:
+        key = r['key']
+        parameter_files[key]['filename'] = r['filename']
+        parameter_files[key]['file'] = []
 
-        #there can be multiple files per param output that we use a classifier to merge into one.
-        # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
-
-        if isinstance(data['file'], list) and len(data['file'])==1:
-            print('Error @ ' + key + ': Do not use [ ] for a single file.')
-            exit(-1)
-
-        if not 'classifier' in data and isinstance(data['file'], list):
-            print('Error @ ' + key+': If multiple input files are specified for a single parameter a classifer must be provided.')
-            exit(-1)
-
-        if 'tolerance'in data and isinstance(data['file'], list):
-            print('Error @ ' + key + ': If multiple input files are specified for a single parameter this cannot be used with a tolerance.')
-            exit(-1)
-
-        if isinstance(data['file'], list) and not isinstance(data['method'], list):
-            print('Error @ ' + key + ': If multiple input files are specified for a single parameter you need to specify each aggregation method.')
-            exit(-1)
-
-        if not isinstance(data['file'], list) and isinstance(data['method'], list):
-            print('Error @ ' + key + ': If a single input file is specified you cannot specify multiple aggregation methods.')
-            exit(-1)
-
-        if not isinstance(data['file'], list):
-            data['file'] = [data['file']]
-
-        if not isinstance(data['method'], list):
-            data['method'] = [data['method']]
-
-
-        i=0
-        parameter_files[key]['filename']=[]
-        for f in data['file']:
-
-            #we need to handle a path being passed in
-            output_param_fname = os.path.basename(f)
-            output_param_fname = os.path.splitext(output_param_fname)[0]
-
-            if gdal.Open(f).GetProjection() == '':
-                print("Parameter " + f + " must have spatial reference information.")
-                exit(1)
-
-            out_name = base_dir + output_param_fname + '_projected.tif'
-
-            if do_cell_resize:
-                # force all the paramter files to have the same extent as the input DEM
-                subprocess.check_call([estr % (gdal_prefix,
-                        f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax, pixel_width, pixel_height)], shell=True)
-            else:
-                # force all the paramter files to have the same extent as the input DEM
-                subprocess.check_call([estr % (gdal_prefix,
-                    f, out_name, srs_out.ExportToProj4(), xmin, ymin, xmax, ymax)], shell=True)
-
-
-            parameter_files[key]['filename'].append(out_name)  # save the file name if needed for mesher
-            parameter_files[key]['file'][i] = gdal.Open(out_name)
-
-            if parameter_files[key]['file'][i] is None:
+        if not isinstance(parameter_files[key]['method'], list):
+            parameter_files[key]['method'] = [parameter_files[key]['method']]
+        for f in r['filename']:
+            ds = gdal.Open(f)
+            if ds is None:
                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
-            i = i + 1
+            parameter_files[key]['file'].append( ds )
+
+
 
     for key, data in initial_conditions.items():
         #make a copy
@@ -1029,6 +974,7 @@ def main():
                     # get the value under each triangle from each parameter file
                     for key, data in parameter_files.items():
                         output = []
+
                         for f,m in zip(data['file'],data['method']):
                             output.append(rasterize_elem(f, feature, key, m))
 
@@ -1107,6 +1053,86 @@ def main():
     with open(user_output_dir+base_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
     print('Done')
+
+
+def prepare_inputs(args):
+
+    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out,xmax, xmin, ymax, ymin = args
+
+    # make a copy as this exec string is reused for inital conditions
+    # and we don't want the changes made here to impact it
+    estr = exec_str
+    if data['method'] == 'mode':
+        estr = exec_str + 'mode'
+    else:
+        estr = exec_str + 'average'
+
+    # Allows us to turn off raster cell resizing for this parameter.
+    # This can result in some odd behaviours when doing multi-objective optimization so disable that
+    do_cell_resize = True
+    if 'do_cell_resize' in data:
+        do_cell_resize = data['do_cell_resize']
+    if 'tolerance' in data and do_cell_resize:
+        print(
+            'Warning @ ' + key + ': Cannot use tolerance & do_cell_resize simultaneously. Setting do_cell_resize = False')
+        do_cell_resize = False
+    if do_cell_resize:
+        estr = estr + ' -tr %s %s'
+    # there can be multiple files per param output that we use a classifier to merge into one.
+    # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
+    if isinstance(data['file'], list) and len(data['file']) == 1:
+        print('Error @ ' + key + ': Do not use [ ] for a single file.')
+        exit(-1)
+    if not 'classifier' in data and isinstance(data['file'], list):
+        print(
+            'Error @ ' + key + ': If multiple input files are specified for a single parameter a classifer must be provided.')
+        exit(-1)
+    if 'tolerance' in data and isinstance(data['file'], list):
+        print(
+            'Error @ ' + key + ': If multiple input files are specified for a single parameter this cannot be used with a tolerance.')
+        exit(-1)
+    if isinstance(data['file'], list) and not isinstance(data['method'], list):
+        print(
+            'Error @ ' + key + ': If multiple input files are specified for a single parameter you need to specify each aggregation method.')
+        exit(-1)
+    if not isinstance(data['file'], list) and isinstance(data['method'], list):
+        print(
+            'Error @ ' + key + ': If a single input file is specified you cannot specify multiple aggregation methods.')
+        exit(-1)
+    if not isinstance(data['file'], list):
+        data['file'] = [data['file']]
+    if not isinstance(data['method'], list):
+        data['method'] = [data['method']]
+
+
+    ret_df = dict()
+    ret_df['filename'] = []
+    ret_df['key']=key
+
+    for f in data['file']:
+        # we need to handle a path being passed in
+        output_param_fname = os.path.basename(f)
+        output_param_fname = os.path.splitext(output_param_fname)[0]
+
+        if gdal.Open(f).GetProjection() == '':
+            print("Parameter " + f + " must have spatial reference information.")
+            exit(1)
+
+        out_name = base_dir + output_param_fname + '_projected.tif'
+
+        if do_cell_resize:
+            # force all the parameter files to have the same extent as the input DEM
+            subprocess.check_call([estr % (gdal_prefix,
+                                           f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
+                                           pixel_height)], shell=True)
+        else:
+            # force all the parameter files to have the same extent as the input DEM
+            subprocess.check_call([estr % (gdal_prefix,
+                                           f, out_name, srs_out, xmin, ymin, xmax, ymax)], shell=True)
+
+        ret_df['filename'].append(out_name)  # save the file name if needed for mesher
+
+    return ret_df
 
 
 # Print iterations progress
