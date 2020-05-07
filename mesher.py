@@ -199,13 +199,14 @@ def main():
         max_smooth_iter = X.max_smooth_iter
 
     # use the convex combination of weights method
-    use_weights = False
-    topo_weight = 1
-    weight_threshold = 0
-    if hasattr(X, 'use_weights'):
-        use_weights = X.use_weights
-        topo_weight = X.topo_weight
+    user_no_weights = False
+    weight_threshold = 0.5
+    if hasattr(X, 'weight_threshold'):
         weight_threshold = X.weight_threshold
+
+    if hasattr(X, 'use_weights'):
+        if not X.use_weights:
+            user_no_weights = True
 
     wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\"," \
               "     GEOGCS[\"GCS_North_American_1983\"," \
@@ -366,11 +367,21 @@ def main():
 
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
-    regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
-                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
+    total_weights, use_weights = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
+                      srs_out,  xmax, xmin, ymax, ymin)
+
+    topo_weight = 1 - total_weights
+
+    # over ride with user settings
+    if user_no_weights:
+        use_weights = False
+
+    if use_weights and topo_weight < 0:
+         raise RuntimeError("Parameter weights must equal 1")
+
 
     regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
-                      srs_out, topo_weight, use_weights, xmax, xmin, ymax, ymin)
+                      srs_out, xmax, xmin, ymax, ymin)
 
     plgs_shp = base_name + '.shp'
 
@@ -637,7 +648,7 @@ def main():
                         'tolerance'])  # we need [0] on raster as it's been made iterable by this point
                 else:
                     execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
-            if 'weight' in data:
+            if use_weights and 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
         for key, data in initial_conditions.items():
@@ -646,7 +657,7 @@ def main():
                     execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
                 else:
                     execstr += ' --raster %s --tolerance %s' % (data['filename'], data['tolerance'])
-            if 'weight' in data:
+            if use_weights and 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
         print(execstr)
@@ -931,8 +942,8 @@ def main():
             params[key].append(output)
 
             if write_shp:
-                feature.SetField(key[0:10],
-                                 output)  # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+                # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+                feature.SetField(key[0:10], output)
 
             # we want to write actual NaN to vtu for better displaying
             if output == -9999:
@@ -1012,21 +1023,20 @@ def main():
     print('Done')
 
 
-def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out, topo_weight,
-                      use_weights, xmax, xmin, ymax, ymin):
+def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
+                      xmax, xmin, ymax, ymin):
     # ensure all the weights sum to 1
     total_weights = 0
-    if use_weights:
-        total_weights = topo_weight
+    use_weights = False
     param_args = []
     ret = []
     for key, data in input_files.items():
-        if use_weights and 'weight' in data:
+        if 'weight' in data:
             total_weights += data['weight']
+            use_weights = True
         param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
-    if use_weights and total_weights != 1:
-        raise RuntimeError("Parameter weights must equal 1")
+
     with futures.ProcessPoolExecutor(max_workers=4) as executor:
         for (r) in executor.map(_future_regularize_inputs, param_args):
             ret.append(r)
@@ -1042,7 +1052,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
             if ds is None:
                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
             input_files[key]['file'].append(ds)
-    return total_weights
+    return total_weights, use_weights
 
 
 def _future_regularize_inputs(args):
@@ -1064,7 +1074,7 @@ def _future_regularize_inputs(args):
     if 'tolerance' in data and do_cell_resize:
         print(
             'Warning @ ' + key + ': Cannot use tolerance & do_cell_resize simultaneously. Setting do_cell_resize = False')
-        do_cell_resize = False
+        # do_cell_resize = False
     if do_cell_resize:
         estr = estr + ' -tr %s %s'
     # there can be multiple files per param output that we use a classifier to merge into one.
