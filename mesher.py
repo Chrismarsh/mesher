@@ -866,6 +866,13 @@ def main():
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
     print('Reading mesh took %s s' % str(round(time.perf_counter() - start_time, 2)))
+    if len(invalid_nodes) > 0:
+        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
+        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to ' \
+                  'reconstruct this triangle. '
+        errstr += 'Try reducing simplify_tol.'
+        raise RuntimeError(errstr)
+
     start_time2 = time.perf_counter()
 
     i = 0
@@ -987,11 +994,7 @@ def main():
         output_usm.FlushCache()
     output_usm = None  # close file
 
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to reconstruct this triangle.'
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
+
 
     if write_vtu:
         vtu.SetPoints(vtu_points)
