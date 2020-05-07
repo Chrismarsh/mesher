@@ -1066,17 +1066,9 @@ def _future_regularize_inputs(args):
     else:
         estr = exec_str + 'average'
 
-    # Allows us to turn off raster cell resizing for this parameter.
-    # This can result in some odd behaviours when doing multi-objective optimization so disable that
+
     do_cell_resize = True
-    if 'do_cell_resize' in data:
-        do_cell_resize = data['do_cell_resize']
-    if 'tolerance' in data and do_cell_resize:
-        print(
-            'Warning @ ' + key + ': Cannot use tolerance & do_cell_resize simultaneously. Setting do_cell_resize = False')
-        # do_cell_resize = False
-    if do_cell_resize:
-        estr = estr + ' -tr %s %s'
+    estr = estr + ' -tr %s %s'
     # there can be multiple files per param output that we use a classifier to merge into one.
     # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
     if isinstance(data['file'], list) and len(data['file']) == 1:
@@ -1118,15 +1110,12 @@ def _future_regularize_inputs(args):
 
         out_name = base_dir + output_param_fname + '_projected.tif'
 
-        if do_cell_resize:
-            # force all the parameter files to have the same extent as the input DEM
-            subprocess.check_call([estr % (gdal_prefix,
+
+        # force all the parameter files to have the same extent as the input DEM
+        subprocess.check_call([estr % (gdal_prefix,
                                            f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
                                            pixel_height)], shell=True)
-        else:
-            # force all the parameter files to have the same extent as the input DEM
-            subprocess.check_call([estr % (gdal_prefix,
-                                           f, out_name, srs_out, xmin, ymin, xmax, ymax)], shell=True)
+
 
         ret_df['filename'].append(out_name)  # save the file name if needed for mesher
 
