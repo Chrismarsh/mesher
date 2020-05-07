@@ -21,7 +21,7 @@ import re
 import json
 import os
 import numpy as np
-import scipy.stats.mstats as sp
+# import scipy.stats.mstats as sp
 import sys
 import shutil
 import imp
@@ -29,6 +29,8 @@ import vtk
 import warnings
 from concurrent import futures
 import time
+import matplotlib
+matplotlib.use('TkAgg')
 
 gdal.UseExceptions()  # Enable exception support
 
@@ -171,9 +173,9 @@ def main():
     if hasattr(X, 'write_shp'):
         write_shp = X.write_shp
 
-    write_vtu = True
-    if hasattr(X, 'write_vtu'):
-        write_vtu = X.write_vtu
+    # write_vtu = True
+    # if hasattr(X, 'write_vtu'):
+    #     write_vtu = X.write_vtu
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
@@ -679,22 +681,6 @@ def main():
 
     read_header = False
 
-    if write_vtu:
-        vtu = vtk.vtkUnstructuredGrid()
-
-        output_vtk = base_dir + base_name + '.vtu'
-        vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
-        vtuwriter.SetFileName(output_vtk)
-
-        # check what version of vtk we are using so we can avoid the api conflict
-        # http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
-        if vtk.vtkVersion.GetVTKMajorVersion() > 5:
-            vtuwriter.SetInputData(vtu)
-        else:
-            vtuwriter.SetInput(vtu)
-
-        vtu_points = vtk.vtkPoints()
-        vtu_triangles = vtk.vtkCellArray()
 
     invalid_nodes = []  # any nodes that are outside of the domain.
     print('Reading nodes')
@@ -750,8 +736,6 @@ def main():
     output_usm = driver.CreateDataSource(base_dir +
                                          base_name + '_USM.shp')
 
-    if write_vtu:
-        vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
 
     # create the layer. Even if we don't save the shp file, we need this for rasterization and area estimates
     layer = output_usm.CreateLayer(base_name, srs, ogr.wkbPolygon)
@@ -787,27 +771,6 @@ def main():
 
     for key, data in initial_conditions.items():
         ics[key] = []
-
-    if write_vtu:
-        vtu_cells = {'elevation': vtk.vtkFloatArray(),
-                     'cellid': vtk.vtkFloatArray(),
-                     'area': vtk.vtkFloatArray()
-                     }
-        vtu_cells['elevation'].SetName('elevation')
-        vtu_cells['area'].SetName('area')
-        vtu_cells['cellid'].SetName('cellid')
-
-    for key, data in parameter_files.items():
-        k = '[param] ' + key
-        if write_vtu:
-            vtu_cells[k] = vtk.vtkFloatArray()
-            vtu_cells[k].SetName(k)
-
-    for key, data in initial_conditions.items():
-        k = '[ic] ' + key
-        if write_vtu:
-            vtu_cells[k] = vtk.vtkFloatArray()
-            vtu_cells[k].SetName(k)
 
     i = 0
     nelem = 0
@@ -875,141 +838,30 @@ def main():
 
     start_time2 = time.perf_counter()
 
+
     i = 0
-    for ele in range(mesh['mesh']['nelem']):
-        v0 = mesh['mesh']['elem'][ele][0]
-        v1 = mesh['mesh']['elem'][ele][1]
-        v2 = mesh['mesh']['elem'][ele][2]
-        # regardless of shp file output, we need this to do the area calculation
-        ring = ogr.Geometry(ogr.wkbLinearRing)
-        ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v0][0],
-                      mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
 
-        if write_vtu:
-            vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1],
-                                mesh['mesh']['vertex'][v0][2])
-            vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1],
-                                mesh['mesh']['vertex'][v1][2])
-            vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1],
-                                mesh['mesh']['vertex'][v2][2])
+    # build up the masks
+    gt = src_ds.GetGeoTransform()
 
-            triangle = vtk.vtkTriangle()
-            triangle.GetPointIds().SetId(0, v0)
-            triangle.GetPointIds().SetId(1, v1)
-            triangle.GetPointIds().SetId(2, v2)
+    tris = [i for i in range(mesh['mesh']['nelem'])]
 
-            vtu_triangles.InsertNextCell(triangle)
-            vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
-                                                     mesh['mesh']['vertex'][v1][2] +
-                                                     mesh['mesh']['vertex'][v2][2]) / 3.)
+    args = (tris, gt, is_geographic, mesh, parameter_files, params, src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4())
+            # , vtu_cells,
+                    # vtu_points, vtu_triangles, write_shp, write_vtu)
+    # with futures.ProcessPoolExecutor as executor:
+    #     for output in executor.map(do_parameterize, args):
 
-            vtu_cells['cellid'].InsertNextTuple1(i)
-
-        # need this for the area calculation
-        tpoly = ogr.Geometry(ogr.wkbPolygon)
-        tpoly.AddGeometry(ring)
-
-        feature = ogr.Feature(layer.GetLayerDefn())
-        feature.SetGeometry(tpoly)
-
-        feature.SetField('triangle', int(i))
-
-        area = 0
-        # if the input was geographic, we need to project to get a reasonable area
-        if is_geographic:
-            transform = osr.CoordinateTransformation(srs, srs_out)
-            p = tpoly.Clone()
-            p.Transform(transform)
-
-            area = p.GetArea()
-        else:
-            area = tpoly.GetArea()
-
-        feature.SetField('area', area)
-
-        params['area'].append(area)
-
-        if write_vtu:
-            vtu_cells['area'].InsertNextTuple1(area)
-
-        # get the value under each triangle from each parameter file
-        for key, data in parameter_files.items():
-            output = []
-
-            for f, m in zip(data['file'], data['method']):
-                output.append(rasterize_elem(f, feature, key, m))
-
-            if 'classifier' in data:
-                output = data['classifier'](*output)
-            else:
-                output = output[0]  # flatten the list for the append below
-            params[key].append(output)
-
-            if write_shp:
-                # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
-                feature.SetField(key[0:10], output)
-
-            # we want to write actual NaN to vtu for better displaying
-            if output == -9999:
-                output = float('nan')
-
-            if write_vtu:
-                vtu_cells['[param] ' + key].InsertNextTuple1(output)
-
-        for key, data in initial_conditions.items():
-            output = []
-
-            for f, m in zip(data['file'], data['method']):
-                output.append(rasterize_elem(f, feature, key, m))
-
-            if 'classifier' in data:
-                output = data['classifier'](*output)
-            else:
-                output = output[0]  # flatten the list for the append below
-
-            ics[key].append(output)
-
-            if write_shp:
-                feature.SetField(key[0:10], float(output))
-
-            # we want to write actual NaN to vtu for better displaying
-            if output == -9999:
-                output = float('nan')
-
-            if write_vtu:
-                vtu_cells['[ic] ' + key].InsertNextTuple1(output)
-
-        if write_shp:
-            layer.CreateFeature(feature)
-        i = i + 1
-        # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
+    do_parameterize(args)
 
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str(time.perf_counter() - start_time))
 
+    write_vtu(base_dir + base_name + '.vtu', mesh, params)
+
     if write_shp:
         output_usm.FlushCache()
     output_usm = None  # close file
-
-
-
-    if write_vtu:
-        vtu.SetPoints(vtu_points)
-        vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
-        for p in vtu_cells.values():
-            vtu.GetCellData().AddArray(p)
-
-        vtk_proj4 = vtk.vtkStringArray()
-        vtk_proj4.SetNumberOfComponents(1)
-        vtk_proj4.SetName("proj4")
-        vtk_proj4.InsertNextValue(srs_out.ExportToProj4())
-
-        vtu.GetFieldData().AddArray(vtk_proj4)
-
-        vtuwriter.Write()
 
     output_usm = None  # close the file
     print('Saving mesh to file ' + base_name + '.mesh')
@@ -1025,6 +877,129 @@ def main():
         json.dump(ics, outfile, indent=4)
     print('Done')
 
+
+def do_parameterize(args):
+    tris, gt,  is_geographic, mesh, parameter_files, params, RasterXSize, RasterYSize, \
+    srs_proj4 = args
+
+    srs_out = osr.SpatialReference()
+    srs_out.ImportFromProj4(srs_proj4)
+
+    for key, data in parameter_files.items():
+        for f in data['filename']:
+            ds = gdal.Open(f)
+            if ds is None:
+                raise RuntimeError('Error: Unable to open raster for: %s' % key)
+            parameter_files[key]['file'].append(ds)
+    i = 0
+    for elem in tris:
+        v0 = mesh['mesh']['elem'][elem][0]
+        v1 = mesh['mesh']['elem'][elem][1]
+        v2 = mesh['mesh']['elem'][elem][2]
+
+        # Create a temporary vector layer in memory
+        mem_drv = ogr.GetDriverByName('Memory')
+        mem_ds = mem_drv.CreateDataSource('out')
+        mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
+
+
+        # regardless of shp file output, we need this to do the area calculation
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0],
+                      mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
+
+        # need this for the area calculation
+        tpoly = ogr.Geometry(ogr.wkbPolygon)
+        tpoly.AddGeometry(ring)
+
+        feature = ogr.Feature(mem_layer.GetLayerDefn())
+        feature.SetGeometry(tpoly)
+
+        feature.SetField('triangle', int(i))
+        mem_layer.CreateFeature(feature)
+
+        area = 0
+        # if the input was geographic, we need to project to get a reasonable area
+        # if is_geographic:
+        #     transform = osr.CoordinateTransformation(srs, srs_out)
+        #     p = tpoly.Clone()
+        #     p.Transform(transform)
+        #
+        #     area = p.GetArea()
+        # else:
+        area = tpoly.GetArea()
+
+        # feature.SetField('area', area)
+        params['area'].append(area)
+
+        # calculate new geotransform of the feature subset
+        geom = feature.geometry()
+        src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
+        new_gt = (
+            (gt[0] + (src_offset[0] * gt[1])),
+            gt[1],
+            0.0,
+            (gt[3] + (src_offset[1] * gt[5])),
+            0.0,
+            gt[5]
+        )
+
+
+
+        # get the value under each triangle from each parameter file
+        for key, data in parameter_files.items():
+            output = []
+
+            for f, m in zip(data['file'], data['method']):
+                output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
+
+            if 'classifier' in data:
+                output = data['classifier'](*output)
+            else:
+                output = output[0]  # flatten the list for the append below
+            params[key].append(output)
+
+            # if write_shp:
+            #     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+            #     feature.SetField(key[0:10], output)
+
+            # we want to write actual NaN to vtu for better displaying
+            if output == -9999:
+                output = float('nan')
+
+
+
+        # for key, data in initial_conditions.items():
+        #     output = []
+        #
+        #     for f, m in zip(data['file'], data['method']):
+        #         output.append(rasterize_elem(f, feature, key, m))
+        #
+        #     if 'classifier' in data:
+        #         output = data['classifier'](*output)
+        #     else:
+        #         output = output[0]  # flatten the list for the append below
+        #
+        #     ics[key].append(output)
+        #
+        #     if write_shp:
+        #         feature.SetField(key[0:10], float(output))
+        #
+        #     # we want to write actual NaN to vtu for better displaying
+        #     if output == -9999:
+        #         output = float('nan')
+        #
+        #     if write_vtu:
+        #         vtu_cells['[ic] ' + key].InsertNextTuple1(output)
+
+        # if write_shp:
+        #     layer.CreateFeature(feature)
+        # i = i + 1
+        # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
+    return params,tris
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin):
@@ -1050,11 +1025,8 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
 
         if not isinstance(input_files[key]['method'], list):
             input_files[key]['method'] = [input_files[key]['method']]
-        for f in r['filename']:
-            ds = gdal.Open(f)
-            if ds is None:
-                raise RuntimeError('Error: Unable to open raster for: %s' % key)
-            input_files[key]['file'].append(ds)
+
+
     return total_weights, use_weights
 
 
@@ -1239,51 +1211,32 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def rasterize_elem(raster, feature, key, aggMethod):
-    wkt = raster.GetProjection()
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(wkt)
-    gt = raster.GetGeoTransform()
-    rb = raster.GetRasterBand(1)
-    geom = feature.geometry()
-    src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), raster.RasterXSize, raster.RasterYSize)
-    src_array = rb.ReadAsArray(*src_offset)
-    # calculate new geotransform of the feature subset
-    new_gt = (
-        (gt[0] + (src_offset[0] * gt[1])),
-        gt[1],
-        0.0,
-        (gt[3] + (src_offset[1] * gt[5])),
-        0.0,
-        gt[5]
-    )
+def rasterize_elem(rds, mem_layer, key, aggMethod, srs, new_gt, src_offset):
 
-    # Create a temporary vector layer in memory
-    mem_drv = ogr.GetDriverByName('Memory')
-    mem_ds = mem_drv.CreateDataSource('out')
-    mem_layer = mem_ds.CreateLayer('poly', srs, ogr.wkbPolygon)
-    mem_layer.CreateFeature(feature.Clone())
+    raster = rds.GetRasterBand(1)
+    src_array = raster.ReadAsArray(*src_offset)
 
     # Rasterize it
     driver = gdal.GetDriverByName('MEM')
     mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
     mask.SetGeoTransform(new_gt)
-    mask.SetProjection(wkt)
+    mask.SetProjection(srs.ExportToWkt())
     err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
     if err != 0:
         raise Exception("error rasterizing layer: %s" % err)
 
+
     mask_arr = mask.ReadAsArray()  # holds a mask of where the triangle is on the raster
 
     # Mask the source data array with our current feature
-    src_array[(mask_arr == 0) | (mask_arr == rb.GetNoDataValue())] = np.nan
+    src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
 
-    output = rb.GetNoDataValue()
+    output = -9999
 
     if callable(aggMethod):
         output = float(aggMethod(src_array))
         if np.isnan(output):
-            output = rb.GetNoDataValue()
+            output = raster.GetNoDataValue()
     else:
         if aggMethod == 'mode':
             vals, counts = np.unique(src_array, return_counts=True)
@@ -1299,7 +1252,7 @@ def rasterize_elem(raster, feature, key, aggMethod):
             print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
             exit(-1)
 
-    feature.SetField(key, output)
+    # feature.SetField(key, output)
 
     # testing code
     # if output < 0:
@@ -1330,6 +1283,96 @@ def rasterize_elem(raster, feature, key, aggMethod):
 
     return output
 
+def write_vtu(fname, mesh, parameter_files):
+
+    vtu = vtk.vtkUnstructuredGrid()
+
+    output_vtk = fname
+    vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
+    vtuwriter.SetFileName(output_vtk)
+
+    # check what version of vtk we are using so we can avoid the api conflict
+    # http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
+    if vtk.vtkVersion.GetVTKMajorVersion() > 5:
+        vtuwriter.SetInputData(vtu)
+    else:
+        vtuwriter.SetInput(vtu)
+
+    vtu_points = vtk.vtkPoints()
+    vtu_triangles = vtk.vtkCellArray()
+
+    vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
+
+    vtu_cells = {'elevation': vtk.vtkFloatArray(),
+                 'cellid': vtk.vtkFloatArray(),
+                 'area': vtk.vtkFloatArray()
+                 }
+    vtu_cells['elevation'].SetName('elevation')
+    vtu_cells['area'].SetName('area')
+    vtu_cells['cellid'].SetName('cellid')
+
+    for key, data in parameter_files.items():
+        k = '[param] ' + key
+        vtu_cells[k] = vtk.vtkFloatArray()
+        vtu_cells[k].SetName(k)
+
+    # for key, data in initial_conditions.items():
+    #     k = '[ic] ' + key
+    #     if write_vtu:
+    #         vtu_cells[k] = vtk.vtkFloatArray()
+    #         vtu_cells[k].SetName(k)
+
+    for elem in range(mesh['mesh']['nelem']):
+        v0 = mesh['mesh']['elem'][elem][0]
+        v1 = mesh['mesh']['elem'][elem][1]
+        v2 = mesh['mesh']['elem'][elem][2]
+
+        vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0],
+                            mesh['mesh']['vertex'][v0][1],
+                            mesh['mesh']['vertex'][v0][2])
+
+        vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0],
+                            mesh['mesh']['vertex'][v1][1],
+                            mesh['mesh']['vertex'][v1][2])
+
+        vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0],
+                            mesh['mesh']['vertex'][v2][1],
+                            mesh['mesh']['vertex'][v2][2])
+
+        triangle = vtk.vtkTriangle()
+        triangle.GetPointIds().SetId(0, v0)
+        triangle.GetPointIds().SetId(1, v1)
+        triangle.GetPointIds().SetId(2, v2)
+
+        vtu_triangles.InsertNextCell(triangle)
+        vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
+                                                 mesh['mesh']['vertex'][v1][2] +
+                                                 mesh['mesh']['vertex'][v2][2]) / 3.)
+
+        vtu_cells['cellid'].InsertNextTuple1(elem)
+
+        area = 1
+        vtu_cells['area'].InsertNextTuple1(area)
+
+        for key, data in parameter_files.items():
+            output = data[elem]
+            vtu_cells['[param] ' + key].InsertNextTuple1(output)
+
+
+
+    vtu.SetPoints(vtu_points)
+    vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
+    for p in vtu_cells.values():
+        vtu.GetCellData().AddArray(p)
+
+    vtk_proj4 = vtk.vtkStringArray()
+    vtk_proj4.SetNumberOfComponents(1)
+    vtk_proj4.SetName("proj4")
+    vtk_proj4.InsertNextValue(mesh['mesh']['proj4'])
+
+    vtu.GetFieldData().AddArray(vtk_proj4)
+
+    vtuwriter.Write()
 
 if __name__ == "__main__":
     main()
