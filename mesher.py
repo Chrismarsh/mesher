@@ -846,13 +846,18 @@ def main():
 
     tris = [i for i in range(mesh['mesh']['nelem'])]
 
+    def wrapper(args)
     args = (tris, gt, is_geographic, mesh, parameter_files, params, src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4())
-            # , vtu_cells,
-                    # vtu_points, vtu_triangles, write_shp, write_vtu)
-    # with futures.ProcessPoolExecutor as executor:
-    #     for output in executor.map(do_parameterize, args):
 
-    do_parameterize(args)
+    ret_p =[]
+    ret_tri =[]
+
+    with futures.ProcessPoolExecutor as executor:
+        for (par,t) in executor.map(do_parameterize, args):
+            ret_p.append(par)
+            ret_tri.append(t)
+
+    # do_parameterize(args)
 
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str(time.perf_counter() - start_time))
