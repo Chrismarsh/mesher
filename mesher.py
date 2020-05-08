@@ -21,7 +21,7 @@ import re
 import json
 import os
 import numpy as np
-# import scipy.stats.mstats as sp
+from functools import partial
 import sys
 import shutil
 import imp
@@ -768,6 +768,7 @@ def main():
         params[key] = []
 
     params['area'] = []
+    params['id']=[]
 
     for key, data in initial_conditions.items():
         ics[key] = []
@@ -844,21 +845,25 @@ def main():
     # build up the masks
     gt = src_ds.GetGeoTransform()
 
-    tris = [i for i in range(mesh['mesh']['nelem'])]
+    tris = range(mesh['mesh']['nelem'])
 
-    def wrapper(args)
-    args = (tris, gt, is_geographic, mesh, parameter_files, params, src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4())
+    ret_tri = []
 
-    ret_p =[]
-    ret_tri =[]
+    with futures.ProcessPoolExecutor() as executor:
+        for t in executor.map(
+                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, params,
+                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,chunksize=1000):
 
-    with futures.ProcessPoolExecutor as executor:
-        for (par,t) in executor.map(do_parameterize, args):
-            ret_p.append(par)
             ret_tri.append(t)
 
-    # do_parameterize(args)
+    ret_tri = sorted(ret_tri, key = lambda tri : tri['id'])
+    for t in ret_tri:
+        for key, data in t.items():
+            for d in data:
+                params[key].append(d)
+            # print(data)
 
+    # exit(1)
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str(time.perf_counter() - start_time))
 
@@ -883,9 +888,7 @@ def main():
     print('Done')
 
 
-def do_parameterize(args):
-    tris, gt,  is_geographic, mesh, parameter_files, params, RasterXSize, RasterYSize, \
-    srs_proj4 = args
+def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSize, RasterYSize, srs_proj4, elem):
 
     srs_out = osr.SpatialReference()
     srs_out.ImportFromProj4(srs_proj4)
@@ -897,83 +900,82 @@ def do_parameterize(args):
                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
             parameter_files[key]['file'].append(ds)
     i = 0
-    for elem in tris:
-        v0 = mesh['mesh']['elem'][elem][0]
-        v1 = mesh['mesh']['elem'][elem][1]
-        v2 = mesh['mesh']['elem'][elem][2]
 
-        # Create a temporary vector layer in memory
-        mem_drv = ogr.GetDriverByName('Memory')
-        mem_ds = mem_drv.CreateDataSource('out')
-        mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
+    params['id'].append(elem)
+    v0 = mesh['mesh']['elem'][elem][0]
+    v1 = mesh['mesh']['elem'][elem][1]
+    v2 = mesh['mesh']['elem'][elem][2]
 
-
-        # regardless of shp file output, we need this to do the area calculation
-        ring = ogr.Geometry(ogr.wkbLinearRing)
-        ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
-        ring.AddPoint(mesh['mesh']['vertex'][v0][0],
-                      mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
-
-        # need this for the area calculation
-        tpoly = ogr.Geometry(ogr.wkbPolygon)
-        tpoly.AddGeometry(ring)
-
-        feature = ogr.Feature(mem_layer.GetLayerDefn())
-        feature.SetGeometry(tpoly)
-
-        feature.SetField('triangle', int(i))
-        mem_layer.CreateFeature(feature)
-
-        area = 0
-        # if the input was geographic, we need to project to get a reasonable area
-        # if is_geographic:
-        #     transform = osr.CoordinateTransformation(srs, srs_out)
-        #     p = tpoly.Clone()
-        #     p.Transform(transform)
-        #
-        #     area = p.GetArea()
-        # else:
-        area = tpoly.GetArea()
-
-        # feature.SetField('area', area)
-        params['area'].append(area)
-
-        # calculate new geotransform of the feature subset
-        geom = feature.geometry()
-        src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
-        new_gt = (
-            (gt[0] + (src_offset[0] * gt[1])),
-            gt[1],
-            0.0,
-            (gt[3] + (src_offset[1] * gt[5])),
-            0.0,
-            gt[5]
-        )
+    # Create a temporary vector layer in memory
+    mem_drv = ogr.GetDriverByName('Memory')
+    mem_ds = mem_drv.CreateDataSource('out')
+    mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
 
 
+    # regardless of shp file output, we need this to do the area calculation
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
+    ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
+    ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
+    ring.AddPoint(mesh['mesh']['vertex'][v0][0],
+                  mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
 
-        # get the value under each triangle from each parameter file
-        for key, data in parameter_files.items():
-            output = []
+    # need this for the area calculation
+    tpoly = ogr.Geometry(ogr.wkbPolygon)
+    tpoly.AddGeometry(ring)
 
-            for f, m in zip(data['file'], data['method']):
-                output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
+    feature = ogr.Feature(mem_layer.GetLayerDefn())
+    feature.SetGeometry(tpoly)
 
-            if 'classifier' in data:
-                output = data['classifier'](*output)
-            else:
-                output = output[0]  # flatten the list for the append below
-            params[key].append(output)
+    feature.SetField('triangle', int(i))
+    mem_layer.CreateFeature(feature)
 
-            # if write_shp:
-            #     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
-            #     feature.SetField(key[0:10], output)
+    area = 0
+    # if the input was geographic, we need to project to get a reasonable area
+    # if is_geographic:
+    #     transform = osr.CoordinateTransformation(srs, srs_out)
+    #     p = tpoly.Clone()
+    #     p.Transform(transform)
+    #
+    #     area = p.GetArea()
+    # else:
+    area = tpoly.GetArea()
 
-            # we want to write actual NaN to vtu for better displaying
-            if output == -9999:
-                output = float('nan')
+    # feature.SetField('area', area)
+    params['area'].append(area)
+
+    # calculate new geotransform of the feature subset
+    geom = feature.geometry()
+    src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
+    new_gt = (
+        (gt[0] + (src_offset[0] * gt[1])),
+        gt[1],
+        0.0,
+        (gt[3] + (src_offset[1] * gt[5])),
+        0.0,
+        gt[5]
+    )
+
+    # get the value under each triangle from each parameter file
+    for key, data in parameter_files.items():
+        output = []
+
+        for f, m in zip(data['file'], data['method']):
+            output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
+
+        if 'classifier' in data:
+            output = data['classifier'](*output)
+        else:
+            output = output[0]  # flatten the list for the append below
+        params[key].append(output)
+
+        # if write_shp:
+        #     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+        #     feature.SetField(key[0:10], output)
+
+        # we want to write actual NaN to vtu for better displaying
+        if output == -9999:
+            output = float('nan')
 
 
 
@@ -1004,7 +1006,7 @@ def do_parameterize(args):
         #     layer.CreateFeature(feature)
         # i = i + 1
         # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
-    return params,tris
+    return params
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin):
