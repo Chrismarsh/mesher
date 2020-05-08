@@ -19,7 +19,14 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
       - gdal development libaries (e.g., ``dnf install gdal-devel`` or ``brew install gdal``). See other notes :ref:`build:gdal` as you may also need the binary package.
       - vtk development libaries (e.g., ``dnf install vtk-devel`` or ``brew install vtk``) **if not** Python 3.6, or 3.7
 
+.. :: warning
+    On linux you may need ``libffi`` if, upon running ``pip``, there is an error about ``_ctypes``
 
+    On Ubuntu
+    ``apt-get install libffi-dev``
+
+    On CentOS/Fedora
+     ``dnf install libffi-devel``
 
 .. note::
    As ``conan`` is used during the compilation, two new remotes will be automatically added to the ``.conan/remotes.json`` file:
@@ -39,7 +46,7 @@ Full working example
 This provides a full example of setting up a python environemtn with the assumption the user does not have a python environment setup. 
 
 .. note::
-   If on macos, and you have homebrew, install ``pyenv`` and ``pyenv-virtualenv`` via brew. 
+   If on macos, and you have homebrew, you can optionally install ``pyenv`` and ``pyenv-virtualenv`` via brew.
 
 
 Install `pyenv`_
@@ -47,10 +54,7 @@ Install `pyenv`_
 
    curl https://pyenv.run | bash
 
-Install `pyenv-virtualenv <https://github.com/pyenv/pyenv-virtualenv>`_ 
-::
-   
-   git clone https://github.com/pyenv/pyenv-virtualenv.git $(pyenv root)/plugins/pyenv-virtualenv
+Note, this automatically installs ``pyenv-virtualenv``.
 
 Restart the shell and update
 ::
