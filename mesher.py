@@ -768,7 +768,7 @@ def main():
         params[key] = []
 
     params['area'] = []
-    params['id']=[]
+    params['id'] = []
 
     for key, data in initial_conditions.items():
         ics[key] = []
@@ -839,31 +839,36 @@ def main():
 
     start_time2 = time.perf_counter()
 
-
-    i = 0
-
-    # build up the masks
     gt = src_ds.GetGeoTransform()
 
     tris = range(mesh['mesh']['nelem'])
 
     ret_tri = []
 
-    with futures.ProcessPoolExecutor() as executor:
-        for t in executor.map(
-                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, params,
-                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,chunksize=1000):
+    nworkers = 16
 
+    with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
+        for tri, t in executor.map(
+                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, params,
+                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
+                        chunksize=len(tris) // nworkers):
             ret_tri.append(t)
 
-    ret_tri = sorted(ret_tri, key = lambda tri : tri['id'])
+    for key, data in parameter_files.items():
+        parameter_files[key]['file'] = None
+
+    ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
+    print(ret_tri[0])
+    print(ret_tri[1])
+    print(ret_tri[2])
+
     for t in ret_tri:
         for key, data in t.items():
             for d in data:
                 params[key].append(d)
-            # print(data)
 
-    # exit(1)
+
+
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str(time.perf_counter() - start_time))
 
@@ -894,11 +899,13 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSiz
     srs_out.ImportFromProj4(srs_proj4)
 
     for key, data in parameter_files.items():
-        for f in data['filename']:
-            ds = gdal.Open(f)
-            if ds is None:
-                raise RuntimeError('Error: Unable to open raster for: %s' % key)
-            parameter_files[key]['file'].append(ds)
+        if data['file'] is None:
+            parameter_files[key]['file'] = []
+            for f in data['filename']:
+                ds = gdal.Open(f)
+                if ds is None:
+                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
+                parameter_files[key]['file'].append(ds)
     i = 0
 
     params['id'].append(elem)
@@ -1028,7 +1035,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
     for r in ret:
         key = r['key']
         input_files[key]['filename'] = r['filename']
-        input_files[key]['file'] = []
+        input_files[key]['file'] = None
 
         if not isinstance(input_files[key]['method'], list):
             input_files[key]['method'] = [input_files[key]['method']]
