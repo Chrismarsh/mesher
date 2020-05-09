@@ -848,29 +848,24 @@ def main():
     nworkers = 16
 
     with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
-        for tri, t in executor.map(
-                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, params,
+        for t in executor.map(
+                partial(do_parameterize, gt, is_geographic, mesh, parameter_files,
                         src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
-                        chunksize=len(tris) // nworkers):
+                chunksize=len(tris) // nworkers):
             ret_tri.append(t)
 
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
 
-    ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
-    print(ret_tri[0])
-    print(ret_tri[1])
-    print(ret_tri[2])
 
+    ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
     for t in ret_tri:
         for key, data in t.items():
-            for d in data:
-                params[key].append(d)
-
+            params[key].append(data)
 
 
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
-    print('Total time took %s s' % str(time.perf_counter() - start_time))
+    print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
 
     write_vtu(base_dir + base_name + '.vtu', mesh, params)
 
@@ -893,8 +888,9 @@ def main():
     print('Done')
 
 
-def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSize, RasterYSize, srs_proj4, elem):
+def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, RasterYSize, srs_proj4, elem):
 
+    params = {}
     srs_out = osr.SpatialReference()
     srs_out.ImportFromProj4(srs_proj4)
 
@@ -908,7 +904,8 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSiz
                 parameter_files[key]['file'].append(ds)
     i = 0
 
-    params['id'].append(elem)
+    params['id'] = elem
+
     v0 = mesh['mesh']['elem'][elem][0]
     v1 = mesh['mesh']['elem'][elem][1]
     v2 = mesh['mesh']['elem'][elem][2]
@@ -949,7 +946,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSiz
     area = tpoly.GetArea()
 
     # feature.SetField('area', area)
-    params['area'].append(area)
+    params['area'] = area
 
     # calculate new geotransform of the feature subset
     geom = feature.geometry()
@@ -974,7 +971,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSiz
             output = data['classifier'](*output)
         else:
             output = output[0]  # flatten the list for the append below
-        params[key].append(output)
+
 
         # if write_shp:
         #     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
@@ -984,6 +981,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, params, RasterXSiz
         if output == -9999:
             output = float('nan')
 
+        params[key] = output
 
 
         # for key, data in initial_conditions.items():
