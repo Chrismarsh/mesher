@@ -29,8 +29,6 @@ import vtk
 import warnings
 from concurrent import futures
 import time
-import matplotlib
-matplotlib.use('TkAgg')
 
 gdal.UseExceptions()  # Enable exception support
 
@@ -846,23 +844,25 @@ def main():
     ret_tri = []
 
     nworkers = 16
-
+    csize = len(tris) // nworkers
+    if csize < 1:
+        csize = 1
     with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
         for t in executor.map(
                 partial(do_parameterize, gt, is_geographic, mesh, parameter_files,
                         src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
-                chunksize=len(tris) // nworkers):
+                chunksize=csize):
             ret_tri.append(t)
 
+    reordertime = time.perf_counter()
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
 
-
-    ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
+    # ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
     for t in ret_tri:
         for key, data in t.items():
             params[key].append(data)
-
+    print('Reorder params took %s s' % str(round(time.perf_counter() - reordertime, 2)))
 
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
