@@ -843,7 +843,7 @@ def main():
 
     ret_tri = []
 
-    nworkers = 16
+    nworkers = 32
     csize = len(tris) // nworkers
     if csize < 1:
         csize = 1
