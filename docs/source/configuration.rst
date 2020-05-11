@@ -78,6 +78,12 @@ The RMSE produces the best distribution of triangle sizes and does not penalized
 
 The ``mesher.py`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
 
+.. confval:: nworkers
+
+    :type: int
+    :default: Numbers of physical CPUs
+
+Mesher will use the number of physical CPUs to parallel various tasks. This allows for fine-tuning that parameter.
 
 Environment variables
 =====================
@@ -86,6 +92,13 @@ Environment variables
    :type: string
 
 Instead of specifying a ``mesher_path`` in the configuration file, the environment variable ``MESHER_EXE`` may be set to the binary. If both ``MESHER_EXE`` and ``mesher_path`` are defined, the configuration file path takes precedence.
+
+.. confval:: MESHER_NWORKERS
+
+    :type: int
+
+This will override a configuration file ``nworkers`` value for number of CPUs to use.
+
 
 Lloyd iterations
 ================

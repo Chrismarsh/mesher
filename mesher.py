@@ -60,7 +60,9 @@ def main():
         parameter_files = X.parameter_files
 
         for key, data in parameter_files.items():
-            parameter_files[key]['file'] = parameter_files[key]['file'].strip()
+            if isinstance(data['file'], list):
+                for i in range(len(data['file'])):
+                    parameter_files[key]['file'][i] = parameter_files[key]['file'][i].strip()
 
     # initial conditions to apply to the triangles with
     initial_conditions = {}
@@ -232,6 +234,25 @@ def main():
     extent = None
     if hasattr(X, 'extent'):
         extent = X.extent
+
+    nworkers = os.cpu_count()
+
+    # on linux we can ensure that we respect cpu affinity
+    if 'sched_getaffinity' in dir(os):
+        nworkers = len(os.sched_getaffinity(0))
+
+    if hasattr(X, 'nworkers'):
+        nworkers = X.nworkers
+
+    try:
+        nworkers = os.environ['MESHER_NWORKERS']
+
+        if hasattr(X, 'nworkers'):
+            print('Warning: Overridding configfile nworkers with environment variable MESHER_NWORKERS')
+    except KeyError as E:
+        pass
+    print('Using {0} CPUs'.format(nworkers))
+    exit(1)
     ########################################################
 
     # we need to make sure we pickup the right paths to all the gdal scripts
@@ -368,7 +389,7 @@ def main():
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     total_weights, use_weights = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
-                      srs_out,  xmax, xmin, ymax, ymin)
+                      srs_out,  xmax, xmin, ymax, ymin, nworkers)
 
     topo_weight = 1 - total_weights
 
@@ -381,7 +402,7 @@ def main():
 
 
     regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
-                      srs_out, xmax, xmin, ymax, ymin)
+                      srs_out, xmax, xmin, ymax, ymin, nworkers)
 
     plgs_shp = base_name + '.shp'
 
@@ -843,7 +864,7 @@ def main():
 
     ret_tri = []
 
-    nworkers = 32
+
     csize = len(tris) // nworkers
     if csize < 1:
         csize = 1
@@ -1014,7 +1035,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
     return params
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
-                      xmax, xmin, ymax, ymin):
+                      xmax, xmin, ymax, ymin, max_workers):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
@@ -1027,7 +1048,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
 
-    with futures.ProcessPoolExecutor(max_workers=4) as executor:
+    with futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         for (r) in executor.map(_future_regularize_inputs, param_args):
             ret.append(r)
     for r in ret:
