@@ -97,7 +97,7 @@ Instead of specifying a ``mesher_path`` in the configuration file, the environme
 
     :type: int
 
-This will override a configuration file ``nworkers`` value for number of CPUs to use.
+Specifies number of CPUs to use for parallel tasks. This will override a configuration file ``nworkers`` value.
 
 
 Lloyd iterations
