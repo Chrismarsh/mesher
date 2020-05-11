@@ -252,7 +252,7 @@ def main():
     except KeyError as E:
         pass
     print('Using {0} CPUs'.format(nworkers))
-    exit(1)
+
     ########################################################
 
     # we need to make sure we pickup the right paths to all the gdal scripts
