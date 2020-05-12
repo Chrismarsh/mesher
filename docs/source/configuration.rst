@@ -338,6 +338,7 @@ Optionally, ``method`` may be a user-specified function that accepts a numpy arr
 Mesher will resize the cells of a raster to match the input DEM's resolution. However this can result in producing a lot of small triangles around a coarse raster's cells if a tolerance for this raster is set. For example, if using a coarse vegetation class with a high resoution DEM, it can produce a lot of edge triangles around the vegetation classes. Therefore, if a tolerance on a parameter layer is set, then ``do_cell_resize=False`` is automatically set.
 
 .. confval:: drop
+
     :type: bool
     :default: false
 
