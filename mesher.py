@@ -437,11 +437,16 @@ def main():
     # noinspection PyUnusedLocal
     dst_ds = None  # close file
 
+
+
     # raster -> polygon
-    subprocess.check_call(
-        ['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix, tmp_raster, tmp_raster,
-                                                                           base_dir +
-                                                                           plgs_shp)], shell=True)
+    # subprocess.check_call(
+    #     ['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix, tmp_raster, tmp_raster,
+    #                                                                        base_dir +
+    #                                                                        plgs_shp)], shell=True)
+
+    gdal_polygonize(tmp_raster,tmp_raster,base_dir + plgs_shp)
+
     driver = ogr.GetDriverByName('ESRI Shapefile')
     dataSource = driver.Open(base_dir + plgs_shp, 1)
 
@@ -1333,6 +1338,37 @@ def rasterize_elem(rds, mem_layer, key, aggMethod, srs, new_gt, src_offset):
 
     return output
 
+# To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the
+# gdal_polygonize.py code from
+# https://github.com/OSGeo/gdal/blob/release/2.4/gdal/swig/python/scripts/gdal_polygonize.py
+def gdal_polygonize(src_filename, mask, dst_filename):
+    options = []
+    src_band_n = 1
+    src_ds = gdal.Open(src_filename)
+
+    srcband = src_ds.GetRasterBand(src_band_n)
+
+    mask_ds = gdal.Open(mask)
+    maskband = mask_ds.GetRasterBand(1)
+
+    dst_ds = ogr.Open(dst_filename, update=1)
+    drv = ogr.GetDriverByName("ESRI Shapefile")
+    dst_ds = drv.CreateDataSource(dst_filename)
+
+    srs = None
+    if src_ds.GetProjectionRef() != '':
+        srs = osr.SpatialReference()
+        srs.ImportFromWkt(src_ds.GetProjectionRef())
+
+    dst_layer = dst_ds.CreateLayer('out', geom_type=ogr.wkbPolygon, srs=srs)
+
+    fd = ogr.FieldDefn('DN', ogr.OFTInteger)
+    dst_layer.CreateField(fd)
+    dst_field = 0
+
+    result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
+
+    
 def write_vtu(fname, mesh, parameter_files):
 
     vtu = vtk.vtkUnstructuredGrid()
