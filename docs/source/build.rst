@@ -188,7 +188,7 @@ other libraries
 ***************
 :: 
    
-   pip install numpy scipy
+   pip install numpy scipy cloudpickle
 
 
 

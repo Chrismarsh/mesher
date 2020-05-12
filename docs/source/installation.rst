@@ -84,7 +84,16 @@ Now, if you wish to run mesher activate the virtualenv
    mesher.py my-config-file.py
 
 
+Install of github branch
+*************************
+You can optionally use pip to install the most recent github version or a github branch. However, the automatic
+setup of the build environment does not occur, so ensure ``scikit-build``, ``cmake``, ``conan``, and ``ninja` are installed. Then,
 
+::
+
+    pip install git+https://github.com/Chrismarsh/mesher@branch-name
+
+If mesher is already installed, use ``--force-reinstall`` to reinstall it.
 
 
 Automatic virtualenv activation
