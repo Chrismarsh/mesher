@@ -247,6 +247,10 @@ def main():
     if hasattr(X, 'nworkers'):
         nworkers = X.nworkers
 
+    nworkers_gdal = nworkers
+    if hasattr(X, 'nworkers_gdal'):
+        nworkers_gdal = X.nworkers_gdal
+
     try:
         nworkers = os.environ['MESHER_NWORKERS']
 
@@ -393,7 +397,7 @@ def main():
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     total_weights, use_weights = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
-                      srs_out,  xmax, xmin, ymax, ymin, nworkers)
+                      srs_out,  xmax, xmin, ymax, ymin, nworkers_gdal)
 
     topo_weight = 1 - total_weights
 
@@ -406,7 +410,7 @@ def main():
 
 
     regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
-                      srs_out, xmax, xmin, ymax, ymin, nworkers)
+                      srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
 
     plgs_shp = base_name + '.shp'
 
