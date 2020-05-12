@@ -24,14 +24,15 @@ import numpy as np
 from functools import partial
 import sys
 import shutil
-import imp
+import importlib
 import vtk
 import warnings
+import uuid
+import cloudpickle
 from concurrent import futures
 import time
 
 gdal.UseExceptions()  # Enable exception support
-
 
 def main():
     # load user configurable paramters here
@@ -45,7 +46,9 @@ def main():
     configfile = sys.argv[-1]
 
     # Load in configuration file as module
-    X = imp.load_source('', configfile)
+    X = importlib.machinery.SourceFileLoader('config',configfile)
+    X = X.load_module()
+
 
     # get config file dire
     cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
@@ -235,7 +238,7 @@ def main():
     if hasattr(X, 'extent'):
         extent = X.extent
 
-    nworkers = os.cpu_count()
+    nworkers = os.cpu_count() or 1
 
     # on linux we can ensure that we respect cpu affinity
     if 'sched_getaffinity' in dir(os):
@@ -251,6 +254,7 @@ def main():
             print('Warning: Overridding configfile nworkers with environment variable MESHER_NWORKERS')
     except KeyError as E:
         pass
+    nworkers = int(nworkers)
     print('Using {0} CPUs'.format(nworkers))
 
     ########################################################
@@ -989,7 +993,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
             output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
 
         if 'classifier' in data:
-            output = data['classifier'](*output)
+            output = cloudpickle.loads(data['classifier'])(*output)
         else:
             output = output[0]  # flatten the list for the append below
 
@@ -1001,6 +1005,10 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
         # we want to write actual NaN to vtu for better displaying
         if output == -9999:
             output = float('nan')
+
+        if output is None and 'classifier' in data:
+            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
+            exit(1)
 
         params[key] = output
 
@@ -1045,6 +1053,9 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         if 'weight' in data:
             total_weights += data['weight']
             use_weights = True
+        if 'classifier' in data:
+            input_files[key]['classifier'] = cloudpickle.dumps(input_files[key]['classifier'])
+
         param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
 
@@ -1116,7 +1127,9 @@ def _future_regularize_inputs(args):
             print("Parameter " + f + " must have spatial reference information.")
             exit(1)
 
-        out_name = base_dir + output_param_fname + '_projected.tif'
+        mangle = uuid.uuid4().hex[:8]
+
+        out_name = base_dir + output_param_fname + '_' + mangle + '_projected.tif'
 
 
         # force all the parameter files to have the same extent as the input DEM
@@ -1125,7 +1138,7 @@ def _future_regularize_inputs(args):
                                            pixel_height)], shell=True)
 
 
-        ret_df['filename'].append(out_name)  # save the file name if needed for mesher
+        ret_df['filename'].append(out_name)
 
     return ret_df
 
