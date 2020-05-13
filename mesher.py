@@ -409,10 +409,15 @@ def main():
 
     exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
-    total_weights, use_weights = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
+    total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
                       srs_out,  xmax, xmin, ymax, ymin, nworkers_gdal)
 
-    topo_weight = 1 - total_weights
+    total_weights_ic, use_weights_ic =regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
+                      srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
+
+    use_weights = use_weights_param or use_weights_ic
+
+    topo_weight = 1 - (total_weights_param + total_weights_ic)
 
     # over ride with user settings
     if user_no_weights:
@@ -420,10 +425,6 @@ def main():
 
     if use_weights and topo_weight < 0:
          raise RuntimeError("Parameter weights must equal 1")
-
-
-    regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
-                      srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
 
     plgs_shp = base_name + '.shp'
 
@@ -818,9 +819,6 @@ def main():
     for key, data in initial_conditions.items():
         ics[key] = []
 
-    i = 0
-    nelem = 0
-
     # loop through all the triangles and assign the parameter and ic values to the triangle
     start_time = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
@@ -890,7 +888,6 @@ def main():
 
     ret_tri = []
 
-
     csize = len(tris) // nworkers
     if csize < 1:
         csize = 1
@@ -914,7 +911,7 @@ def main():
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
 
-    write_vtu(base_dir + base_name + '.vtu', mesh, params)
+    write_vtu(base_dir + base_name + '.vtu', mesh, params, ics)
 
     if write_shp:
         output_usm.FlushCache()
@@ -1379,7 +1376,7 @@ def gdal_polygonize(src_filename, mask, dst_filename):
     result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
 
 
-def write_vtu(fname, mesh, parameter_files):
+def write_vtu(fname, mesh, parameter_files, initial_conditions):
 
     vtu = vtk.vtkUnstructuredGrid()
 
