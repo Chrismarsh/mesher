@@ -412,7 +412,7 @@ def main():
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
                       srs_out,  xmax, xmin, ymax, ymin, nworkers_gdal)
 
-    total_weights_ic, use_weights_ic =regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
+    total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
                       srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
 
     use_weights = use_weights_param or use_weights_ic
@@ -424,7 +424,7 @@ def main():
         use_weights = False
 
     if use_weights and topo_weight < 0:
-         raise RuntimeError("Parameter weights must equal 1")
+        raise RuntimeError("Parameter weights must equal 1")
 
     plgs_shp = base_name + '.shp'
 
@@ -704,7 +704,7 @@ def main():
                 if data['method'] == 'mode':
                     execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
                 else:
-                    execstr += ' --raster %s --tolerance %s' % (data['filename'], data['tolerance'])
+                    execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
             if use_weights and 'weight' in data:
                 execstr += ' --weight %s' % data['weight']
 
@@ -887,26 +887,36 @@ def main():
     tris = range(mesh['mesh']['nelem'])
 
     ret_tri = []
+    ret_tri_ic =[]
 
     csize = len(tris) // nworkers
     if csize < 1:
         csize = 1
     with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
-        for t in executor.map(
-                partial(do_parameterize, gt, is_geographic, mesh, parameter_files,
+        for p,i in executor.map(
+                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
                         src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
                 chunksize=csize):
-            ret_tri.append(t)
+            ret_tri.append(p)
+            ret_tri_ic.append(i)
 
     reordertime = time.perf_counter()
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
+
+    for key, data in initial_conditions.items():
+        initial_conditions[key]['file'] = None
 
     # ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
     for t in ret_tri:
         for key, data in t.items():
             params[key].append(data)
     print('Reorder params took %s s' % str(round(time.perf_counter() - reordertime, 2)))
+
+    for t in ret_tri_ic:
+        for key, data in t.items():
+            ics[key].append(data)
+    print('Reorder ics took %s s' % str(round(time.perf_counter() - reordertime, 2)))
 
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
@@ -932,9 +942,10 @@ def main():
     print('Done')
 
 
-def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, RasterYSize, srs_proj4, elem):
+def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4, elem):
 
     params = {}
+    ics = {}
     srs_out = osr.SpatialReference()
     srs_out.ImportFromProj4(srs_proj4)
 
@@ -946,6 +957,15 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
                 if ds is None:
                     raise RuntimeError('Error: Unable to open raster for: %s' % key)
                 parameter_files[key]['file'].append(ds)
+
+    for key, data in initial_conditions.items():
+        if data['file'] is None:
+            initial_conditions[key]['file'] = []
+            for f in data['filename']:
+                ds = gdal.Open(f)
+                if ds is None:
+                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
+                initial_conditions[key]['file'].append(ds)
 
     params['id'] = elem
 
@@ -1013,11 +1033,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
         else:
             output = output[0]  # flatten the list for the append below
 
-
-        # if write_shp:
-        #     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
-        #     feature.SetField(key[0:10], output)
-
         # we want to write actual NaN to vtu for better displaying
         if output == -9999:
             output = float('nan')
@@ -1028,35 +1043,27 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
 
         params[key] = output
 
+    for key, data in initial_conditions.items():
+        output = []
 
-        # for key, data in initial_conditions.items():
-        #     output = []
-        #
-        #     for f, m in zip(data['file'], data['method']):
-        #         output.append(rasterize_elem(f, feature, key, m))
-        #
-        #     if 'classifier' in data:
-        #         output = data['classifier'](*output)
-        #     else:
-        #         output = output[0]  # flatten the list for the append below
-        #
-        #     ics[key].append(output)
-        #
-        #     if write_shp:
-        #         feature.SetField(key[0:10], float(output))
-        #
-        #     # we want to write actual NaN to vtu for better displaying
-        #     if output == -9999:
-        #         output = float('nan')
-        #
-        #     if write_vtu:
-        #         vtu_cells['[ic] ' + key].InsertNextTuple1(output)
+        for f, m in zip(data['file'], data['method']):
+            output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
 
-        # if write_shp:
-        #     layer.CreateFeature(feature)
-        # i = i + 1
-        # if the simplify_tol is too large, we can end up with a triangle that is entirely outside of the domain
-    return params
+        if 'classifier' in data:
+            output = cloudpickle.loads(data['classifier'])(*output)
+        else:
+            output = output[0]  # flatten the list for the append below
+
+        if output == -9999:
+            output = float('nan')
+
+        if output is None and 'classifier' in data:
+            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
+            exit(1)
+
+        ics[key] = output
+
+    return params, ics
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin, max_workers):
@@ -1375,6 +1382,15 @@ def gdal_polygonize(src_filename, mask, dst_filename):
 
     result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
 
+def write_shp():
+    pass
+
+# if write_shp:
+#     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+#     feature.SetField(key[0:10], output)
+
+# if write_shp:
+        #     layer.CreateFeature(feature)
 
 def write_vtu(fname, mesh, parameter_files, initial_conditions):
 
@@ -1409,11 +1425,10 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
         vtu_cells[k] = vtk.vtkFloatArray()
         vtu_cells[k].SetName(k)
 
-    # for key, data in initial_conditions.items():
-    #     k = '[ic] ' + key
-    #     if write_vtu:
-    #         vtu_cells[k] = vtk.vtkFloatArray()
-    #         vtu_cells[k].SetName(k)
+    for key, data in initial_conditions.items():
+        k = '[ic] ' + key
+        vtu_cells[k] = vtk.vtkFloatArray()
+        vtu_cells[k].SetName(k)
 
     for elem in range(mesh['mesh']['nelem']):
         v0 = mesh['mesh']['elem'][elem][0]
@@ -1450,6 +1465,10 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
         for key, data in parameter_files.items():
             output = data[elem]
             vtu_cells['[param] ' + key].InsertNextTuple1(output)
+
+        for key, data in initial_conditions.items():
+            output = data[elem]
+            vtu_cells['[ic] ' + key].InsertNextTuple1(output)
 
 
 
