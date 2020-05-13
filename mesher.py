@@ -174,13 +174,13 @@ def main():
         user_output_dir += os.path.sep
 
     # should we write a shape file of the USM, pretty costly on the big meshes
-    write_shp = True
+    output_write_shp = True
     if hasattr(X, 'write_shp'):
-        write_shp = X.write_shp
+        output_write_shp = X.write_shp
 
-    # write_vtu = True
-    # if hasattr(X, 'write_vtu'):
-    #     write_vtu = X.write_vtu
+    output_write_vtu = True
+    if hasattr(X, 'write_vtu'):
+        output_write_vtu = X.write_vtu
 
     # Use the input file's projection.
     # This is useful for preserving a UTM input. Does not work if the input file is geographic.
@@ -727,7 +727,6 @@ def main():
 
     read_header = False
 
-
     invalid_nodes = []  # any nodes that are outside of the domain.
     print('Reading nodes')
     with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
@@ -769,32 +768,6 @@ def main():
 
                     mesh['mesh']['neigh'].append([v0, v1, v2])
 
-    # Create the shape file to hold the triangulation. Could do all in memory but it is nice to see this in a GIS
-    # set up the shapefile driver
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-    # create the data source
-    try:
-        os.remove(base_dir +
-                  base_name + '_USM.shp')
-    except OSError:
-        pass
-
-    output_usm = driver.CreateDataSource(base_dir +
-                                         base_name + '_USM.shp')
-
-
-    # create the layer. Even if we don't save the shp file, we need this for rasterization and area estimates
-    layer = output_usm.CreateLayer(base_name, srs, ogr.wkbPolygon)
-
-    layer.CreateField(ogr.FieldDefn("triangle", ogr.OFTInteger))  # holds the triangle id.
-    layer.CreateField(ogr.FieldDefn("area", ogr.OFTReal))
-
-    for key, value in parameter_files.items():
-        layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
-
-    for key, value in initial_conditions.items():
-        layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
-    # feature.SetField('area', area)
     read_header = False
 
     print('Computing parameters and initial conditions')
@@ -921,13 +894,15 @@ def main():
     print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
     print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
 
-    write_vtu(base_dir + base_name + '.vtu', mesh, params, ics)
+    if output_write_vtu:
+        print('Writing vtu file')
+        write_vtu(base_dir + base_name + '.vtu', mesh, params, ics)
 
-    if write_shp:
-        output_usm.FlushCache()
-    output_usm = None  # close file
+    if output_write_shp:
+        print('Writing shp file')
+        write_shp(base_dir + base_name + '_USM.shp',mesh, params, ics)
 
-    output_usm = None  # close the file
+
     print('Saving mesh to file ' + base_name + '.mesh')
     with open(user_output_dir + base_name + '.mesh', 'w') as outfile:
         json.dump(mesh, outfile, indent=4)
@@ -979,7 +954,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
     mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
 
 
-    # regardless of shp file output, we need this to do the area calculation
+    # we need this to do the area calculation
     ring = ogr.Geometry(ogr.wkbLinearRing)
     ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
     ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
@@ -1026,7 +1001,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
         output = []
 
         for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
+            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
         if 'classifier' in data:
             output = cloudpickle.loads(data['classifier'])(*output)
@@ -1047,7 +1022,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
         output = []
 
         for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, key, m, srs_out, new_gt, src_offset))
+            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
         if 'classifier' in data:
             output = cloudpickle.loads(data['classifier'])(*output)
@@ -1280,7 +1255,7 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def rasterize_elem(rds, mem_layer, key, aggMethod, srs, new_gt, src_offset):
+def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
     raster = rds.GetRasterBand(1)
     src_array = raster.ReadAsArray(*src_offset)
@@ -1292,10 +1267,10 @@ def rasterize_elem(rds, mem_layer, key, aggMethod, srs, new_gt, src_offset):
     mask.SetProjection(srs.ExportToWkt())
     err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
     if err != 0:
-        raise Exception("error rasterizing layer: %s" % err)
+        raise Exception("Error rasterizing layer: %s" % err)
 
-
-    mask_arr = mask.ReadAsArray()  # holds a mask of where the triangle is on the raster
+    # holds a mask of where the triangle is on the raster
+    mask_arr = mask.ReadAsArray()
 
     # Mask the source data array with our current feature
     src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
@@ -1382,15 +1357,64 @@ def gdal_polygonize(src_filename, mask, dst_filename):
 
     result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
 
-def write_shp():
-    pass
 
-# if write_shp:
-#     # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
-#     feature.SetField(key[0:10], output)
+def write_shp(fname, mesh, parameter_files, initial_conditions):
+    # Create the shape file to hold the triangulation
 
-# if write_shp:
-        #     layer.CreateFeature(feature)
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+
+    try:
+        os.remove(fname) #remove if existing
+    except OSError:
+        pass
+
+    output_usm = driver.CreateDataSource(fname)
+
+    srs_out = osr.SpatialReference()
+    srs_out.ImportFromProj4(mesh['mesh']['proj4'])
+
+    layer = output_usm.CreateLayer('mesh', srs_out, ogr.wkbPolygon)
+
+    for key, value in parameter_files.items():
+        layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
+
+    for key, value in initial_conditions.items():
+        layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
+
+    for elem in range(mesh['mesh']['nelem']):
+        v0 = mesh['mesh']['elem'][elem][0]
+        v1 = mesh['mesh']['elem'][elem][1]
+        v2 = mesh['mesh']['elem'][elem][2]
+
+        # we need this to do the area calculation
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
+        ring.AddPoint(mesh['mesh']['vertex'][v0][0],
+                      mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
+
+        # need this for the area calculation
+        tpoly = ogr.Geometry(ogr.wkbPolygon)
+        tpoly.AddGeometry(ring)
+
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(tpoly)
+
+
+        # for this section,
+        # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+        for key, data in parameter_files.items():
+            output = data[elem]
+            feature.SetField(key[0:10], output)
+
+        for key, data in initial_conditions.items():
+            output = data[elem]
+            feature.SetField(key[0:10], output)
+
+        layer.CreateFeature(feature)
+    output_usm.FlushCache()
+    output_usm = None  # close file
 
 def write_vtu(fname, mesh, parameter_files, initial_conditions):
 
