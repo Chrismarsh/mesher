@@ -81,9 +81,18 @@ The ``mesher.py`` script needs to know where the backend mesher executable is lo
 .. confval:: nworkers
 
     :type: int
-    :default: Numbers of physical CPUs
+    :default: Number of physical CPUs
 
 Mesher will use the number of physical CPUs to parallel various tasks. This allows for fine-tuning that parameter.
+
+.. confval:: nworkers_gdal
+
+    :type: int
+    :default: Number of physical CPUs
+
+The initial step where all input parameters and initial conditions are made resampled and clipped to the input DEM
+extent can be memory heavy. Therefore this limits, separate from the number of workers for the main parameterize loop,
+how many parallel workers should be used to limit memory consumption.
 
 Environment variables
 =====================
@@ -98,6 +107,12 @@ Instead of specifying a ``mesher_path`` in the configuration file, the environme
     :type: int
 
 Specifies number of CPUs to use for parallel tasks. This will override a configuration file ``nworkers`` value.
+
+.. confval:: MESHER_NWORKERS_GDAL
+
+    :type: int
+
+Specifies number of CPUs to use for parallel gdal tasks. This will override a configuration file ``nworkers_gdal`` value.
 
 
 Lloyd iterations
