@@ -249,9 +249,18 @@ def main():
     if hasattr(X, 'nworkers'):
         nworkers = X.nworkers
 
+    # GDAL workers are for the initial regularize call where multiple gdalwarp processes are started
+    # these are memory heavy so this can be limited if required
     nworkers_gdal = nworkers
     if hasattr(X, 'nworkers_gdal'):
         nworkers_gdal = X.nworkers_gdal
+    try:
+        nworkers_gdal = os.environ['MESHER_NWORKERS_GDAL']
+
+        if hasattr(X, 'nworkers_gdal'):
+            print('Warning: Overridding configfile nworkers_gdal with environment variable MESHER_NWORKERS_GDAL')
+    except KeyError as E:
+        pass
 
     try:
         nworkers = os.environ['MESHER_NWORKERS']
@@ -261,6 +270,8 @@ def main():
     except KeyError as E:
         pass
     nworkers = int(nworkers)
+    nworkers_gdal = int(nworkers_gdal)
+    print('Using {0} CPUs for GDAL'.format(nworkers_gdal))
     print('Using {0} CPUs'.format(nworkers))
 
     ########################################################
