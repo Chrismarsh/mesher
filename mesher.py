@@ -33,6 +33,8 @@ from concurrent import futures
 import time
 
 gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()  # Enable exception support
+osr.UseExceptions()  # Enable exception support
 
 def main():
     # load user configurable paramters here
@@ -780,7 +782,7 @@ def main():
 
     for key, value in initial_conditions.items():
         layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
-
+    # feature.SetField('area', area)
     read_header = False
 
     print('Computing parameters and initial conditions')
@@ -936,7 +938,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
                 if ds is None:
                     raise RuntimeError('Error: Unable to open raster for: %s' % key)
                 parameter_files[key]['file'].append(ds)
-    i = 0
 
     params['id'] = elem
 
@@ -965,7 +966,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
     feature = ogr.Feature(mem_layer.GetLayerDefn())
     feature.SetGeometry(tpoly)
 
-    feature.SetField('triangle', int(i))
     mem_layer.CreateFeature(feature)
 
     area = 0
@@ -979,7 +979,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, RasterXSize, Raste
     # else:
     area = tpoly.GetArea()
 
-    # feature.SetField('area', area)
     params['area'] = area
 
     # calculate new geotransform of the feature subset
@@ -1368,7 +1367,7 @@ def gdal_polygonize(src_filename, mask, dst_filename):
 
     result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
 
-    
+
 def write_vtu(fname, mesh, parameter_files):
 
     vtu = vtk.vtkUnstructuredGrid()
