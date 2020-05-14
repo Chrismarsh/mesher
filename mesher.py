@@ -31,6 +31,8 @@ import uuid
 import cloudpickle
 from concurrent import futures
 import time
+# from memory_profiler import profile
+
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -407,7 +409,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = '%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
+    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -wo NUM_THREADS=ALL_CPUS -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
                       srs_out,  xmax, xmin, ymax, ymin, nworkers_gdal)
