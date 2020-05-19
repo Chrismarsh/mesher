@@ -973,15 +973,20 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
     mem_layer.CreateFeature(feature)
 
     area = 0
-    # if the input was geographic, we need to project to get a reasonable area
-    # if is_geographic:
-    #     transform = osr.CoordinateTransformation(srs, srs_out)
-    #     p = tpoly.Clone()
-    #     p.Transform(transform)
-    #
-    #     area = p.GetArea()
-    # else:
-    area = tpoly.GetArea()
+    # if the output is geographic, we need to project to get a reasonable area
+    if is_geographic:
+        #use an equal area mollweide projection
+        srs_moll = osr.SpatialReference()
+        srs_moll.ImportFromProj4("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
+
+        # go from what we are outputting (which is geographic) to moll to compute the area
+        transform = osr.CoordinateTransformation(srs_out, srs_moll)
+        p = tpoly.Clone()
+        p.Transform(transform)
+
+        area = p.GetArea()
+    else:
+        area = tpoly.GetArea()
 
     params['area'] = area
 
@@ -1038,8 +1043,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
             exit(1)
 
         ics[key] = output
-
-
 
     return params, ics
 
