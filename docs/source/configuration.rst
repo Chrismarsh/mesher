@@ -114,6 +114,17 @@ Specifies number of CPUs to use for parallel tasks. This will override a configu
 
 Specifies number of CPUs to use for parallel gdal tasks. This will override a configuration file ``nworkers_gdal`` value.
 
+.. confval:: GDAL_CACHEMAX
+
+    :type: string
+
+GDAL's raster I/O functionality will, by default, cache reads and writes by up-to 5% of total memory to increase efficiency.
+When dealing with large rasters and parallel processing, this can result in out-of-memory errors. For example, 32 processes
+can cache 160% of total available RAM. By default, mesher will internally set the parallel processing cache to be no more
+than ~30% of total RAM shared across all processes. This is about ~1% per process. For most systems this gives a good
+blend of performance and memory use. However, if out-of-memory situations occur, try setting this lower or to 0. More information
+can be found `on the gdalwarp documentation <https://trac.osgeo.org/gdal/wiki/UserDocs/GdalWarp#WarpandCacheMemory:TechnicalDetails>`_
+and `wiki page <https://trac.osgeo.org/gdal/wiki/ConfigOptions#GDAL_CACHEMAX>`_.
 
 Lloyd iterations
 ================

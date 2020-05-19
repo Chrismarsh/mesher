@@ -31,12 +31,11 @@ import uuid
 import cloudpickle
 from concurrent import futures
 import time
-# from memory_profiler import profile
-
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
 osr.UseExceptions()  # Enable exception support
+
 
 def main():
     # load user configurable paramters here
@@ -50,9 +49,8 @@ def main():
     configfile = sys.argv[-1]
 
     # Load in configuration file as module
-    X = importlib.machinery.SourceFileLoader('config',configfile)
+    X = importlib.machinery.SourceFileLoader('config', configfile)
     X = X.load_module()
-
 
     # get config file dire
     cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
@@ -273,9 +271,17 @@ def main():
         pass
     nworkers = int(nworkers)
     nworkers_gdal = int(nworkers_gdal)
-    print('Using {0} CPUs for GDAL'.format(nworkers_gdal))
-    print('Using {0} CPUs'.format(nworkers))
 
+    try:
+        cache = os.environ['GDAL_CACHEMAX']
+        print(
+            'Warning: GDAL_CACHEMAX={0}. Ensure this is reasonable for the number of parallel processes specified'.format(
+                cache))
+    except:
+        # the user doesn't have the GDAL_CACHEMAX defined, which is good. Set it to a reasonable value
+        os.environ['GDAL_CACHEMAX'] = "{0}%".format(30.0 / nworkers)
+
+    print('Using {0} CPUs and per-CPU memory cache = {1}'.format(nworkers, os.environ['GDAL_CACHEMAX']))
     ########################################################
 
     # we need to make sure we pickup the right paths to all the gdal scripts
@@ -377,10 +383,11 @@ def main():
                 out_name = base_dir + base_name + '_projected.tif'
 
             subprocess.check_call(
-                ['%sgdalwarp %s %s -ot Float32 -multi -wo NUM_THREADS=ALL_CPUS -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
-                    gdal_prefix,
-                    in_name, out_name, abs(pixel_width) / scaling_factor,
-                    abs(pixel_height) / scaling_factor)], shell=True)
+                [
+                    'GDAL_CACHEMAX=\"50%%\" %sgdalwarp %s %s -ot Float32 -multi  -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+                        gdal_prefix,
+                        in_name, out_name, abs(pixel_width) / scaling_factor,
+                        abs(pixel_height) / scaling_factor)], shell=True)
 
             scaling_factor *= (itr + 1)
 
@@ -409,13 +416,15 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -wo NUM_THREADS=ALL_CPUS -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
+    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
-    total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files, pixel_height, pixel_width,
-                      srs_out,  xmax, xmin, ymax, ymin, nworkers_gdal)
+    total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,
+                                                               pixel_height, pixel_width,
+                                                               srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
 
-    total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions, pixel_height, pixel_width,
-                      srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
+    total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
+                                                         pixel_height, pixel_width,
+                                                         srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
 
     use_weights = use_weights_param or use_weights_ic
 
@@ -453,15 +462,13 @@ def main():
     # noinspection PyUnusedLocal
     dst_ds = None  # close file
 
-
-
     # raster -> polygon
     # subprocess.check_call(
     #     ['%sgdal_polygonize.py %s -b 1 -mask %s -f "ESRI Shapefile" %s' % (gdal_prefix, tmp_raster, tmp_raster,
     #                                                                        base_dir +
     #                                                                        plgs_shp)], shell=True)
 
-    gdal_polygonize(tmp_raster,tmp_raster,base_dir + plgs_shp)
+    gdal_polygonize(tmp_raster, tmp_raster, base_dir + plgs_shp)
 
     driver = ogr.GetDriverByName('ESRI Shapefile')
     dataSource = driver.Open(base_dir + plgs_shp, 1)
@@ -847,7 +854,7 @@ def main():
                                 print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
-    print('Reading mesh took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
     if len(invalid_nodes) > 0:
         errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
         errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to ' \
@@ -855,55 +862,48 @@ def main():
         errstr += 'Try reducing simplify_tol.'
         raise RuntimeError(errstr)
 
-    start_time2 = time.perf_counter()
-
     gt = src_ds.GetGeoTransform()
 
     tris = range(mesh['mesh']['nelem'])
 
     ret_tri = []
-    ret_tri_ic =[]
+    ret_tri_ic = []
 
     csize = len(tris) // nworkers
     if csize < 1:
         csize = 1
+
     with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
-        for p,i in executor.map(
+        for p, i in executor.map(
                 partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
                         src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
                 chunksize=csize):
             ret_tri.append(p)
             ret_tri_ic.append(i)
 
-    reordertime = time.perf_counter()
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
 
     for key, data in initial_conditions.items():
         initial_conditions[key]['file'] = None
 
-    # ret_tri = sorted(ret_tri, key = lambda tri: tri['id'])
     for t in ret_tri:
         for key, data in t.items():
             params[key].append(data)
-    print('Reorder params took %s s' % str(round(time.perf_counter() - reordertime, 2)))
 
     for t in ret_tri_ic:
         for key, data in t.items():
             ics[key].append(data)
-    print('Reorder ics took %s s' % str(round(time.perf_counter() - reordertime, 2)))
 
-    print('Doing params took %s s' % str(round(time.perf_counter() - start_time2, 2)))
-    print('Total time took %s s' % str( round(time.perf_counter() - start_time,2)))
+    print('Total time took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     if output_write_vtu:
-        print('Writing vtu file')
+        print('Writing vtu file...')
         write_vtu(base_dir + base_name + '.vtu', mesh, params, ics)
 
     if output_write_shp:
-        print('Writing shp file')
-        write_shp(base_dir + base_name + '_USM.shp',mesh, params, ics)
-
+        print('Writing shp file...')
+        write_shp(base_dir + base_name + '_USM.shp', mesh, params, ics)
 
     print('Saving mesh to file ' + base_name + '.mesh')
     with open(user_output_dir + base_name + '.mesh', 'w') as outfile:
@@ -919,8 +919,8 @@ def main():
     print('Done')
 
 
-def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4, elem):
-
+def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4,
+                    elem):
     params = {}
     ics = {}
     srs_out = osr.SpatialReference()
@@ -954,7 +954,6 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
     mem_drv = ogr.GetDriverByName('Memory')
     mem_ds = mem_drv.CreateDataSource('out')
     mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
-
 
     # we need this to do the area calculation
     ring = ogr.Geometry(ogr.wkbLinearRing)
@@ -1040,7 +1039,10 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
 
         ics[key] = output
 
+
+
     return params, ics
+
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin, max_workers):
@@ -1070,7 +1072,6 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         if not isinstance(input_files[key]['method'], list):
             input_files[key]['method'] = [input_files[key]['method']]
 
-
     return total_weights, use_weights
 
 
@@ -1084,7 +1085,6 @@ def _future_regularize_inputs(args):
         estr = exec_str + 'mode'
     else:
         estr = exec_str + 'average'
-
 
     do_cell_resize = True
     estr = estr + ' -tr %s %s'
@@ -1131,12 +1131,10 @@ def _future_regularize_inputs(args):
 
         out_name = base_dir + output_param_fname + '_' + mangle + '_projected.tif'
 
-
         # force all the parameter files to have the same extent as the input DEM
         subprocess.check_call([estr % (gdal_prefix,
-                                           f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
-                                           pixel_height)], shell=True)
-
+                                       f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
+                                       pixel_height)], shell=True)
 
         ret_df['filename'].append(out_name)
 
@@ -1258,7 +1256,6 @@ def extract_point(raster, mx, my):
 
 
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
-
     raster = rds.GetRasterBand(1)
     src_array = raster.ReadAsArray(*src_offset)
 
@@ -1329,6 +1326,7 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
     return output
 
+
 # To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the
 # gdal_polygonize.py code from
 # https://github.com/OSGeo/gdal/blob/release/2.4/gdal/swig/python/scripts/gdal_polygonize.py
@@ -1366,7 +1364,7 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     driver = ogr.GetDriverByName("ESRI Shapefile")
 
     try:
-        os.remove(fname) #remove if existing
+        os.remove(fname)  # remove if existing
     except OSError:
         pass
 
@@ -1403,7 +1401,6 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
         feature = ogr.Feature(layer.GetLayerDefn())
         feature.SetGeometry(tpoly)
 
-
         # for this section,
         # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
         for key, data in parameter_files.items():
@@ -1418,8 +1415,8 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     output_usm.FlushCache()
     output_usm = None  # close file
 
-def write_vtu(fname, mesh, parameter_files, initial_conditions):
 
+def write_vtu(fname, mesh, parameter_files, initial_conditions):
     vtu = vtk.vtkUnstructuredGrid()
 
     output_vtk = fname
@@ -1496,8 +1493,6 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
             output = data[elem]
             vtu_cells['[ic] ' + key].InsertNextTuple1(output)
 
-
-
     vtu.SetPoints(vtu_points)
     vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
     for p in vtu_cells.values():
@@ -1511,6 +1506,7 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
     vtu.GetFieldData().AddArray(vtk_proj4)
 
     vtuwriter.Write()
+
 
 if __name__ == "__main__":
     main()
