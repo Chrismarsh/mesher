@@ -174,14 +174,13 @@ It's recommended that gdal python bindings are installed via `pygdal <https://gi
 .. note::
    The python gdal bindings uses a system-wide gdal rather than the conan gdal the mesher C++ backend links against. This will hopefully be resolved in the future. However, as no data passes between the C++ and Python, having different gdal versions poses no problem.
 
-On linux, depending on the distro used, you may need to also install the gdal binaries and, paradoxically, the gdal python bindings. On Ubuntu this is
+On linux, depending on the distro used, you may need to also install the gdal binaries. On Ubuntu this is
 ::
 
    sudo apt-get install libgdal-dev
    sudo apt-get install gdal-bin
-   sudo apt-get install python-gdal
 
-The system gdal-python bindings is because certain python scripts such as ``gdal_polygonize.py`` are only available when installing ``python-gdal``, and the gdal binaries such as ``gdalwarp`` are only avilable in the ``gdal-bin`` pacakage.
+The system gdal binaries such as ``gdalwarp`` are only avilable in the ``gdal-bin`` pacakage.
 
 
 other libraries

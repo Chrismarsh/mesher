@@ -38,7 +38,7 @@ osr.UseExceptions()  # Enable exception support
 
 
 def main():
-    # load user configurable paramters here
+    # load user configurable parameters here
     # Check user defined configuration file
 
     if len(sys.argv) == 1:
