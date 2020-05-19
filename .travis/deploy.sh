@@ -2,7 +2,6 @@
 
 set -e
 
-
 if [ "$TRAVIS_OS_NAME" = "osx" ]; then
     eval "$(pyenv init -)"
     pyenv activate mesher
