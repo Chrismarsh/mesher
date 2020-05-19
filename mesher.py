@@ -348,7 +348,7 @@ def main():
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
         src_ds = None
 
-    e = 'GDAL_CACHEMAX=\"50%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
+    e = 'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
     subprocess.check_call([e % (gdal_prefix,
                                 dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())],
                           shell=True)
@@ -384,7 +384,7 @@ def main():
 
             subprocess.check_call(
                 [
-                    'GDAL_CACHEMAX=\"50%%\" %sgdalwarp %s %s -ot Float32 -multi  -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
+                    'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi  -overwrite -dstnodata -9999 -r cubicspline -tr %s %s' % (
                         gdal_prefix,
                         in_name, out_name, abs(pixel_width) / scaling_factor,
                         abs(pixel_height) / scaling_factor)], shell=True)
