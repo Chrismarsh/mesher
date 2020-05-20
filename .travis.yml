@@ -39,6 +39,6 @@ script:
   - bash ./runall.sh &> /dev/null
 deploy:
   provider: script
-  script: pwd && ls && bash ./.travis/deploy.sh
+  script: cd .. && pwd && ls -la && bash ./.travis/deploy.sh
   on:
     tags: true
