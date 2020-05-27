@@ -31,7 +31,7 @@ else
 #  eval "CC=gcc-7 && CXX=g++-7"
 fi
 
-if ["$test_conda" = "1" ]; then
+if [ "$test_conda" = "1" ]; then
   wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
   bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
   source $HOME/conda/bin/activate
