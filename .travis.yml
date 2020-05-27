@@ -14,15 +14,24 @@ matrix:
       python: "3.6"
     - <<: *linux
       python: "3.7"
-    - <<: *linux
-      language: generic
-      env: test_conda="1"
     - <<: *osx
       osx_image: xcode11.3
       env: pyv="3.6.10"
     - <<: *osx
       osx_image: xcode11.3
       env: pyv="3.7.6"
+    - <<: *linux  #test conda
+      language: generic
+      env: test_conda="1" pyv="3.6"
+    - <<: *linux  #test conda
+      language: generic
+      env: test_conda="1" pyv="3.7"
+    - <<: *osx    #test conda
+      osx_image: xcode11.3
+      env: test_conda="1" pyv="3.6"
+    - <<: *osx #test conda
+      osx_image: xcode11.3
+      env: test_conda="1" pyv="3.7"
 
 
 
@@ -32,12 +41,12 @@ before_install:
   - git clone https://github.com/Chrismarsh/mesher.git
   - (cd mesher && git checkout $TRAVIS_BRANCH)
 install:
-  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
+  - if [ "$TRAVIS_OS_NAME" = "osx" ] && [ "$test_conda" != "1" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
   - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - pip install --upgrade pip
   - pip install ./mesher/
 script:
-  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
+  - if [ "$TRAVIS_OS_NAME" = "osx" ] && [ "$test_conda" != "1" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
   - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - cd mesher/examples
   - echo "running tests"

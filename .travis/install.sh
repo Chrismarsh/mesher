@@ -2,7 +2,7 @@
 
 set -e
 
-if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+if  [ "$TRAVIS_OS_NAME" = "osx" ]; then
 
     bash -c 'echo $pyv'
     bash -c 'echo $TRAVIS_PYTHON_VERSION'
@@ -11,14 +11,17 @@ if [ "$TRAVIS_OS_NAME" = "osx" ]; then
     brew update || true
     brew upgrade || true
     brew install gdal || brew upgrade gdal
-    brew outdated pyenv || brew upgrade pyenv
-    brew install pyenv-virtualenv
 
-    eval "$(pyenv init -)"
-    pyenv install $pyv
-    pyenv virtualenv $pyv mesher
-    pyenv rehash
-    pyenv activate mesher
+   if [ "$test_conda" != "1" ]; then
+      brew outdated pyenv || brew upgrade pyenv
+      brew install pyenv-virtualenv
+
+      eval "$(pyenv init -)"
+      pyenv install $pyv
+      pyenv virtualenv $pyv mesher
+      pyenv rehash
+      pyenv activate mesher
+  fi
 
 else
   sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y;
@@ -27,15 +30,20 @@ else
   sudo apt-get install libgdal-dev
   sudo apt-get install python-gdal
   sudo apt-get install gdal-bin
-#  eval "CC=gcc-7 && CXX=g++-7"
+
 fi
 
 if [ "$test_conda" = "1" ]; then
-  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-  bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
+  if [ "$TRAVIS_OS_NAME" = "osx" ]; then
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh ~/miniconda.sh
+  else
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh ~/miniconda.sh
+  fi
+
+  bash ~/miniconda.sh -b -p $HOME/conda
   source $HOME/conda/bin/activate
   conda init
   conda update -y --all
-  conda create -y --name mesher python=3.7
-#  conda install gdal==2.4.4
+  conda create -y --name mesher python=$pyv
+
 fi

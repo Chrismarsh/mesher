@@ -84,10 +84,29 @@ Now, if you wish to run mesher activate the virtualenv
    mesher.py my-config-file.py
 
 
+conda
+******
+The Anaconda python environment supports ``pip`` installs. This example shows installing Anaconda, however if you already have Anaconda installed, then only the instructions from ``conda create`` onward is required.
+
+::
+
+  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
+  source $HOME/conda/bin/activate
+  conda init
+  conda update -y --all
+  conda create -y --name mesher python=3.7
+  conda activate mesher
+  pip install mesher
+
+This approach will use the system installed gdal.
+
+
+
 Install of github branch
 *************************
 You can optionally use pip to install the most recent github version or a github branch. However, the automatic
-setup of the build environment does not occur, so ensure ``scikit-build``, ``cmake``, ``conan``, and ``ninja` are installed. Then,
+setup of the build environment does not occur, so ensure ``scikit-build``, ``cmake``, ``conan``, and ``ninja`` are installed. Then,
 
 ::
 
