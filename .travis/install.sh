@@ -36,7 +36,7 @@ if [ "$test_conda" = "1" ]; then
   bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
   source $HOME/conda/bin/activate
   conda init
-  conda update -y
+  conda update -y conda
   conda create --name mesher python=3.7
 #  conda install gdal==2.4.4
 fi
