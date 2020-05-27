@@ -15,8 +15,8 @@ matrix:
     - <<: *linux
       python: "3.7"
     - <<: *linux
-        python: "3.7"
-        env: test_conda="1"
+      python: "3.7"
+      env: test_conda="1"
     - <<: *osx
       osx_image: xcode11.3
       env: pyv="3.6.10"
