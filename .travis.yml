@@ -33,12 +33,12 @@ before_install:
   - (cd mesher && git checkout $TRAVIS_BRANCH)
 install:
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
-  - if [ "$test_conda" = "1" ]; then conda init; conda activate mesher ; fi
+  - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - pip install --upgrade pip
   - pip install ./mesher/
 script:
   - if [ "$TRAVIS_OS_NAME" = "osx" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi
-  - if [ "$test_conda" = "1" ]; then conda init; conda activate mesher ; fi
+  - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - cd mesher/examples
   - echo "running tests"
   - bash ./runall.sh &> /dev/null
