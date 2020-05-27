@@ -30,3 +30,13 @@ else
   sudo apt-get install gdal-bin
 #  eval "CC=gcc-7 && CXX=g++-7"
 fi
+
+if ["$test_conda" = "1" ]; then
+  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+  bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
+  source $HOME/conda/bin/activate
+  conda init
+  conda update conda
+  conda create --name mesher python=3.7
+#  conda install gdal==2.4.4
+fi
