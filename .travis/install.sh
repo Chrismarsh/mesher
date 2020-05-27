@@ -2,7 +2,6 @@
 
 set -e
 
-
 if [ "$TRAVIS_OS_NAME" = "osx" ]; then
 
     bash -c 'echo $pyv'
@@ -37,6 +36,6 @@ if [ "$test_conda" = "1" ]; then
   source $HOME/conda/bin/activate
   conda init
   conda update -y --all
-  conda create --name mesher python=3.7
+  conda create -y --name mesher python=3.7
 #  conda install gdal==2.4.4
 fi
