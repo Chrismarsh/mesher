@@ -7,7 +7,7 @@ if [ "$TRAVIS_OS_NAME" = "osx" ]; then
     pyenv activate mesher
 fi
 
-if [ "$test_conda" = "1" ]; then exit(0) ; fi
+if [ "$test_conda" = "1" ]; then exit 0 ; fi
 
 pip install twine
 pip install conan
