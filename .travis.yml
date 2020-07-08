@@ -14,24 +14,35 @@ matrix:
       python: "3.6"
     - <<: *linux
       python: "3.7"
+    - <<: *linux
+      python: "3.8"
     - <<: *osx
       osx_image: xcode11.3
       env: pyv="3.6.10"
     - <<: *osx
       osx_image: xcode11.3
       env: pyv="3.7.6"
+    - <<: *osx
+      osx_image: xcode11.3
+      env: pyv="3.8.2"
     - <<: *linux  #test conda
       language: generic
       env: test_conda="1" pyv="3.6"
     - <<: *linux  #test conda
       language: generic
       env: test_conda="1" pyv="3.7"
+    - <<: *linux  #test conda
+      language: generic
+      env: test_conda="1" pyv="3.8"
     - <<: *osx    #test conda
       osx_image: xcode11.3
       env: test_conda="1" pyv="3.6"
     - <<: *osx #test conda
       osx_image: xcode11.3
       env: test_conda="1" pyv="3.7"
+    - <<: *osx #test conda
+      osx_image: xcode11.3
+      env: test_conda="1" pyv="3.8"
 
 
 
