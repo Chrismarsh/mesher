@@ -1255,7 +1255,7 @@ def extract_point(raster, mx, my):
             except RuntimeError as e:
                 pass  # out of bounds, pass
 
-        z = [x for x in zs if x != rb.GetNoDataValue()]
+        z = [x for x in zs if x != rb.GetNoDataValue() and x is not None ]
 
         if len(z) == 0:
             # print 'Warning: The point (%s,%s) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
