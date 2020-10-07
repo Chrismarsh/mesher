@@ -32,6 +32,16 @@ import cloudpickle
 from concurrent import futures
 import time
 
+# This reverts to Python <= 3.7 behaviours. It "worked" before...
+# Long term it's almost certainly a Bad Idea and should be resolved.
+# > Changed in version 3.8: On macOS, the spawn start method is now the default.
+# >The fork start method should be considered unsafe as it can lead to crashes of the subprocess. See bpo-33725.
+# Setting this to 'spawn' results in the imported config file not being available for the child processes
+# Ref https://bugs.python.org/issue33725
+import multiprocessing as mp
+mp.set_start_method("fork")
+
+
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
 osr.UseExceptions()  # Enable exception support
@@ -329,6 +339,7 @@ def main():
         wkt_out = src_ds.GetProjection()
 
     srs_out = osr.SpatialReference()
+
     srs_out.ImportFromWkt(wkt_out)
 
     if do_smoothing:
@@ -343,6 +354,7 @@ def main():
         src_ds = gdal.Open(dem_filename)
         wkt = src_ds.GetProjection()
         srs = osr.SpatialReference()
+
         srs.ImportFromWkt(wkt)
 
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
@@ -397,6 +409,7 @@ def main():
     # create the spatial reference from the raster dataset
     wkt = src_ds.GetProjection()
     srs = osr.SpatialReference()
+
     srs.ImportFromWkt(wkt)
 
     is_geographic = srs.IsGeographic()
@@ -924,6 +937,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
     params = {}
     ics = {}
     srs_out = osr.SpatialReference()
+
     srs_out.ImportFromProj4(srs_proj4)
 
     for key, data in parameter_files.items():
@@ -977,6 +991,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
     if is_geographic:
         #use an equal area mollweide projection
         srs_moll = osr.SpatialReference()
+
         srs_moll.ImportFromProj4("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
 
         # go from what we are outputting (which is geographic) to moll to compute the area
@@ -1010,7 +1025,8 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
             output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
         if 'classifier' in data:
-            output = cloudpickle.loads(data['classifier'])(*output)
+            fn = cloudpickle.loads(data['classifier'])
+            output = fn(*output)
         else:
             output = output[0]  # flatten the list for the append below
 
@@ -1219,42 +1235,34 @@ def extract_point(raster, mx, my):
     mz = float(mz.flatten()[0])
 
     if mz == rb.GetNoDataValue():
-        dx = 1
-        dy = 1
 
-        # attempt to pick points from the surrounding 8
-        z1 = rb.ReadAsArray(px - dx if px > 0 else px, py, 1, 1)
-        z1 = z1[0] if z1 is not None else rb.GetNoDataValue()
+        # look at the surrounding 8 cells
+        #  (px-1, py - 1)  (px, py - 1)  (px + 1,py - 1)
+        #  (px-1, py    )    (px, py)      (px + 1, py   )
+        #  (px-1, py + 1)  (px, py + 1)  (px + 1, py + 1)
 
-        z2 = rb.ReadAsArray(px + dx if px < raster.RasterXSize else px, py, 1, 1)
-        z2 = z2[0] if z2 is not None else rb.GetNoDataValue()
+        coords = [
+            (px - 1, py - 1), (px, py - 1), (px + 1, py - 1),
+            (px - 1, py),     (px, py    ), (px + 1, py    ),
+            (px - 1, py + 1), (px, py + 1), (px + 1, py + 1)
+        ]
 
-        z3 = rb.ReadAsArray(px, py + dy if py < raster.RasterYSize else py, 1, 1)
-        z3 = z3[0] if z3 is not None else rb.GetNoDataValue()
+        zs = []
+        for c in coords:
+            try:
+                z1 = rb.ReadAsArray(c[0], c[1], 1, 1)
+                zs.append(z1)
+            except RuntimeError as e:
+                pass  # out of bounds, pass
 
-        z4 = rb.ReadAsArray(px, py - dy if py > 0 else py, 1, 1)[0]
-        z4 = z4[0] if z4 is not None else rb.GetNoDataValue()
-
-        z5 = rb.ReadAsArray(px - dx if px > 0 else px, py - dy if py > 0 else py, 1, 1)
-        z5 = z5[0] if z5 is not None else rb.GetNoDataValue()
-
-        z6 = rb.ReadAsArray(px + dx if px < raster.RasterXSize else px, py - dy if py > 0 else py, 1, 1)
-        z6 = z6[0] if z6 is not None else rb.GetNoDataValue()
-
-        z7 = rb.ReadAsArray(px - dx if px > 0 else px, py + dy if py < raster.RasterYSize else py, 1, 1)
-        z7 = z7[0] if z7 is not None else rb.GetNoDataValue()
-
-        z8 = rb.ReadAsArray(px + dx if px < raster.RasterXSize else px, py - dy if py > 0 else py, 1, 1)
-        z8 = z8[0] if z8 is not None else rb.GetNoDataValue()
-
-        z = [z1, z2, z3, z4, z5, z6, z7, z8]
-        z = [x for x in z if x != rb.GetNoDataValue()]
+        z = [x for x in zs if x != rb.GetNoDataValue()]
 
         if len(z) == 0:
             # print 'Warning: The point (%s,%s) and its 8-neighbours lies outside of the DEM domain' % (mx, my)
             return rb.GetNoDataValue()
 
         mz = float(np.mean(z))
+
     return mz
 
 
@@ -1350,6 +1358,7 @@ def gdal_polygonize(src_filename, mask, dst_filename):
     srs = None
     if src_ds.GetProjectionRef() != '':
         srs = osr.SpatialReference()
+
         srs.ImportFromWkt(src_ds.GetProjectionRef())
 
     dst_layer = dst_ds.CreateLayer('out', geom_type=ogr.wkbPolygon, srs=srs)
@@ -1374,6 +1383,7 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     output_usm = driver.CreateDataSource(fname)
 
     srs_out = osr.SpatialReference()
+
     srs_out.ImportFromProj4(mesh['mesh']['proj4'])
 
     layer = output_usm.CreateLayer('mesh', srs_out, ogr.wkbPolygon)

@@ -61,7 +61,7 @@ script:
   - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - cd mesher/examples
   - echo "running tests"
-  - bash ./runall.sh #&> /dev/null
+  - bash ./runall.sh &> /dev/null
 deploy:
   provider: script
   script: cd .. && pwd && ls -la && bash ./.travis/deploy.sh
