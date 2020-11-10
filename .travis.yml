@@ -55,6 +55,7 @@ install:
   - if [ "$TRAVIS_OS_NAME" = "osx" ] && [ "$test_conda" != "1" ]; then eval "$(pyenv init -)"; pyenv activate mesher         ; fi
   - if [ "$test_conda" = "1" ]; then source $HOME/conda/bin/activate; conda activate mesher ; fi
   - pip install --upgrade pip
+  - pip install wheel
   - pip install ./mesher/
 script:
   - if [ "$TRAVIS_OS_NAME" = "osx" ] && [ "$test_conda" != "1" ]; then eval "$(pyenv init -)";pyenv activate mesher         ; fi

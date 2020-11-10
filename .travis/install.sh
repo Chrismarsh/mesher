@@ -21,6 +21,7 @@ if  [ "$TRAVIS_OS_NAME" = "osx" ]; then
       pyenv virtualenv $pyv mesher
       pyenv rehash
       pyenv activate mesher
+      pip install wheel
   fi
 
 else
