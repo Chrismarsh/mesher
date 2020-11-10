@@ -270,6 +270,15 @@ Disables ``simplify_buffer`` when ``simplify=True``
 
 A large DEM may be subset to ``[xmin ymin xmax ymax]``. These are given in the *original* coordinate system of the input DEM.
 
+Domain Repair
+==============
+
+.. confval:: fill_holes
+
+    :type: boolean
+    :default: False
+
+A 1-pass of the GDAL `fill no data <https://gdal.org/programs/gdal_fillnodata.html>`_ algorithm. Maximum search distance is defined as ``max([pixel_height, pixel_width]) * 5``.
 
 Input DEM smoothing
 ====================

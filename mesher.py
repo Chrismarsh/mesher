@@ -147,6 +147,12 @@ def main():
 
     mesher_path = os.path.dirname(os.path.abspath(__file__)) + '/mesher'
 
+    # uses GDAL to fill holes
+    fill_holes = False
+    if hasattr(X, 'fill_holes'):
+        fill_holes = X.fill_holes
+
+
     # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
     # over this
     using_mesher_environ = False
@@ -365,14 +371,23 @@ def main():
                                 dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())],
                           shell=True)
 
+    if fill_holes:
+        gt = src_ds.GetGeoTransform()
+
+        pixel_width = gt[1]
+        pixel_height = gt[5]
+
+        dist = max([pixel_height, pixel_width]) * 5
+        exec_str = '%sgdal_fillnodata.py %s -md %d' % (gdal_prefix, base_dir + base_name + output_file_name, dist)
+        subprocess.check_call([exec_str], shell=True)
+
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
 
     if src_ds is None:
         print('Unable to open %s' % dem_filename)
         exit(1)
 
-    ########
-
+    #obtain new values for this after all the projection, etc
     gt = src_ds.GetGeoTransform()
 
     pixel_width = gt[1]
@@ -433,11 +448,11 @@ def main():
 
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
-                                                               srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
+                                                               srs_out, xmax, xmin, ymax, ymin, fill_holes, nworkers_gdal)
 
     total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
                                                          pixel_height, pixel_width,
-                                                         srs_out, xmax, xmin, ymax, ymin, nworkers_gdal)
+                                                         srs_out, xmax, xmin, ymax, ymin, fill_holes, nworkers_gdal)
 
     use_weights = use_weights_param or use_weights_ic
 
@@ -1064,7 +1079,7 @@ def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions
 
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
-                      xmax, xmin, ymax, ymin, max_workers):
+                      xmax, xmin, ymax, ymin, fill_holes, max_workers):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
@@ -1078,7 +1093,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
             input_files[key]['classifier'] = cloudpickle.dumps(input_files[key]['classifier'])
 
         param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
-                           pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin))
+                           pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes))
 
     with futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         for (r) in executor.map(_future_regularize_inputs, param_args):
@@ -1095,7 +1110,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
 
 
 def _future_regularize_inputs(args):
-    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin = args
+    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin, fill_holes = args
 
     # make a copy as this exec string is reused for inital conditions
     # and we don't want the changes made here to impact it
@@ -1154,6 +1169,10 @@ def _future_regularize_inputs(args):
         subprocess.check_call([estr % (gdal_prefix,
                                        f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
                                        pixel_height)], shell=True)
+        if fill_holes:
+            dist = max([pixel_height,pixel_width]) * 5
+            exec_str = '%sgdal_fillnodata.py %s -md %d' % (gdal_prefix, out_name, dist)
+            subprocess.check_call([exec_str], shell=True)
 
         ret_df['filename'].append(out_name)
 
@@ -1285,7 +1304,7 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
     # Mask the source data array with our current feature
     src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
 
-    output = -9999
+    output = -9999.0
 
     if callable(aggMethod):
         output = float(aggMethod(src_array))
