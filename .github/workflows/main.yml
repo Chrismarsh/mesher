@@ -40,7 +40,7 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
-
+      - uses: FranzDiebold/github-env-vars-action@v2
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v2
         with:
@@ -100,7 +100,6 @@ jobs:
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
         with:
-          ESMF_VERSION: ${{ matrix.esfm-version }}
           TEST_CONDA: ${{ matrix.test-conda }}
 
       - name: Install and test
@@ -120,7 +119,13 @@ jobs:
                 python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
                 #https://www.python.org/dev/peps/pep-0513/
               fi
-              twine upload  --skip-existing dist/*
+
+              if [[ $CI_REF_NAME == "stable/"* ]]; then
+                  twine upload  --skip-existing dist/*
+              else
+                echo "Branch $CI_REF_NAME is not stable/*"
+              fi
+              
         env:
           TWINE_PASSWORD: ${{secrets.TWINE_PASSWORD}}
           TWINE_USERNAME: ${{secrets.TWINE_USERNAME}}
