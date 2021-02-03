@@ -62,6 +62,7 @@ jobs:
           sudo apt-get install python-gdal
           sudo apt-get install gdal-bin
           sudo apt-get install libcgal-dev
+          sudo apt-get install libboost-dev
 
       - name: Install macos dependencies
         if: ${{ matrix.cfg.os  == 'macos-latest' }}
