@@ -27,9 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: [3.8]
-        esfm-version: ["8.1.0_beta_snapshot_43",
-                       "8.1.0_beta_snapshot_36",
-                       "8.0.1"]
+        test-conda: ["0","1"]
 
         cfg:
           - {os: "ubuntu-latest", compiler: "gcc", version: 7}
@@ -57,6 +55,20 @@ jobs:
           pip install ninja
           pip install wheel
 
+      - name: Install linux dependencies
+        if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
+        run: | 
+          sudo apt-get install libgdal-dev
+          sudo apt-get install python-gdal
+          sudo apt-get install gdal-bin
+
+      - name: Install macos dependencies
+        if: ${{ matrix.cfg.os  == 'amcos-latest' }}
+        run: | 
+          brew install gdal
+          brew install boost
+          brew install cgal
+
       - name: env linux
         if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
         uses: allenevans/set-env@v2.0.0
@@ -69,20 +81,41 @@ jobs:
         uses: allenevans/set-env@v2.0.0
         with:
           CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
-          GFORTRAN_NAME: gfortran-10 # set the name to use for gfortran as we need to use gfotran-<version>
- 
-      - name: Set version
+    
+      - name: Install test-conda
+        if: ${{ matrix.test_conda  == '1' }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
+          else
+            wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh 
+          fi
+
+          bash ~/miniconda.sh -b -p $HOME/conda
+          source $HOME/conda/bin/activate
+          conda init
+          conda update -y --all
+          conda create -y --name mesher python=$pyv
+
+      - name: Set envar
         uses: allenevans/set-env@v2.0.0
         with:
           ESMF_VERSION: ${{ matrix.esfm-version }}
+          TEST_CONDA: ${{ matrix.test-conda }}
+
+      - name: Install and test
+        run: |
+          pip install .
+          cd "examples"
+          echo "running tests"
+          bash ./runall.sh 
 
       - name: Deploy
         run: |
-              echo "Processing ${ESMF_VERSION} ..."
-              cd "$ESMF_VERSION"
+              if [ "$TEST_CONDA" = "1" ]; then exit 0 ; fi
 
               if [ "$RUNNER_OS" = "macOS" ]; then
-                python setup.py sdist #bdist_wheel
+                python setup.py sdist bdist_wheel
               else
                 python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
                 #https://www.python.org/dev/peps/pep-0513/
