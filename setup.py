@@ -27,6 +27,14 @@ except SKBuildError:
     setup_requires.append('cmake')
 
 
+USE_CONAN = False
+try:
+  USE_CONAN = os.environ["USE_CONAN"]
+except KeyError as e:
+  pass # it's ok we don't have this
+
+USE_CONAN = str(USE_CONAN).upper() 
+
 setup(name='mesher',
       version='1.4.4',
       description='Landsurface model mesh generation',
@@ -46,9 +54,9 @@ setup(name='mesher',
       url="https://github.com/Chrismarsh/mesher",
       include_package_data=True,
       cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
-                  '-DNO_CONAN:BOOL=TRUE'],
+                  f'-DNO_CONAN:BOOL={USE_CONAN}'],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal_chm'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
+      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
       setup_requires=setup_requires,
       python_requires='>=3.6'
      )
