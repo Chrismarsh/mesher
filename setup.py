@@ -3,6 +3,7 @@ import subprocess
 from packaging.version import LegacyVersion
 from skbuild.exceptions import SKBuildError
 from skbuild.cmaker import get_cmake_version
+import os
 
 def get_installed_gdal_version():
     try:
