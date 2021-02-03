@@ -1,0 +1,93 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI
+
+# Controls when the action will run.
+on:
+  # Triggers the workflow on push or pull request events but only for the stable/proj7 branch
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 0 * * 0' # run every week
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+env:
+  MAKEFLAGS: "-j2"
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ${{ matrix.cfg.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [3.8]
+        esfm-version: ["8.1.0_beta_snapshot_43",
+                       "8.1.0_beta_snapshot_36",
+                       "8.0.1"]
+
+        cfg:
+          - {os: "ubuntu-latest", compiler: "gcc", version: 7}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 8}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 9}
+          - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
+
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          pip install conan --upgrade
+          pip install twine
+          pip install conan
+          pip install scikit-build>=0.10.0
+          pip install ninja
+          pip install wheel
+
+      - name: env linux
+        if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
+        uses: allenevans/set-env@v2.0.0
+        with:
+          CC: gcc-${{ matrix.cfg.version }}
+          CXX: g++-${{ matrix.cfg.version }}
+
+      - name: env macos
+        if: ${{ matrix.cfg.os  == 'macos-latest' }}
+        uses: allenevans/set-env@v2.0.0
+        with:
+          CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
+          GFORTRAN_NAME: gfortran-10 # set the name to use for gfortran as we need to use gfotran-<version>
+ 
+      - name: Set version
+        uses: allenevans/set-env@v2.0.0
+        with:
+          ESMF_VERSION: ${{ matrix.esfm-version }}
+
+      - name: Deploy
+        run: |
+              echo "Processing ${ESMF_VERSION} ..."
+              cd "$ESMF_VERSION"
+
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                python setup.py sdist #bdist_wheel
+              else
+                python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
+                #https://www.python.org/dev/peps/pep-0513/
+              fi
+              twine upload  --skip-existing dist/*
+        env:
+          TWINE_PASSWORD: ${{secrets.TWINE_PASSWORD}}
+          TWINE_USERNAME: ${{secrets.TWINE_USERNAME}}
