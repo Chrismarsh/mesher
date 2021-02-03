@@ -10,8 +10,9 @@ if(NOT NO_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
     message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
     file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/develop/conan.cmake"
             "${CMAKE_BINARY_DIR}/conan.cmake")
+    include(${CMAKE_BINARY_DIR}/conan.cmake)
 endif()
-include(${CMAKE_BINARY_DIR}/conan.cmake)
+
 
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     set(CONAN_LIB_STD "libstdc++11")
@@ -71,6 +72,8 @@ configure_file(
 LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
 LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}")
 
+set(EXTERNAL_LINK "")
+
 #as per http://cgal-discuss.949826.n4.nabble.com/CMake-and-flags-td949906.html
 #don't override internal settings
 set( CGAL_DONT_OVERRIDE_CMAKE_FLAGS TRUE )
@@ -91,8 +94,10 @@ if(BUILD_CGAL)
 else()
     if(NO_CONAN)
         find_package(CGAL REQUIRED )
+        list(APPEND EXTERNAL_LINK CGAL::CGAL)
     else()
         find_package(cgal REQUIRED ) #conan convention is lowercase
+        list(APPEND EXTERNAL_LINK cgal::cgal)
     endif()
 endif()
 
@@ -119,8 +124,11 @@ endif()
 
 if(NO_CONAN)
     find_package(GDAL REQUIRED)
+    list(APPEND EXTERNAL_LINK GDAL::GDAL)
 else()
     find_package(gdal REQUIRED)
+    list(APPEND EXTERNAL_LINK gdal::gdal)
+
 endif()
 
 find_package(Boost
@@ -128,6 +136,12 @@ find_package(Boost
             program_options
             filesystem
             REQUIRED)
+if(NO_CONAN)
+    list(APPEND EXTERNAL_LINK Boost::boost Boost::filesystem Boost::program_options)
+else()
+    list(APPEND EXTERNAL_LINK Boost::Boost)
+endif()
+
 
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
@@ -159,9 +173,7 @@ target_include_directories(
 target_link_libraries(
         mesher
         m
-        gdal::gdal
-        Boost::Boost
-        cgal::cgal
+        ${EXTERNAL_LINK}
 )
 
 
