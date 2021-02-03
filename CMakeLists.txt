@@ -3,9 +3,9 @@ project(mesher)
 
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
-option(NO_CONAN "Build without using conan dependencies" TRUE)
+option(USE_CONAN "Build without using conan dependencies" FALSE)
 
-if(NOT NO_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
+if(USE_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
 
     message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
     file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/develop/conan.cmake"
@@ -22,7 +22,7 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}
     message(STATUS "Detected clang compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
 endif ()
 
-if(NOT NO_CONAN)
+if(USE_CONAN)
     conan_add_remote(NAME bincrafters
                 URL https://api.bintray.com/conan/bincrafters/public-conan
             )
@@ -92,7 +92,7 @@ if(BUILD_CGAL)
     find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
 
 else()
-    if(NO_CONAN)
+    if(NOT USE_CONAN)
         find_package(CGAL REQUIRED )
         list(APPEND EXTERNAL_LINK CGAL::CGAL)
     else()
@@ -101,7 +101,7 @@ else()
     endif()
 endif()
 
-if(CGAL_FOUND AND NO_CONAN)
+if(CGAL_FOUND AND NOT USE_CONAN)
     message(STATUS "Found CGAL ")
     message(STATUS "${CGAL_INCLUDE_DIRS}")
     include(${CGAL_USE_FILE}) #as per https://www.cgal.org/releases.html release 4.2
@@ -122,7 +122,7 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O3 ")
 endif()
 
-if(NO_CONAN)
+if(NOT USE_CONAN)
     find_package(GDAL REQUIRED)
     list(APPEND EXTERNAL_LINK GDAL::GDAL)
 else()
@@ -136,7 +136,7 @@ find_package(Boost
             program_options
             filesystem
             REQUIRED)
-if(NO_CONAN)
+if(NOT USE_CONAN)
     list(APPEND EXTERNAL_LINK Boost::boost Boost::filesystem Boost::program_options)
 else()
     list(APPEND EXTERNAL_LINK Boost::Boost)
@@ -146,7 +146,7 @@ endif()
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
 # only need fancy rpaths if we are shipping our libs alongside the binary via conan
-#if(NOT NO_CONAN)
+if(USE_CONAN)
     # when we run make install all the RPATHs will be stripped out and set to these
     # n.b. $ORIGIN should have its dollar sign escaped with a backslash to have it end up with proper
     # syntax in the final executable.
@@ -157,7 +157,7 @@ set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
     else()
         set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
     endif()
-#endif()
+endif()
 
 add_executable(mesher ${SOURCE_FILES})
 set_target_properties(mesher
@@ -181,7 +181,7 @@ target_link_libraries(
 install(TARGETS mesher RUNTIME)
 
 # only ship our libs if built with conan
-if(NOT NO_CONAN)
+if(USE_CONAN)
     install(DIRECTORY ${CMAKE_BINARY_DIR}/lib/
             DESTINATION ${CMAKE_INSTALL_PREFIX}/lib)
 endif()
