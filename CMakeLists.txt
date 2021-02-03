@@ -3,7 +3,7 @@ project(mesher)
 
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
-option(NO_CONAN "Build without using conan dependencies" FALSE)
+option(NO_CONAN "Build without using conan dependencies" TRUE)
 
 if(NOT NO_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
 
@@ -21,21 +21,23 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}
     message(STATUS "Detected clang compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
 endif ()
 
-conan_add_remote(NAME bincrafters
-            URL https://api.bintray.com/conan/bincrafters/public-conan
-        )
-conan_add_remote(NAME CHM
-        URL https://api.bintray.com/conan/chrismarsh/CHM
-        )
+if(NOT NO_CONAN)
+    conan_add_remote(NAME bincrafters
+                URL https://api.bintray.com/conan/bincrafters/public-conan
+            )
+    conan_add_remote(NAME CHM
+            URL https://api.bintray.com/conan/chrismarsh/CHM
+            )
 
-conan_cmake_run(CONANFILE conanfile.py
-                SETTINGS compiler.cppstd=14
-                SETTINGS compiler.libcxx=${CONAN_LIB_STD}
-                BASIC_SETUP
-                CMAKE_TARGETS
-                KEEP_RPATHS
-                NO_OUTPUT_DIRS
-                BUILD missing)
+    conan_cmake_run(CONANFILE conanfile.py
+                    SETTINGS compiler.cppstd=14
+                    SETTINGS compiler.libcxx=${CONAN_LIB_STD}
+                    BASIC_SETUP
+                    CMAKE_TARGETS
+                    KEEP_RPATHS
+                    NO_OUTPUT_DIRS
+                    BUILD missing)
+endif()
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/

@@ -28,7 +28,7 @@ except SKBuildError:
 
 
 setup(name='mesher',
-      version='1.4.2',
+      version='1.4.4',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
@@ -45,9 +45,10 @@ setup(name='mesher',
       author_email='chris.marsh@usask.ca',
       url="https://github.com/Chrismarsh/mesher",
       include_package_data=True,
-      cmake_args=['-DCMAKE_BUILD_TYPE=Release'],
+      cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
+                  '-DNO_CONAN:BOOL=TRUE'],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
+      install_requires=['vtk','pygdal_chm'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
       setup_requires=setup_requires,
       python_requires='>=3.6'
      )

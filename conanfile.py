@@ -34,8 +34,8 @@ class CHMConan(ConanFile):
 
 
     def requirements(self):
-        self.requires( "cgal/5.0.0@CHM/stable" )
-        self.requires( "boost/1.71.0@CHM/stable" )
+        self.requires( "cgal/[>=5.0]@CHM/stable" )
+        self.requires( "boost/[>=1.71.0]@CHM/stable" )
         self.requires( "gdal/2.4.1@CHM/stable" )
       
 
