@@ -63,7 +63,7 @@ jobs:
           sudo apt-get install gdal-bin
 
       - name: Install macos dependencies
-        if: ${{ matrix.cfg.os  == 'amcos-latest' }}
+        if: ${{ matrix.cfg.os  == 'macos-latest' }}
         run: | 
           brew install gdal
           brew install boost
