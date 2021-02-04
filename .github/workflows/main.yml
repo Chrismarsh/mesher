@@ -25,12 +25,10 @@ jobs:
     # The type of runner that the job will run on
     runs-on: ${{ matrix.cfg.os }}
 
-    default-shell:
-      name: Default shell
-      defaults:
-        run:
-          shell: bash -l {0}
-        
+    defaults:
+      run:
+        shell: bash -l {0}
+
     strategy:
       fail-fast: false
       matrix:
