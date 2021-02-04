@@ -63,6 +63,19 @@ jobs:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
 
+      - name: Debug macos python
+        run: |
+          echo $PATH
+          which python
+          python --version
+
+          echo $pythonLocation
+          export PATH="$pythonLocation:$PATH"
+          echo $PATH
+          which python
+          python --version
+          exit -1
+
       - name: Install dependencies
         run: |
           export PATH="$pythonLocation:$PATH"
