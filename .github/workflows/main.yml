@@ -42,7 +42,7 @@ jobs:
       matrix:
         python-version: [3.7, 3.8]
         test-conda: ["0","1"]
-        use-conan: [True, False]
+        use-conan: ['use-conan', 'use-sys-lib']
 
         cfg:
           - {os: "ubuntu-latest", compiler: "gcc", version: 7}
@@ -102,10 +102,10 @@ jobs:
           brew install cgal
 
       - name: Force Build (use conan)
-        if: ${{ matrix.use-conan == 'true' }}
+        if: ${{ matrix.use-conan == 'use-conan' }}
         uses: allenevans/set-env@v2.0.0
         with:
-          "USE_CONAN": "True"
+          "USE_CONAN": "TRUE"
 
       - name: env linux
         if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
