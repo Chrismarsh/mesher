@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.8]
+        python-version: [3.6, 3.7, 3.8, 3.9]
         test-conda: ["0","1"]
 
         cfg:
@@ -40,11 +40,20 @@ jobs:
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
+
       - uses: FranzDiebold/github-env-vars-action@v2
+
       - name: Set up Python ${{ matrix.python-version }}
+        if: ${{ matrix.test-conda  == '0' }}
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
+
+      - uses: conda-incubator/setup-miniconda@v2
+        if: ${{ matrix.test-conda  == '1' }}
+         with:
+           activate-environment: mesher-env
+           python-version: ${{ matrix.python-version }}
       
       - name: Install dependencies
         run: |
@@ -85,21 +94,6 @@ jobs:
         with:
           CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
     
-      - name: Install test-conda
-        if: ${{ matrix.test_conda  == '1' }}
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh
-          else
-            wget -O ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh 
-          fi
-
-          bash ~/miniconda.sh -b -p $HOME/conda
-          source $HOME/conda/bin/activate
-          conda init
-          conda update -y --all
-          conda create -y --name mesher python=$pyv
-
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
         with:
