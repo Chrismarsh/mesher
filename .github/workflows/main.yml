@@ -74,11 +74,14 @@ jobs:
           echo $PATH
           which python
           python --version
-          exit -1
+
 
       - name: Install dependencies
         run: |
           export PATH="$pythonLocation:$PATH"
+          echo $PATH
+          which python
+          python --version
           pip install conan --upgrade
           pip install twine
           pip install conan
@@ -126,6 +129,9 @@ jobs:
       - name: Install and test
         run: |
           export PATH="$pythonLocation:$PATH"
+          echo $PATH
+          which python
+          python --version
           pip install .
           cd "examples"
           echo "running tests"
@@ -134,6 +140,9 @@ jobs:
       - name: Deploy
         run: |
           export PATH="$pythonLocation:$PATH"
+          echo $PATH
+          which python
+          python --version
           if [ "$TEST_CONDA" = "0" ]; then
 
             if [ "$RUNNER_OS" = "macOS" ]; then
