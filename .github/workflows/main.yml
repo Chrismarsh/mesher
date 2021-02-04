@@ -36,9 +36,9 @@ jobs:
         test-conda: ["0","1"]
 
         cfg:
-          - {os: "ubuntu-latest", compiler: "gcc", version: 7}
-          - {os: "ubuntu-latest", compiler: "gcc", version: 8}
-          - {os: "ubuntu-latest", compiler: "gcc", version: 9}
+          # - {os: "ubuntu-latest", compiler: "gcc", version: 7}
+          # - {os: "ubuntu-latest", compiler: "gcc", version: 8}
+          # - {os: "ubuntu-latest", compiler: "gcc", version: 9}
           - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
  
