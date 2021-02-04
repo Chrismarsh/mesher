@@ -19,6 +19,7 @@ Ensure the following are installed via package manager:
 For macos:
 
 ::
+
       brew install gdal
       brew install boost
       brew install cgal

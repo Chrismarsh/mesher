@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: [3.7, 3.8]
-        test-conda: ["0","1"]
+        test-conda: ["conda-python","sys-python"]
         use-conan: ['use-conan', 'use-sys-lib']
 
         cfg:
@@ -60,14 +60,14 @@ jobs:
       - uses: FranzDiebold/github-env-vars-action@v2
 
       - name: Setup Python ${{ matrix.python-version }}
-        if: ${{ matrix.test-conda  == '0' }}
+        if: ${{ matrix.test-conda  == 'conda-python' }}
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Setup Conda ${{ matrix.python-version }}
         uses: conda-incubator/setup-miniconda@v2
-        if: ${{ matrix.test-conda  == '1' }}
+        if: ${{ matrix.test-conda  == 'conda-python' }}
         with:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
@@ -136,7 +136,7 @@ jobs:
       - name: Deploy
         run: |
           export PATH="$pythonLocation:$PATH"
-          if [ "$TEST_CONDA" = "0" ]; then
+          if [ "$TEST_CONDA" = "sys-python" ]; then
 
             if [ "$RUNNER_OS" = "macOS" ]; then
               python setup.py sdist bdist_wheel
