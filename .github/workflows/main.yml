@@ -26,6 +26,7 @@ jobs:
     runs-on: ${{ matrix.cfg.os }}
 
     defaults:
+      if: ${{ matrix.test-conda  == '1' }}
       run:
         shell: bash -l {0}
 
@@ -62,12 +63,6 @@ jobs:
         with:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
-
-      #https://github.com/actions/setup-python/issues/132    
-      - name: Fix python detection on macos
-        if: ${{ matrix.cfg.os =='macos-latest' }}
-        run: |
-          export PATH="$pythonLocation:$PATH"
 
       - name: Install dependencies
         run: |
