@@ -26,7 +26,6 @@ jobs:
     runs-on: ${{ matrix.cfg.os }}
 
     defaults:
-      if: ${{ matrix.test-conda  == '1' }}
       run:
         shell: bash -l {0}
 
@@ -66,6 +65,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          export PATH="$pythonLocation:$PATH"
           pip install conan --upgrade
           pip install twine
           pip install conan
@@ -76,6 +76,7 @@ jobs:
       - name: Install linux dependencies
         if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
         run: | 
+          export PATH="$pythonLocation:$PATH"
           sudo apt-get install libgdal-dev
           sudo apt-get install python-gdal
           sudo apt-get install gdal-bin
@@ -86,6 +87,7 @@ jobs:
       - name: Install macos dependencies
         if: ${{ matrix.cfg.os  == 'macos-latest' }}
         run: | 
+          export PATH="$pythonLocation:$PATH"
           brew install gdal
           brew install boost
           brew install cgal
@@ -110,6 +112,7 @@ jobs:
 
       - name: Install and test
         run: |
+          export PATH="$pythonLocation:$PATH"
           pip install .
           cd "examples"
           echo "running tests"
@@ -117,21 +120,22 @@ jobs:
 
       - name: Deploy
         run: |
-              if [ "$TEST_CONDA" = "0" ]; then
+          export PATH="$pythonLocation:$PATH"
+          if [ "$TEST_CONDA" = "0" ]; then
 
-                if [ "$RUNNER_OS" = "macOS" ]; then
-                  python setup.py sdist bdist_wheel
-                else
-                  python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
-                  #https://www.python.org/dev/peps/pep-0513/
-                fi
+            if [ "$RUNNER_OS" = "macOS" ]; then
+              python setup.py sdist bdist_wheel
+            else
+              python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
+              #https://www.python.org/dev/peps/pep-0513/
+            fi
 
-                if [[ $CI_REF_NAME == "stable/"* ]]; then
-                    twine upload  --skip-existing dist/*
-                else
-                  echo "Branch $CI_REF_NAME is not stable/*"
-                fi
-              fi
+            if [[ $CI_REF_NAME == "stable/"* ]]; then
+                twine upload  --skip-existing dist/*
+            else
+              echo "Branch $CI_REF_NAME is not stable/*"
+            fi
+          fi
               
         env:
           TWINE_PASSWORD: ${{secrets.TWINE_PASSWORD}}
