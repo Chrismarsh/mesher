@@ -117,19 +117,20 @@ jobs:
 
       - name: Deploy
         run: |
-              if [ "$TEST_CONDA" = "1" ]; then exit 0 ; fi
+              if [ "$TEST_CONDA" = "0" ]; then
 
-              if [ "$RUNNER_OS" = "macOS" ]; then
-                python setup.py sdist bdist_wheel
-              else
-                python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
-                #https://www.python.org/dev/peps/pep-0513/
-              fi
+                if [ "$RUNNER_OS" = "macOS" ]; then
+                  python setup.py sdist bdist_wheel
+                else
+                  python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
+                  #https://www.python.org/dev/peps/pep-0513/
+                fi
 
-              if [[ $CI_REF_NAME == "stable/"* ]]; then
-                  twine upload  --skip-existing dist/*
-              else
-                echo "Branch $CI_REF_NAME is not stable/*"
+                if [[ $CI_REF_NAME == "stable/"* ]]; then
+                    twine upload  --skip-existing dist/*
+                else
+                  echo "Branch $CI_REF_NAME is not stable/*"
+                fi
               fi
               
         env:
