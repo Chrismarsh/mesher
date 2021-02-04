@@ -35,9 +35,16 @@ jobs:
           - {os: "ubuntu-latest", compiler: "gcc", version: 9}
           - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
+    name: Default shell
+      runs-on: "ubuntu-latest"
+        defaults:
+          run:
+            shell: bash -l {0}
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+      default-shell:
+    
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
 
@@ -55,12 +62,6 @@ jobs:
         with:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
-
-
-      - uses: allenevans/set-env@v2.0.0
-        with:
-          LC_ALL: 'en_US.UTF-8'
-          LANG: 'en_US.UTF-8'
 
       - name: Install dependencies
         run: |
