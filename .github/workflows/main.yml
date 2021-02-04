@@ -25,6 +25,14 @@ jobs:
     # The type of runner that the job will run on
     runs-on: ${{ matrix.cfg.os }}
 
+    # Conda needs a login shell so set this as the default
+    # however it will cause non-conda macos python runs to fail as the wrong
+    # python is picked up, see this bug report
+    # https://github.com/actions/setup-python/issues/132
+    # The work around is to put  the following before any shell runs
+    # export PATH="$pythonLocation:$PATH"
+    # however this won't fix pip so all pip invocations need to be
+    # pytho -m pip
     defaults:
       run:
         shell: bash -l {0}
@@ -32,13 +40,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.7, 3.8, 3.9]
+        python-version: [3.7, 3.8]
         test-conda: ["0","1"]
+        use-conan: [True, False]
 
         cfg:
-          # - {os: "ubuntu-latest", compiler: "gcc", version: 7}
-          # - {os: "ubuntu-latest", compiler: "gcc", version: 8}
-          # - {os: "ubuntu-latest", compiler: "gcc", version: 9}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 7}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 8}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 9}
           - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
  
@@ -63,25 +72,9 @@ jobs:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
 
-      - name: Debug macos python
-        run: |
-          echo $PATH
-          which python
-          python --version
-
-          echo $pythonLocation
-          export PATH="$pythonLocation:$PATH"
-          echo $PATH
-          which python
-          python --version
-
-
       - name: Install dependencies
         run: |
           export PATH="$pythonLocation:$PATH"
-          echo $PATH
-          which python
-          python --version
           python -m pip install conan --upgrade
           python -m pip install twine
           python -m pip install conan
@@ -108,6 +101,12 @@ jobs:
           brew install boost
           brew install cgal
 
+      - name: Force Build (use conan)
+        if: ${{ matrix.use-conan == 'true' }}
+        uses: allenevans/set-env@v2.0.0
+        with:
+          "USE_CONAN": "True"
+
       - name: env linux
         if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
         uses: allenevans/set-env@v2.0.0
@@ -129,9 +128,6 @@ jobs:
       - name: Install and test
         run: |
           export PATH="$pythonLocation:$PATH"
-          echo $PATH
-          which python
-          python --version
           python -m pip install .
           cd "examples"
           echo "running tests"
@@ -140,9 +136,6 @@ jobs:
       - name: Deploy
         run: |
           export PATH="$pythonLocation:$PATH"
-          echo $PATH
-          which python
-          python --version
           if [ "$TEST_CONDA" = "0" ]; then
 
             if [ "$RUNNER_OS" = "macOS" ]; then

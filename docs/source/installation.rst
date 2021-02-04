@@ -3,21 +3,36 @@ Installation
 
 Installation of mesher is possible via ``pip``. 
 
-Mesher is only supported on Macos and Linux for Python >= 3.6
+Mesher is only supported on Macos and Linux for Python 3.7 and 3.8
 
 ::
 
    pip install mesher
 
 
-It is easiest if Python 3.6, or 3.7 is used (see :ref:`build:vtk` for details on wheel availability). 
+It is easiest if Python 3.7, or 3.8 is used (see :ref:`build:vtk` for details on wheel availability).
 Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version manager as described in the :ref:`build:Setup Python` section. 
 
 
-.. warning::
-   Ensure the following are installed via package manager:
-      - gdal development libaries (e.g., ``dnf install gdal-devel`` or ``brew install gdal``). See other notes :ref:`build:gdal` as you may also need the binary package.
-      - vtk development libaries (e.g., ``dnf install vtk-devel`` or ``brew install vtk``) **if not** Python 3.6, or 3.7
+Ensure the following are installed via package manager:
+
+For macos:
+
+::
+      brew install gdal
+      brew install boost
+      brew install cgal
+
+For Ubuntu:
+
+::
+
+    sudo apt-get install libgdal-dev
+    sudo apt-get install python-gdal
+    sudo apt-get install gdal-bin
+    sudo apt-get install libcgal-dev
+    sudo apt-get install libboost-filesystem-dev
+    sudo apt-get install libboost-program-options-dev
 
 .. :: warning
     On linux you may need ``libffi`` if, upon running ``pip``, there is an error about ``_ctypes``
@@ -29,7 +44,7 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
      ``dnf install libffi-devel``
 
 .. note::
-   As ``conan`` is used during the compilation, two new remotes will be automatically added to the ``.conan/remotes.json`` file:
+   If ``conan`` is used during the compilation, two new remotes will be automatically added to the ``.conan/remotes.json`` file:
    ::
 
       conan remote add bincrafters https://api.bintray.com/conan/bincrafters/public-conan
@@ -43,7 +58,7 @@ Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version mana
 Full working example
 **********************
 
-This provides a full example of setting up a python environemtn with the assumption the user does not have a python environment setup. 
+This provides a full example of setting up a python environment with the assumption the user does not have a python environment setup.
 
 .. note::
    If on macos, and you have homebrew, you can optionally install ``pyenv`` and ``pyenv-virtualenv`` via brew.
