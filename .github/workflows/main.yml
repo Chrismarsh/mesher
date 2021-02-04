@@ -82,12 +82,12 @@ jobs:
           echo $PATH
           which python
           python --version
-          pip install conan --upgrade
-          pip install twine
-          pip install conan
-          pip install scikit-build>=0.10.0
-          pip install ninja
-          pip install wheel
+          python -m pip install conan --upgrade
+          python -m pip install twine
+          python -m pip install conan
+          python -m pip install scikit-build>=0.10.0
+          python -m pip install ninja
+          python -m pip install wheel
 
       - name: Install linux dependencies
         if: ${{ matrix.cfg.os  == 'ubuntu-latest' }}
@@ -132,7 +132,7 @@ jobs:
           echo $PATH
           which python
           python --version
-          pip install .
+          python -m pip install .
           cd "examples"
           echo "running tests"
           bash ./runall.sh 
