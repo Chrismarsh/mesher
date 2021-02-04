@@ -13,10 +13,10 @@ Detailed documentation is given [here](https://mesher-hydro.readthedocs.io).
 Detailed documentation on how to install is given [here](https://mesher-hydro.readthedocs.io/en/latest/installation.html).
 
 In short:
-  - Python >=3.6
+  - Python >=3.7
   - Install GDAL development files from package manager (e.g., `gdal-devel`)
   - C++14 compliant gcc (gcc 7.3+ is good)
-  - If you **aren't** using Python 3.6, or 3.7, install `vtk-devel` from package manager
+  - You **might** need to install `vtk-devel` from package manager if the python wheels for vtk don't exist.
   
 Then:
 

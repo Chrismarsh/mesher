@@ -21,7 +21,7 @@ Build Requirements
 *******************
 
 Linux and MacOS are the only supported environments.
-Python >= 3.6
+Python >= 3.7
 
 If bintray binaries can be used, the only requirements are:
 
