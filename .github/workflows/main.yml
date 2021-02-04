@@ -60,7 +60,7 @@ jobs:
       - uses: FranzDiebold/github-env-vars-action@v2
 
       - name: Setup Python ${{ matrix.python-version }}
-        if: ${{ matrix.test-conda  == 'conda-python' }}
+        if: ${{ matrix.test-conda  == 'sys-python' }}
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
