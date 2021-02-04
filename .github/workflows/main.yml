@@ -43,18 +43,25 @@ jobs:
 
       - uses: FranzDiebold/github-env-vars-action@v2
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Setup Python ${{ matrix.python-version }}
         if: ${{ matrix.test-conda  == '0' }}
         uses: actions/setup-python@v2
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: conda-incubator/setup-miniconda@v2
+      - name: Setup Conda ${{ matrix.python-version }}
+        uses: conda-incubator/setup-miniconda@v2
         if: ${{ matrix.test-conda  == '1' }}
         with:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
-      
+
+
+      - uses: allenevans/set-env@v2.0.0
+        with:
+          LC_ALL: 'en_US.UTF-8'
+          LANG: 'en_US.UTF-8'
+
       - name: Install dependencies
         run: |
           pip install conan --upgrade
