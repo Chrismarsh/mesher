@@ -70,7 +70,13 @@
             {
                 const char* wkt =  std::get<0>(r.at(0))->getDs()->GetProjectionRef();
                 OGRSpatialReference srs;
-                srs.importFromWkt(&wkt);
+
+#if GDAL_VERSION_MAJOR < 3
+              char* srs_wkt_nonconst = const_cast<char*>(wkt);
+              srs.importFromWkt(&srs_wkt_nonconst);
+#else
+              srs.importFromWkt(&wkt);
+#endif
 
                 const char* out_wkt = "+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ";
                 OGRSpatialReference  srs_out;
@@ -637,7 +643,12 @@
                 {
                     const char* srs_wkt = std::get<0>(r.at(0))->getDs()->GetProjectionRef();
                     OGRSpatialReference srs;
+#if GDAL_VERSION_MAJOR < 3
+                    char* srs_wkt_nonconst = const_cast<char*>(srs_wkt);
+                    srs.importFromWkt(&srs_wkt_nonconst);
+#else
                     srs.importFromWkt(&srs_wkt);
+#endif
 
                     vertex v0;
                     vertex v1;
