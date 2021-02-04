@@ -41,8 +41,7 @@ jobs:
           - {os: "ubuntu-latest", compiler: "gcc", version: 9}
           - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
-  
-
+ 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
     
@@ -63,6 +62,12 @@ jobs:
         with:
           activate-environment: mesher-env
           python-version: ${{ matrix.python-version }}
+
+      #https://github.com/actions/setup-python/issues/132    
+      - name: Fix python detection on macos
+        if: ${{ matrix.cfg.os =='macos-latest' }}
+        run: |
+          export PATH="$pythonLocation:$PATH"
 
       - name: Install dependencies
         run: |
