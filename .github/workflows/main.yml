@@ -18,6 +18,13 @@ env:
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
+  default-shell:
+    name: Default shell
+    runs-on: ${{ matrix.cfg.os }}
+    defaults:
+      run:
+        shell: bash -l {0}
+          
   # This workflow contains a single job called "build"
   build:
     # The type of runner that the job will run on
@@ -35,12 +42,7 @@ jobs:
           - {os: "ubuntu-latest", compiler: "gcc", version: 9}
           - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
-    default-shell:
-      name: Default shell
-      runs-on: ${{ matrix.cfg.os }}
-      defaults:
-        run:
-          shell: bash -l {0}
+  
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
