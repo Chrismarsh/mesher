@@ -131,7 +131,7 @@ jobs:
           export PATH="$pythonLocation:$PATH"
           python -m pip install .
           which mesher
-          ldd mesher
+          ldd `which mesher`
           
           # cd "examples"
           # echo "running tests"
