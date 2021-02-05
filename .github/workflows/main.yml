@@ -42,7 +42,7 @@ jobs:
       matrix:
         python-version: [3.7] #, 3.8]
         # test-conda: ["conda-python","sys-python"]
-        test-conda: "sys-python"
+        test-conda: ["sys-python"]
         use-conan: ['use-conan'] #, 'use-sys-lib']
 
         cfg:
