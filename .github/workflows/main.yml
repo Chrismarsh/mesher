@@ -135,9 +135,9 @@ jobs:
           ls -la /opt/hostedtoolcache/Python/3.7.9/x64/lib/libproj.so.19
           mesher --version
           
-          # cd "examples"
-          # echo "running tests"
-          # bash ./runall.sh 
+          cd "examples"
+          echo "running tests"
+          bash ./ruEnall.sh 
 
       - name: Deploy
         run: |
