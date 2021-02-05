@@ -129,10 +129,7 @@ jobs:
         run: |
           export PATH="$pythonLocation:$PATH"
           python -m pip install .
-          which mesher
           ldd `which mesher`
-          ls -la /opt/hostedtoolcache/Python/3.7.9/x64/lib/libproj.so.19
-          mesher --version
           
           cd "examples"
           echo "running tests"
