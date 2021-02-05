@@ -12,21 +12,12 @@ class CHMConan(ConanFile):
     url = "https://github.com/Chrismarsh/CHM"
     description = "Canadian hydrological model"
     generators = "cmake_find_package"
-    # default_options = {"boost:without_python": True,
-    #                    "boost:without_mpi": True}
+
     options = {"verbose_cmake":[True,False], "build_tests":[True,False] }
 
     default_options = {"gperftools:heapprof":True,
                        "verbose_cmake":False,
                        "build_tests":True}
-    # [options]
-    # boost:without_python=True
-    # boost:without_mpi=False
-
-    # cgal:with_tbb=True
-    # cgal:with_gmp=True
-
-    # netcdf-c:parallel4=False
 
     def source(self):
         git = tools.Git()
@@ -34,9 +25,9 @@ class CHMConan(ConanFile):
 
 
     def requirements(self):
-        self.requires( "cgal/[>=5.0]@CHM/stable" )
-        self.requires( "boost/[>=1.71.0]@CHM/stable" )
-        self.requires( "gdal/2.4.1@CHM/stable" )
+        self.requires( "cgal/[>=5.2]@CHM/stable" )
+        self.requires( "boost/[>=1.75.0]@CHM/stable" )
+        self.requires( "gdal/[>=3]@CHM/stable" )
       
 
     def _configure_cmake(self):
