@@ -40,16 +40,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.7] #, 3.8]
-        # test-conda: ["conda-python","sys-python"]
-        test-conda: ["sys-python"]
-        use-conan: ['use-conan'] #, 'use-sys-lib']
+        python-version: [3.7, 3.8]
+        test-conda: ["conda-python","sys-python"]
+        use-conan: ['use-conan', 'use-sys-lib']
 
         cfg:
           - {os: "ubuntu-latest", compiler: "gcc", version: 7}
-          # - {os: "ubuntu-latest", compiler: "gcc", version: 8}
-          # - {os: "ubuntu-latest", compiler: "gcc", version: 9}
-          # - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 8}
+          - {os: "ubuntu-latest", compiler: "gcc", version: 9}
+          - {os: "macos-latest", compiler: "apple-clang", version: "12.0"}
 
  
     # Steps represent a sequence of tasks that will be executed as part of the job
