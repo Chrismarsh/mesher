@@ -137,7 +137,7 @@ jobs:
           
           cd "examples"
           echo "running tests"
-          bash ./ruEnall.sh 
+          bash ./runall.sh 
 
       - name: Deploy
         run: |
