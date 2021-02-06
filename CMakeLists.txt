@@ -131,6 +131,12 @@ else()
 
 endif()
 
+if(USE_CONAN)
+    find_package(proj REQUIRED)
+    list(APPEND EXTERNAL_LINK proj::proj)
+
+endif()
+
 find_package(Boost
             COMPONENTS
             program_options
