@@ -133,7 +133,7 @@ jobs:
         run: |
           export PATH="$pythonLocation:$PATH"
           python -m pip install .
-          ldd `which mesher`
+          # ldd `which mesher`
           
           cd "examples"
           echo "running tests"
