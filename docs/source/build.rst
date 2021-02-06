@@ -169,6 +169,8 @@ All of the mesher dependencies are built on Github-CI and uploaded to the bintra
 .. warning::
    The python gdal bindings uses a system-wide gdal rather than the conan gdal the mesher C++ backend links against. This will hopefully be resolved in the future. However, as no data passes between the C++ and Python, having different gdal versions poses no problem.
 
+.. warning::
+    Conan and conda don't seem to consistently work. Use at your own risk.
 
 Setup dependencies
 ******************
