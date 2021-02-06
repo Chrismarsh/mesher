@@ -143,12 +143,12 @@ int main(int argc, char *argv[])
     if (vm.count("help"))
     {
         std::cout << desc << std::endl;
-        exit(1);
+        exit(0);
     }
     if (vm.count("version"))
     {
         std::cout << version << std::endl;
-        exit(1);
+        exit(0);
     }
 
     if ( (vm.count("raster") && ! vm.count("tolerance")) ||
