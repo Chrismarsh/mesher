@@ -135,10 +135,11 @@ jobs:
           python -m pip install .
           # ldd `which mesher`
           
-          cd "examples"
+          cd "examples/flat_veg"
           echo "running tests"
           # bash ./runall.sh 
-          mesher --version
+          mesher.py flat_veg.py
+          # mesher --version
 
       - name: Deploy
         run: |
