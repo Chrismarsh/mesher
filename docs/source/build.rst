@@ -195,6 +195,17 @@ Then enable the conan build in the CMake file
     cmake ~/mesher -DCMAKE_INSTALL_PREFIX=/opt/mesher -DUSE_CONAN=True
 
 
+What to do if things aren't working
+=====================================
+
+On Macos, homebrew tends to update often. Thus, python packages that are installed against homebrew libraries may break in interesting ways.
+The most common issue is that the pygdal package hasn't been update for the newest version of gdal in homebrew. This will manifest as an error like
+``gdal 2.3.4 != gdal 3.2.1`` . Unfortunately there is not much that can be until pygdal gets updated. It is best to open an issue either on the mesher or nextgis/pygdal githubs.
+
+If there is an install error about ``gdal-config`` missing, please ensure that gdal is installed from your package manager and is available on the path. Running
+``gdal-config --version`` should produce output
+
+
 
 
 
