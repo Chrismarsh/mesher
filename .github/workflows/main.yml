@@ -109,7 +109,7 @@ jobs:
 
 
       - name: Install macos dependencies
-        if: ${{ matrix.cfg.os  == 'macos-latest' }}
+        if: startsWith( matrix.cfg.os, 'macos' )
         run: | 
           export PATH="$pythonLocation:$PATH"
           brew install gdal
@@ -130,7 +130,7 @@ jobs:
           CXX: g++-${{ matrix.cfg.version }}
 
       - name: env macos
-        if: ${{ matrix.cfg.os  == 'macos-latest' }}
+        if: startsWith( matrix.cfg.os, 'macos' )
         uses: allenevans/set-env@v2.0.0
         with:
           CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
