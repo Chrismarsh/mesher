@@ -35,6 +35,12 @@ For Ubuntu:
     sudo apt-get install libboost-filesystem-dev
     sudo apt-get install libboost-program-options-dev
 
+On Ubuntu 20.04, use 
+
+::
+
+   sudo apt-get install python3-gdal
+
 .. :: warning
     On linux you may need ``libffi`` if, upon running ``pip``, there is an error about ``_ctypes``
 

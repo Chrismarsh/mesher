@@ -37,7 +37,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='1.5.0',
+      version='1.5.1',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
@@ -57,7 +57,7 @@ setup(name='mesher',
       cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
                   '-DUSE_CONAN:BOOL='+USE_CONAN],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
+      install_requires=['vtk','pygdal-chm'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
       setup_requires=setup_requires,
       python_requires='>=3.7, <3.9'
      )
