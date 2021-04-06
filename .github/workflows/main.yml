@@ -50,11 +50,10 @@ jobs:
 
         cfg:
           - {os: "ubuntu-18.04", compiler: "gcc", version: 7}
-          - {os: "ubuntu-18.04", compiler: "gcc", version: 8}
           - {os: "ubuntu-18.04", compiler: "gcc", version: 9}
-          - {os: "ubuntu-20.04", compiler: "gcc", version: 7}
-          - {os: "ubuntu-20.04", compiler: "gcc", version: 8}
+          - {os: "ubuntu-18.04", compiler: "gcc", version: 10}
           - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
+          - {os: "ubuntu-20.04", compiler: "gcc", version: 10}
           - {os: "macos-10.15", compiler: "apple-clang", version: "12.0"}
 
  
