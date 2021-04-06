@@ -94,6 +94,7 @@ jobs:
           UBUNTU_VER: ${{ matrix.cfg.os }}
         run: | 
           export PATH="$pythonLocation:$PATH"
+          sudo apt-get update
           sudo apt-get install libgdal-dev
           sudo apt-get install gdal-bin
           sudo apt-get install libcgal-dev
