@@ -256,6 +256,17 @@ def main():
     if hasattr(X, 'extent'):
         extent = X.extent
 
+    #Clip to a shape file
+    clip_to_shp = None
+    if hasattr(X, 'clip_to_shp'):
+        clip_to_shp = X.clip_to_shp
+
+        if not os.exists(clip_to_shp):
+            raise Exception(f'Clipping shape file is not valid. Path given was\n {clip_to_shp}')
+
+    if clip_to_shp and extent:
+        raise Exception('Cannot specify both extent and a shape file to clip to')
+
     nworkers = os.cpu_count() or 1
 
     # on linux we can ensure that we respect cpu affinity
@@ -366,9 +377,13 @@ def main():
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
         src_ds = None
 
-    e = 'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 -t_srs \"%s\"' + ext_str
+    cutline_cmd = ''
+    if clip_to_shp:
+        cutline_cmd = f' -cutline {clip_to_shp} -crop_to_cutline '
+
+    e = 'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 %s -t_srs \"%s\"' + ext_str
     subprocess.check_call([e % (gdal_prefix,
-                                dem_filename, base_dir + base_name + output_file_name, srs_out.ExportToProj4())],
+                                dem_filename, base_dir + base_name + output_file_name, cutline_cmd, srs_out.ExportToProj4())],
                           shell=True)
 
     if fill_holes:
