@@ -268,7 +268,15 @@ Disables ``simplify_buffer`` when ``simplify=True``
    :type: list[4]
    :default: []
 
-A large DEM may be subset to ``[xmin ymin xmax ymax]``. These are given in the *original* coordinate system of the input DEM.
+A large DEM may be subset to ``[xmin ymin xmax ymax]``. These are given in the coordinate system of the input DEM.
+
+.. confval:: clip_to_shp
+
+   :type: str
+   :default: None
+
+A large DEM may be clipped to the geometry specified by a shape file. This should be a path to the shape file e.g., `/my/path/geom.shp'. The shp must be georeferenced and will be reprojected by gdalwarp as required.
+
 
 Domain Repair
 ==============
