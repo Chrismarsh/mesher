@@ -325,9 +325,14 @@ def main():
 
     base_dir = user_output_dir + base_name + os.path.sep
 
+    if not os.path.isdir(base_dir) and reuse_mesh:
+        raise Exception(f"Using reuse_mesh=True, however the directory {base_dir} does not exist")
+
     # Delete previous dir (if exists)
     if os.path.isdir(base_dir) and not reuse_mesh:
         shutil.rmtree(base_dir, ignore_errors=True)
+
+
 
     # these have to be separate ifs for the logic to work correctly
     if not reuse_mesh:
