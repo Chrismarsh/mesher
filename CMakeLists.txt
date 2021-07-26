@@ -27,7 +27,7 @@ if(USE_CONAN)
                 URL https://api.bintray.com/conan/bincrafters/public-conan
             )
     conan_add_remote(NAME CHM
-            URL https://api.bintray.com/conan/chrismarsh/CHM
+            URL http://conan.snowcast.ca:8081/artifactory/api/conan/chm
             )
 
     conan_cmake_run(CONANFILE conanfile.py
