@@ -115,6 +115,7 @@ jobs:
           brew install gdal
           brew install boost
           brew install cgal
+          brew install ninja
 
       - name: Force Build (use conan)
         if: ${{ matrix.use-conan == 'use-conan' }}
