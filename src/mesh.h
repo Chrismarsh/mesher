@@ -121,7 +121,8 @@ public:
 typedef Delaunay_mesh_face_base_info_2<K> Fb;
 
 typedef CGAL::Triangulation_data_structure_2<Vb, Fb> Tds;
-typedef CGAL::Constrained_Delaunay_triangulation_2<K, Tds> CDT;
+typedef CGAL::Exact_predicates_tag  Itag;
+typedef CGAL::Constrained_Delaunay_triangulation_2<K, Tds, Itag> CDT;
 
 typedef mesh_2_criterion_area<CDT> Criteria;
 typedef CGAL::Delaunay_mesher_2<CDT, Criteria> Mesher;
