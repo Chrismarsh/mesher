@@ -25,10 +25,11 @@ class CHMConan(ConanFile):
 
 
     def requirements(self):
-        self.requires( "cgal/[>=5.2]@CHM/stable" )
-        self.requires( "boost/[>=1.75.0]@CHM/stable" )
-        self.requires( "gdal/[>=3]@CHM/stable" )
+        self.requires("cgal/[>=5.2]@CHM/stable")
+        self.requires("boost/[>=1.75.0]@CHM/stable")
+        self.requires("gdal/[>=3]@CHM/stable")
         self.requires("proj/[>=7]@CHM/stable")
+        self.requires("metis/[>=5]@CHM/stable")
 
     def _configure_cmake(self):
         cmake = CMake(self)

@@ -57,7 +57,7 @@ setup(name='mesher',
       cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
                   '-DUSE_CONAN:BOOL='+USE_CONAN],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle'],
+      install_requires=['vtk','pygdal-chm'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle','metis'],
       setup_requires=setup_requires,
       python_requires='>=3.7, <3.9'
      )

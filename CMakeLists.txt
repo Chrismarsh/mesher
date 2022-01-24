@@ -3,14 +3,15 @@ project(mesher)
 
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
-option(USE_CONAN "Build without using conan dependencies" FALSE)
+option(USE_CONAN "Build with using conan dependencies" FALSE)
+
+set(CMAKE_BUILD_TYPE "Release")
 
 if(USE_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
 
     message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
     file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/develop/conan.cmake"
             "${CMAKE_BINARY_DIR}/conan.cmake")
-    include(${CMAKE_BINARY_DIR}/conan.cmake)
 endif()
 
 
@@ -23,8 +24,9 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}
 endif ()
 
 if(USE_CONAN)
+    include(${CMAKE_BINARY_DIR}/conan.cmake)
     conan_add_remote(NAME bincrafters
-                URL https://api.bintray.com/conan/bincrafters/public-conan
+                URL https://bincrafters.jfrog.io/artifactory/api/conan/public-conan
             )
     conan_add_remote(NAME CHM
             URL http://conan.snowcast.ca/artifactory/api/conan/chm
@@ -39,6 +41,9 @@ if(USE_CONAN)
                     NO_OUTPUT_DIRS
                     BUILD missing)
 endif()
+
+#LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/CMake/")
+#LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/")
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
@@ -149,6 +154,19 @@ else()
 endif()
 
 
+
+# we will need to be able to tell the python metis where the shared objects live
+set(metis_LIBS "")
+if( USE_CONAN)
+    find_package(metis 5.1 REQUIRED)
+else()
+    LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/")
+    find_package(metis 5.1 REQUIRED)
+    set(metis_LIBS "${METIS_LIBRARY}")
+endif()
+
+file(WRITE "${CMAKE_BINARY_DIR}/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'")
+
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
 # only need fancy rpaths if we are shipping our libs alongside the binary via conan
@@ -182,9 +200,8 @@ target_link_libraries(
         ${EXTERNAL_LINK}
 )
 
-
-
 install(TARGETS mesher RUNTIME)
+install(FILES ${CMAKE_BINARY_DIR}/metis-config.py RUNTIME)
 
 # only ship our libs if built with conan
 if(USE_CONAN)
