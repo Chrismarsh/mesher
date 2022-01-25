@@ -165,7 +165,7 @@ else()
     set(metis_LIBS "${METIS_LIBRARY}")
 endif()
 
-file(WRITE "${CMAKE_BINARY_DIR}/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'")
+file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'")
 
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
@@ -201,7 +201,7 @@ target_link_libraries(
 )
 
 install(TARGETS mesher RUNTIME)
-install(FILES ${CMAKE_BINARY_DIR}/metis-config.py RUNTIME)
+install(FILES ${CMAKE_BINARY_DIR}/build-bin/metis-config.py DESTINATION RUNTIME)
 
 # only ship our libs if built with conan
 if(USE_CONAN)
