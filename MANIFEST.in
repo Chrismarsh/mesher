@@ -3,6 +3,7 @@ graft tools
 
 include .gitignore
 include CMakeLists.txt
+include CMake/Findmetis.cmake
 include CMakeLists_external.txt.in
 include LICENSE
 include README.md
