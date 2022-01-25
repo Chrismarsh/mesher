@@ -181,7 +181,7 @@ jobs:
           cd "examples/flat_veg"
           echo "running simple test"
           mesher.py flat_veg.py
-          meshpermutation.py -o lol.mesh -t metis -i flat_veg/ideal_flat.mesh -n 4
+          meshpermutation.py -o lol.mesh -t metis -i flat_veg/ideal_flat.mesh -n 2
 
       - name: Deploy
         run: |
