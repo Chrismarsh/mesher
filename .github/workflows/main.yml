@@ -45,8 +45,8 @@ jobs:
         # use-conan: ['use-conan']
 
         python-version: [3.7, 3.8]
-        test-conda: ["conda-python","sys-python"]
-        use-conan: ['use-sys-lib'] #'use-conan', 
+        test-conda: ["sys-python"] # "conda-python",
+        use-conan: ['use-sys-lib','use-conan']
 
         cfg:
           - {os: "ubuntu-18.04", compiler: "gcc", version: 7}
@@ -54,7 +54,8 @@ jobs:
           - {os: "ubuntu-18.04", compiler: "gcc", version: 10}
           - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
           - {os: "ubuntu-20.04", compiler: "gcc", version: 10}
-          - {os: "macos-10.15", compiler: "apple-clang", version: "12.0"}
+          - {os: "macos-10.15",  compiler: "apple-clang", version: "12.0"}
+          - {os: "macos-11",     compiler: "apple-clang", version: "13.0"}
 
  
     # Steps represent a sequence of tasks that will be executed as part of the job
@@ -95,11 +96,14 @@ jobs:
         run: | 
           export PATH="$pythonLocation:$PATH"
           sudo apt-get update
+          sudo env ACCEPT_EULA=Y apt-get upgrade -y
+          sudo apt-get update
           sudo apt-get install libgdal-dev
           sudo apt-get install gdal-bin
           sudo apt-get install libcgal-dev
           sudo apt-get install libboost-filesystem-dev
           sudo apt-get install libboost-program-options-dev
+          sudo apt-get install libmetis-dev
 
           if [[ "$UBUNTU_VER" = "ubuntu-20.04" ]]; then
             sudo apt-get install python3-gdal
@@ -116,6 +120,24 @@ jobs:
           brew install boost
           brew install cgal
           brew install ninja
+          brew install metis
+
+      - name: env linux
+        if: startsWith( matrix.cfg.os, 'ubuntu' )
+        uses: allenevans/set-env@v2.0.0
+        with:
+         CONAN_GCC_VERSIONS: ${{ matrix.cfg.version }}
+         CC: gcc-${{ matrix.cfg.version }}
+         CXX: g++-${{ matrix.cfg.version }}
+         GFORTRAN_NAME: gfortran-${{ matrix.cfg.version }}
+
+      - name: env macos
+        if: startsWith( matrix.cfg.os, 'macos' )
+        uses: allenevans/set-env@v2.0.0
+        with:
+          CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
+          GFORTRAN_NAME: gfortran-10 # set the name to use for gfortran as we need to use gfotran-<version>
+
 
       - name: Force Build (use conan)
         if: ${{ matrix.use-conan == 'use-conan' }}
@@ -123,18 +145,26 @@ jobs:
         with:
           "USE_CONAN": "TRUE"
 
-      - name: env linux
-        if: startsWith( matrix.cfg.os, 'ubuntu' )
-        uses: allenevans/set-env@v2.0.0
-        with:
-          CC: gcc-${{ matrix.cfg.version }}
-          CXX: g++-${{ matrix.cfg.version }}
-
-      - name: env macos
-        if: startsWith( matrix.cfg.os, 'macos' )
-        uses: allenevans/set-env@v2.0.0
-        with:
-          CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
+      - name: Setup conan
+        if: ${{ matrix.use-conan == 'use-conan' }}
+        run: |
+          conan profile new default --detect
+          conan config install https://github.com/Chrismarsh/conan-config.git
+          
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            conan profile update settings.os.distro="$CFG_OS" default
+          else
+            VERSION=$(echo "$CFG_OS" | cut -d'-' -f2)
+            echo "MacOS $VERSION"
+            if [[ "$VERSION" == "11" ]]; 
+            then 
+              VERSION="11.0"
+            fi
+            conan profile update settings.os.version="$VERSION" default
+          fi
+          cat ~/.conan/profiles/default
+        env:
+          CFG_OS: ${{matrix.cfg.os } }
     
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
@@ -144,14 +174,14 @@ jobs:
       - name: Install and test
         run: |
           export PATH="$pythonLocation:$PATH"
-          python -m pip install .
-          # ldd `which mesher`
+          python setup.py sdist
+          VERSION=$(grep 'version=' setup.py | cut -d\' -f2)
+          python -m pip install mesher-$VERSION.tar.gz 
           
           cd "examples/flat_veg"
-          echo "running tests"
-          # bash ./runall.sh 
+          echo "running simple test"
           mesher.py flat_veg.py
-          # mesher --version
+          meshpermutation.py -o lol.mesh -t metis -i flat_veg/ideal_flat.mesh -n 4
 
       - name: Deploy
         run: |
