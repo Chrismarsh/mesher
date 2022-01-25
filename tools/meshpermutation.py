@@ -12,7 +12,14 @@ import importlib
 metis_config_path = os.path.dirname(os.path.abspath(__file__)) + '/metis-config.py'
 metisconfig = importlib.machinery.SourceFileLoader('metisconfig', metis_config_path)
 metisconfig = metisconfig.load_module()
-os.environ["METIS_DLL"] = metisconfig.METIS_DLL
+
+if metisconfig.is_conan_build:
+    filename = os.path.split(metisconfig.METIS_DLL)
+    filename = filename[1] #the so name
+    path = os.path.dirname(os.path.abspath(__file__)) + '/../lib/' + filename
+    os.environ["METIS_DLL"] = path
+else:
+    os.environ["METIS_DLL"] = metisconfig.METIS_DLL
 import metis
 
 # Set up CL arguments

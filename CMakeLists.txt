@@ -165,7 +165,13 @@ else()
     set(metis_LIBS "${METIS_LIBRARY}")
 endif()
 
-file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'\n")
+#do it this way because it needs to be a Python type! FALSE != False
+set(is_conan_build "False")
+if(USE_CONAN)
+    set(is_conan_build "True")
+endif()
+
+file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'\nis_conan_build=${is_conan_build}")
 
 set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
