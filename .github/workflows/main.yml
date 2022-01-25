@@ -44,23 +44,23 @@ jobs:
         # test-conda: ["sys-python"]
         # use-conan: ['use-conan']
 
-        python-version: [3.7, 3.8]
-        test-conda: ["sys-python"] # "conda-python",
-        use-conan: ['use-sys-lib','use-conan']
+        python-version: [ 3.7, 3.8 ]
+        test-conda: [ "sys-python" ] # "conda-python",
+        use-conan: [ 'use-sys-lib','use-conan' ]
 
         cfg:
-          - {os: "ubuntu-18.04", compiler: "gcc", version: 7}
-          - {os: "ubuntu-18.04", compiler: "gcc", version: 9}
-          - {os: "ubuntu-18.04", compiler: "gcc", version: 10}
-          - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
-          - {os: "ubuntu-20.04", compiler: "gcc", version: 10}
-          - {os: "macos-10.15",  compiler: "apple-clang", version: "12.0"}
-          - {os: "macos-11",     compiler: "apple-clang", version: "13.0"}
+          - { os: "ubuntu-18.04", compiler: "gcc", version: 7 }
+          - { os: "ubuntu-18.04", compiler: "gcc", version: 9 }
+          - { os: "ubuntu-18.04", compiler: "gcc", version: 10 }
+          - { os: "ubuntu-20.04", compiler: "gcc", version: 9 }
+          - { os: "ubuntu-20.04", compiler: "gcc", version: 10 }
+          - { os: "macos-10.15",  compiler: "apple-clang", version: "12.0" }
+          - { os: "macos-11",     compiler: "apple-clang", version: "13.0" }
 
- 
+
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-    
+
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
 
@@ -93,7 +93,7 @@ jobs:
         if: startsWith( matrix.cfg.os, 'ubuntu' )
         env:
           UBUNTU_VER: ${{ matrix.cfg.os }}
-        run: | 
+        run: |
           export PATH="$pythonLocation:$PATH"
           sudo apt-get update
           sudo env ACCEPT_EULA=Y apt-get upgrade -y
@@ -114,7 +114,7 @@ jobs:
 
       - name: Install macos dependencies
         if: startsWith( matrix.cfg.os, 'macos' )
-        run: | 
+        run: |
           export PATH="$pythonLocation:$PATH"
           brew install gdal
           brew install boost
@@ -126,10 +126,10 @@ jobs:
         if: startsWith( matrix.cfg.os, 'ubuntu' )
         uses: allenevans/set-env@v2.0.0
         with:
-         CONAN_GCC_VERSIONS: ${{ matrix.cfg.version }}
-         CC: gcc-${{ matrix.cfg.version }}
-         CXX: g++-${{ matrix.cfg.version }}
-         GFORTRAN_NAME: gfortran-${{ matrix.cfg.version }}
+          CONAN_GCC_VERSIONS: ${{ matrix.cfg.version }}
+          CC: gcc-${{ matrix.cfg.version }}
+          CXX: g++-${{ matrix.cfg.version }}
+          GFORTRAN_NAME: gfortran-${{ matrix.cfg.version }}
 
       - name: env macos
         if: startsWith( matrix.cfg.os, 'macos' )
@@ -164,8 +164,8 @@ jobs:
           fi
           cat ~/.conan/profiles/default
         env:
-          CFG_OS: ${{matrix.cfg.os } }
-    
+          CFG_OS: ${{matrix.cfg.os}}
+
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
         with:
@@ -201,7 +201,7 @@ jobs:
               echo "Branch $CI_REF_NAME is not stable/*"
             fi
           fi
-              
+
         env:
           TWINE_PASSWORD: ${{secrets.TWINE_PASSWORD}}
           TWINE_USERNAME: ${{secrets.TWINE_USERNAME}}
