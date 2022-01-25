@@ -176,7 +176,7 @@ jobs:
           export PATH="$pythonLocation:$PATH"
           python setup.py sdist
           VERSION=$(grep 'version=' setup.py | cut -d\' -f2)
-          python -m pip install mesher-$VERSION.tar.gz 
+          python -m pip install dist/mesher-$VERSION.tar.gz 
           
           cd "examples/flat_veg"
           echo "running simple test"
