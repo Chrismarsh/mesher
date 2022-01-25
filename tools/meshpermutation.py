@@ -96,7 +96,7 @@ def compute_metis_permutation_N(neighbor_list,nrank):
 
     trim_neighbor_list = [x[:] for x in neighbor_list]
     for nlst in trim_neighbor_list:
-        if -1 in nlst:
+        while -1 in nlst:
             nlst.remove(-1)
     # partition by metis
     m = metis.part_graph(trim_neighbor_list,nrank)
