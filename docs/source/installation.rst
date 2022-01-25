@@ -1,18 +1,26 @@
 Installation
 ============
 
-Installation of mesher is possible via ``pip``. 
+Installation of mesher is possible via ``pip``.  Installation into a conda environment probably works but is not tested.
+Mesher is only supported on Macos and Linux for Python 3.7+
 
-Mesher is only supported on Macos and Linux for Python 3.7 and 3.8
+Wheels are not prebuilt for mesher. Instead, mesher will need to be compiled as part of the pip install step. This thus requires a functional build environment.
 
-::
+Mesher is tested on Macos (brew) and Ubuntu (apt-get) although other configurations likely work as expected. Adjust the dependencies below as needed.
 
-   pip install mesher
+It is easiest if Python 3.7, 3.8, 3.9 is used as one of the dependencies (vtk) has prebuilt wheels (see `here <https://pypi.org/project/vtk/9.1.0/#files:vtk>`_ for details on wheel availability).
+Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version manager if this is not your system default Python version.
 
+Setup environment
++++++++++++++++++++
 
-It is easiest if Python 3.7, or 3.8 is used (see :ref:`build:vtk` for details on wheel availability).
-Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version manager as described in the :ref:`build:Setup Python` section. 
+Mesher can be built against system libraries or against conan libraries.
 
+.. note::
+   Depending on your python install, ``pip`` may be ``pip3``
+
+System
+--------
 
 Ensure the following are installed via package manager:
 
@@ -23,6 +31,7 @@ For macos:
       brew install gdal
       brew install boost
       brew install cgal
+      brew install metis
 
 For Ubuntu:
 
@@ -34,6 +43,7 @@ For Ubuntu:
     sudo apt-get install libcgal-dev
     sudo apt-get install libboost-filesystem-dev
     sudo apt-get install libboost-program-options-dev
+    sudo apt-get install libmetis-dev
 
 On Ubuntu 20.04, use 
 
@@ -50,64 +60,62 @@ On Ubuntu 20.04, use
     On CentOS/Fedora
      ``dnf install libffi-devel``
 
-.. note::
-   If ``conan`` is used during the compilation, two new remotes will be automatically added to the ``.conan/remotes.json`` file:
-   ::
+Then install mesher with
 
-      conan remote add bincrafters https://api.bintray.com/conan/bincrafters/public-conan
-      conan remote add CHM https://api.bintray.com/conan/chrismarsh/CHM
-
-   These are needed to download the required dependencies for the backend
-
-.. note::
-   Depending on your python install, ``pip`` may be ``pip3``
-
-Full working example
-**********************
-
-This provides a full example of setting up a python environment with the assumption the user does not have a python environment setup.
-
-.. note::
-   If on macos, and you have homebrew, you can optionally install ``pyenv`` and ``pyenv-virtualenv`` via brew.
-
-
-Install `pyenv`_
 ::
 
-   curl https://pyenv.run | bash
+    pip install mesher
 
-Note, this automatically installs ``pyenv-virtualenv``.
+Conan
+--------
+Install conan via
 
-Restart the shell and update
 ::
 
-   exec $SHELL 
-   pyenv update
+    pip install conan
 
+And then setup a new profile
 
-Install python 3.7.6
 ::
 
-   pyenv install 3.7.6
-   pyenv shell 3.7.6
+    conan profile new default --detect
+    conan config install https://github.com/Chrismarsh/conan-config.git
 
-Create new virtual environment for ``mesher`` and install mesher
+
+This configuration file setups use of revisions, two new remotes (bincrafters, CHM), and tweaks the ``settings.yml`` file to have ubuntu-18.04 and ubuntu-20.04 distros. Setting
+``os.distro = 'ubuntu-20.04'`` will enable the use of prebuilt library binaries.
+
+Then setup conan to use the new C++ ABI and C++ standard
+
 ::
-   
-   pyenv virtualenv 3.7.6 mesher-3.7.6
-   pyenv activate mesher-3.7.6
-   pip install mesher
 
+  conan profile update settings.compiler.cppstd=14 default
 
-Now, if you wish to run mesher activate the virtualenv
+If using clang (e.g.,Macos), do
+
 ::
-   
-   pyenv activate mesher-3.7.6
-   mesher.py my-config-file.py
+
+   conan profile update settings.compiler.libcxx=libc++ default  #with clang
+
+and if using gcc, do
+
+::
+
+   conan profile update settings.compiler.libcxx=libstdc++11 default  #with gcc
+
+then install mesher with
+
+::
+
+    USE_CONAN=TRUE pip install mesher
 
 
 conda
-******
+++++++
+
+.. warning::
+    This is not tested! Mixing conan + conda seems to not be reliable so please use system libraries.
+
 The Anaconda python environment supports ``pip`` installs. This example shows installing Anaconda, however if you already have Anaconda installed, then only the instructions from ``conda create`` onward is required.
 
 ::
@@ -126,7 +134,7 @@ This approach will use the system installed gdal.
 
 
 Install of github branch
-*************************
+++++++++++++++++++++++++++
 You can optionally use pip to install the most recent github version or a github branch. However, the automatic
 setup of the build environment does not occur, so ensure ``scikit-build``, ``cmake``, ``conan``, and ``ninja`` are installed. Then,
 
@@ -135,25 +143,6 @@ setup of the build environment does not occur, so ensure ``scikit-build``, ``cma
     pip install git+https://github.com/Chrismarsh/mesher@branch-name
 
 If mesher is already installed, use ``--force-reinstall`` to reinstall it.
-
-
-Automatic virtualenv activation
-*******************************
-
-The automatic virtualenv activation provided by ``pyenv-virtualenv`` can make it easier to work with virtual environments. 
-
-Follow point 2 `here <https://github.com/pyenv/pyenv-virtualenv>`_ to enable this feature.
-
-Any folder with a ``.python-version`` that contains a  valid virtualenv specification will have it automatically enabled upon entering that folder. For example,
-
-::
-   
-   cd my-working-folder
-   echo "mesher-3.7.6" >> .python-version
-
-
-will automatically activate the above-created virtualenv every time that folder is entered, and deactivate when leaving.
-
 
 
 
