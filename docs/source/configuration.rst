@@ -50,6 +50,8 @@ This is a constraint on the maximum size (m^2) of a triangle. Any triangle that 
 
 The maximum difference (vertical distance) between the triangle and the underlying raster as measured by the ``errormeteric``. This can optionally be specified as ``-1`` to skip the tolerance checks, which can be useful in producing uniformly sized triangles.
 
+.. image:: images/mesher_tolerances.png
+
 .. confval:: min_area
 
    :type: double
@@ -479,6 +481,8 @@ Shape file constraints
 =======================
 
 Shape files may be used to further constrain the mesh, for example to rivers or basin outlines. The line segments in the shape file are treated as barries that triangles cannot cross; thus triangle edges represent the shapefile edges exactly. It may be benificial to simplify these edges somewhat so-as to avoid the creation of many small triangles.
+
+.. image:: images/constraint_shpfile.png
 
 This is further shown in :ref:`examples:flat_stream`.
 
