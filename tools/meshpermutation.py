@@ -6,6 +6,13 @@ import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.csgraph as graph
 import scipy.sparse.linalg as linalg
+import importlib
+
+# This is the path for the metis shared obj we detected during install
+metis_config_path = os.path.dirname(os.path.abspath(__file__)) + '/metis-config.py'
+metisconfig = importlib.machinery.SourceFileLoader('metisconfig', metis_config_path)
+metisconfig = metisconfig.load_module()
+os.environ["METIS_DLL"] = metisconfig.METIS_DLL
 import metis
 
 # Set up CL arguments
