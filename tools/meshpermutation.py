@@ -99,6 +99,9 @@ def compute_metis_permutation_N(neighbor_list,nrank):
     """Computes an nrank partition using METIS
     - Uses metis deffault permutation for partitions"""
 
+    if nrank <= 1:
+        raise Exception("Metis partitioning requires >1 partitions. Use -n / --nrank to set this")
+
     N = len(neighbor_list) # number of rows/columns
 
     trim_neighbor_list = [x[:] for x in neighbor_list]
