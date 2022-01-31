@@ -187,6 +187,7 @@ if(USE_CONAN)
     else()
         set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
     endif()
+    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 endif()
 
 add_executable(mesher ${SOURCE_FILES})
