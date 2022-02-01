@@ -37,7 +37,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='1.5.8',
+      version='1.5.9',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 

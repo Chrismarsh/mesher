@@ -46,6 +46,10 @@ gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
 osr.UseExceptions()  # Enable exception support
 
+# Version of the mesh that is produced
+MESH_MAJOR = "1"
+MESH_MINOR = "0"
+MESH_PATCH = "0"
 
 def main():
     # load user configurable parameters here
@@ -942,6 +946,8 @@ def main():
     for t in ret_tri_ic:
         for key, data in t.items():
             ics[key].append(data)
+
+    mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
 
     print('Total time took %s s' % str(round(time.perf_counter() - start_time, 2)))
 

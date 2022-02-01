@@ -43,6 +43,12 @@ import matplotlib as mpl
 mpl.use('AGG')  # non-gui display (much faster)
 import matplotlib.pyplot as plt
 
+# Version of the mesh that is produced
+MESH_MAJOR = "1"
+MESH_MINOR = "3"
+MESH_PATCH = "0"
+
+
 def append_global_cell_id_to_mesh_file(args):
     """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
 
@@ -58,6 +64,9 @@ def append_global_cell_id_to_mesh_file(args):
     elif args["type"]=="nd":
         print(" Performing ND fill-in minimization:")
         mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
+
+    mesh['mesh']['partition_method'] = args["type"]
+    mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
 
     with open(args["outfile"],'w') as f:
         json.dump(mesh, f, indent=4)
