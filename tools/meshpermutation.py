@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 
 # Version of the mesh that is produced
 MESH_MAJOR = "1"
-MESH_MINOR = "3"
+MESH_MINOR = "2"
 MESH_PATCH = "0"
 
 
@@ -61,6 +61,8 @@ def append_global_cell_id_to_mesh_file(args):
     elif args["type"]=="metis":
         mesh['mesh']['local_size'], mesh['mesh']['cell_global_id'] = \
             compute_metis_permutation_N(mesh['mesh']['neigh'], args['nrank'])
+        MESH_MAJOR = "2"
+        MESH_MINOR = "0"
     elif args["type"]=="nd":
         print(" Performing ND fill-in minimization:")
         mesh['mesh']['cell_global_id'] = compute_nd_permutation(mesh['mesh']['neigh'])
