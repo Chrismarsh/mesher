@@ -165,6 +165,7 @@ jobs:
           cat ~/.conan/profiles/default
         env:
           CFG_OS: ${{matrix.cfg.os}}
+          CONAN_DEFAULT_PROFILE_PATH: "chm_no_mpi"
 
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
