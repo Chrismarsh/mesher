@@ -3,6 +3,7 @@ import subprocess
 from packaging.version import LegacyVersion
 from skbuild.exceptions import SKBuildError
 from skbuild.cmaker import get_cmake_version
+import packaging
 import os
 
 def get_installed_gdal_version():
@@ -13,10 +14,9 @@ def get_installed_gdal_version():
 
         #pygdal don'ts always have the most up todate version so we will need to swtich to pygdal-chm if it is not available
         # 3.3.2 is most recent as of this version
-        mmp = [int(x) for x in version.split('.')]
-        chm = ''
-        if mmp[0] > 3 or mmp[1] > 3 or mmp[2] > 2:
-            chm = '-chm'
+        chm=''
+        if packaging.version.parse(version) > packaging.version.parse("3.3.2"):
+            chm='-chm'
 
         version = chm + "=="+version+".*"
         return version
@@ -45,7 +45,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='1.5.11',
+      version='1.5.12',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
