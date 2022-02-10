@@ -10,7 +10,15 @@ def get_installed_gdal_version():
         version = subprocess.run(["gdal-config","--version"], stdout=subprocess.PIPE).stdout.decode()
 
         version = version.replace('\n', '')
-        version = "=="+version+".*"
+
+        #pygdal don'ts always have the most up todate version so we will need to swtich to pygdal-chm if it is not available
+        # 3.3.2 is most recent as of this version
+        mmp = [int(x) for x in version.split('.')]
+        chm = ''
+        if mmp[0] > 3 or mmp[1] > 3 or mmp[2] > 2:
+            chm = '-chm'
+
+        version = chm + "=="+version+".*"
         return version
     except FileNotFoundError as e:
         raise(""" ERROR: Could not find the system install of GDAL. 
@@ -37,7 +45,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='1.5.10',
+      version='1.5.11',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
@@ -57,7 +65,7 @@ setup(name='mesher',
       cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
                   '-DUSE_CONAN:BOOL='+USE_CONAN],
       scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal-chm'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle','metis'],
+      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle','metis'],
       setup_requires=setup_requires,
       python_requires='>=3.7, <3.9'
      )

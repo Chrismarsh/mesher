@@ -143,7 +143,7 @@ jobs:
         if: ${{ matrix.use-conan == 'use-conan' }}
         uses: allenevans/set-env@v2.0.0
         with:
-          "USE_CONAN": "TRUE"
+          USE_CONAN: "TRUE"
 
       - name: Setup conan
         if: ${{ matrix.use-conan == 'use-conan' }}
