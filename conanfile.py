@@ -16,6 +16,7 @@ class CHMConan(ConanFile):
     options = {"verbose_cmake":[True,False], "build_tests":[True,False] }
 
     default_options = {"gperftools:heapprof":True,
+                       "*:shared":True,
                        "verbose_cmake":False,
                        "build_tests":True}
 
@@ -26,9 +27,9 @@ class CHMConan(ConanFile):
 
     def requirements(self):
         self.requires("cgal/[>=5.2]@CHM/stable")
-        self.requires("boost/[>=1.75.0]@CHM/stable")
-        self.requires("gdal/[>=3]@CHM/stable")
-        self.requires("proj/[>=7]@CHM/stable")
+        self.requires("boost/[>=1.75.0]")
+        self.requires("gdal/[>=3]")
+        self.requires("proj/[>=7]")
         self.requires("metis/[>=5]@CHM/stable")
 
     def _configure_cmake(self):

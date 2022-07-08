@@ -49,13 +49,9 @@ jobs:
         use-conan: [ 'use-sys-lib','use-conan' ]
 
         cfg:
-          - { os: "ubuntu-18.04", compiler: "gcc", version: 7 }
-          - { os: "ubuntu-18.04", compiler: "gcc", version: 9 }
-          - { os: "ubuntu-18.04", compiler: "gcc", version: 10 }
-          - { os: "ubuntu-20.04", compiler: "gcc", version: 9 }
-          - { os: "ubuntu-20.04", compiler: "gcc", version: 10 }
-          - { os: "macos-10.15",  compiler: "apple-clang", version: "12.0" }
-          - { os: "macos-11",     compiler: "apple-clang", version: "13.0" }
+          - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
+          - {os: "ubuntu-20.04", compiler: "gcc", version: 10}
+          - {os: "macos-12", compiler: "apple-clang", version: "13.1"}
 
 
     # Steps represent a sequence of tasks that will be executed as part of the job
@@ -136,7 +132,8 @@ jobs:
         uses: allenevans/set-env@v2.0.0
         with:
           CONAN_APPLE_CLANG_VERSIONS: ${{ matrix.cfg.version }}
-          GFORTRAN_NAME: gfortran-10 # set the name to use for gfortran as we need to use gfotran-<version>
+          FC: gfortran-11
+          GFORTRAN_NAME: gfortran-11 # set the name to use for gfortran as we need to use gfotran-<version>
 
 
       - name: Force Build (use conan)
@@ -156,11 +153,7 @@ jobs:
           else
             VERSION=$(echo "$CFG_OS" | cut -d'-' -f2)
             echo "MacOS $VERSION"
-            if [[ "$VERSION" == "11" ]]; 
-            then 
-              VERSION="11.0"
-            fi
-            conan profile update settings.os.version="$VERSION" default
+            conan profile update settings.os.version="$VERSION.0" default
           fi
           cat ~/.conan/profiles/default
         env:
