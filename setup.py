@@ -3,7 +3,7 @@ import subprocess
 from packaging.version import LegacyVersion
 from skbuild.exceptions import SKBuildError
 from skbuild.cmaker import get_cmake_version
-import packaging
+import packaging.version
 import os
 
 def get_installed_gdal_version():
@@ -45,7 +45,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='1.5.13',
+      version='1.5.14',
       description='Landsurface model mesh generation',
       long_description="""
       Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
