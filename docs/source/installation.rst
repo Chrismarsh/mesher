@@ -38,18 +38,20 @@ For Ubuntu:
 ::
 
     sudo apt-get install libgdal-dev
-    sudo apt-get install python-gdal
+    sudo apt-get install libcgal-dev
     sudo apt-get install gdal-bin
     sudo apt-get install libcgal-dev
     sudo apt-get install libboost-filesystem-dev
     sudo apt-get install libboost-program-options-dev
     sudo apt-get install libmetis-dev
 
-On Ubuntu 20.04, use 
+    # on Ubuntu 20.04+
+    sudo apt-get install python3-gdal
+    # prior to Ubuntu 20.04, use this instead of python3-gdal
+    # sudo apt-get install python-gdal
 
-::
 
-   sudo apt-get install python3-gdal
+
 
 .. :: warning
     On linux you may need ``libffi`` if, upon running ``pip``, there is an error about ``_ctypes``
