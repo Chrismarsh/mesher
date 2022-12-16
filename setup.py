@@ -1,6 +1,5 @@
 from skbuild import setup
 import subprocess
-from packaging.version import LegacyVersion
 from skbuild.exceptions import SKBuildError
 from skbuild.cmaker import get_cmake_version
 import packaging.version
@@ -30,7 +29,7 @@ def get_installed_gdal_version():
 # https://scikit-build.readthedocs.io/en/latest/usage.html#adding-cmake-as-building-requirement-only-if-not-installed-or-too-low-a-version
 setup_requires = []
 try:
-    if LegacyVersion(get_cmake_version()) < LegacyVersion("3.16"):
+    if packaging.version.parse(get_cmake_version()) < packaging.version.parse("3.16"):
         setup_requires.append('cmake')
 except SKBuildError:
     setup_requires.append('cmake')
