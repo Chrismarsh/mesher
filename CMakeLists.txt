@@ -127,14 +127,10 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -O3 ")
 endif()
 
-if(NOT USE_CONAN)
-    find_package(GDAL REQUIRED)
-    list(APPEND EXTERNAL_LINK GDAL::GDAL)
-else()
-    find_package(gdal REQUIRED)
-    list(APPEND EXTERNAL_LINK gdal::gdal)
 
-endif()
+find_package(GDAL 3.0 REQUIRED)
+list(APPEND EXTERNAL_LINK GDAL::GDAL)
+
 
 if(USE_CONAN)
     find_package(proj REQUIRED)

@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  MAKEFLAGS: "-j2"
+  MAKEFLAGS: "-j4"
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -51,7 +51,7 @@ jobs:
         cfg:
           - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
           - {os: "ubuntu-20.04", compiler: "gcc", version: 10}
-          - {os: "macos-12", compiler: "apple-clang", version: "13.1"}
+          - {os: "macos-12", compiler: "apple-clang", version: "14.0"}
 
 
     # Steps represent a sequence of tasks that will be executed as part of the job
@@ -59,6 +59,8 @@ jobs:
 
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
       - uses: FranzDiebold/github-env-vars-action@v2
 
@@ -78,7 +80,7 @@ jobs:
       - name: Install dependencies
         run: |
           export PATH="$pythonLocation:$PATH"
-          python -m pip install conan --upgrade
+          python -m pip install conan==1.54
           python -m pip install twine
           python -m pip install conan
           python -m pip install scikit-build>=0.10.0
@@ -125,6 +127,7 @@ jobs:
           CONAN_GCC_VERSIONS: ${{ matrix.cfg.version }}
           CC: gcc-${{ matrix.cfg.version }}
           CXX: g++-${{ matrix.cfg.version }}
+          FC: gfortran-${{ matrix.cfg.version }}
           GFORTRAN_NAME: gfortran-${{ matrix.cfg.version }}
 
       - name: env macos
