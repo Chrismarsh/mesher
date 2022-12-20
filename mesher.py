@@ -31,6 +31,9 @@ import uuid
 import cloudpickle
 from concurrent import futures
 import time
+from mpi4py import MPI
+import glob
+
 
 # This reverts to Python <= 3.7 behaviours. It "worked" before...
 # Long term it's almost certainly a Bad Idea and should be resolved.
@@ -51,6 +54,7 @@ MESH_MAJOR = "1"
 MESH_MINOR = "0"
 MESH_PATCH = "0"
 
+
 def main():
     # load user configurable parameters here
     # Check user defined configuration file
@@ -62,267 +66,15 @@ def main():
     # Get name of configuration file/module
     configfile = sys.argv[-1]
 
-    # Load in configuration file as module
-    X = importlib.machinery.SourceFileLoader('config', configfile)
-    X = X.load_module()
-
-    # get config file dire
-    cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
-    os.chdir(cwd)
-
-    dem_filename = X.dem_filename.strip()
-    max_area = X.max_area
-
-    # load any user given parameter files
-    parameter_files = {}
-    if hasattr(X, 'parameter_files'):
-        parameter_files = X.parameter_files
-
-        for key, data in parameter_files.items():
-            if isinstance(data['file'], list):
-                for i in range(len(data['file'])):
-                    parameter_files[key]['file'][i] = parameter_files[key]['file'][i].strip()
-
-    # initial conditions to apply to the triangles with
-    initial_conditions = {}
-    if hasattr(X, 'initial_conditions'):
-        initial_conditions = X.initial_conditions
-
-        for key, data in initial_conditions.items():
-            initial_conditions[key]['file'] = initial_conditions[key]['file'].strip()
-
-    # any extra user-specific constraints. E.g., streams
-    constraints = {}
-    if hasattr(X, 'constraints'):
-        constraints = X.constraints
-
-        for key, data in constraints.items():
-            constraints[key]['file'] = constraints[key]['file'].strip()
-
-    # simplify applies a simplification routine in GDAL to the outer boundary such
-    # that the error between the simplified geom and the original is no more than simplify_tol.
-    # This allows the mesh generator more lee way in not creating small triangles allong the boundary
-    simplify = False
-    simplify_tol = 10
-    if hasattr(X, 'simplify'):
-        simplify = X.simplify
-
-        if hasattr(X, 'simplify_tol'):
-            simplify_tol = X.simplify_tol
-
-    # simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
-    bufferDist = -10  # default to -10, will only trigger is simplify is set to T
-    if hasattr(X, 'simplify_buffer'):
-        bufferDist = X.simplify_buffer
-
-    # Can set simplify_buffer to 0, but we can also just disable this here
-    no_simplify_buffer = False
-    if hasattr(X, 'no_simplify_buffer'):
-        bufferDist = X.no_simplify_buffer
-
-    if bufferDist > 0:
-        print('Buffer must be < 0 as we need to shrink the extent.')
-        exit(-1)
-
-    # Enable lloyd iterations "The goal of this mesh optimization is to improve the angles inside the mesh,
-    # and make them as close as possible to 60 degrees." 100 iterations is a suggested amount
-    # https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization
-    lloyd_itr = 0
-    if hasattr(X, 'lloyd_itr'):
-        lloyd_itr = X.lloyd_itr
-
-    # maximum tolerance, as measured by the error metric, between the triangle and the elevation raster.
-    # -1 skips the tolerance check -- useful for producing uniform triangles
-    max_tolerance = None
-    if hasattr(X, 'max_tolerance'):
-        max_tolerance = X.max_tolerance
-
-    # Choice of error metric.
-    # Can be RMSE or tolerance
-    errormetric = 'rmse'
-    if hasattr(X, 'errormetric'):
-        errormetric = X.errormetric
-
-    # if a mesh was already generated, and only applying a new parametrization is required,
-    # enabling this skips the mesh generation step
-    reuse_mesh = False
-    if hasattr(X, 'reuse_mesh'):
-        reuse_mesh = X.reuse_mesh
-
-    mesher_path = os.path.dirname(os.path.abspath(__file__)) + '/mesher'
-
-    # uses GDAL to fill holes
-    fill_holes = False
-    if hasattr(X, 'fill_holes'):
-        fill_holes = X.fill_holes
-
-
-    # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
-    # over this
-    using_mesher_environ = False
-    try:
-        mesher_path = os.environ['MESHER_EXE']
-        using_mesher_environ = True
-    except KeyError as E:
-        pass
-
-    # path to mesher executable
-    if hasattr(X, 'mesher_path'):
-        mesher_path = X.mesher_path
-
-        if using_mesher_environ:
-            warnings.warn(
-                "Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from "
-                "the configuration file")
-
-            # enable verbose output for debugging
-    verbose = False
-    if hasattr(X, 'verbose'):
-        verbose = X.verbose
-
-    user_output_dir = cwd + os.path.sep
-
-    # output to the specific directory, instead of the root dir of the calling python script
-    if hasattr(X, 'user_output_dir'):
-        user_output_dir += X.user_output_dir
-    else:
-        # use the config filename as output path
-        (file, ext) = os.path.splitext(os.path.basename(configfile))
-        user_output_dir += file
-
-    if user_output_dir[-1] is not os.path.sep:
-        user_output_dir += os.path.sep
-
-    # should we write a shape file of the USM, pretty costly on the big meshes
-    output_write_shp = True
-    if hasattr(X, 'write_shp'):
-        output_write_shp = X.write_shp
-
-    output_write_vtu = True
-    if hasattr(X, 'write_vtu'):
-        output_write_vtu = X.write_vtu
-
-    # Use the input file's projection.
-    # This is useful for preserving a UTM input. Does not work if the input file is geographic.
-    use_input_prj = True
-    if hasattr(X, 'use_input_prj'):
-        use_input_prj = X.use_input_prj
-
-    # Do smoothing of the input DEM to create a more smooth mesh. This can help if the DEM quality is poor or if
-    # triangles close to the elevation raster cell size is required
-    do_smoothing = False
-    if hasattr(X, 'do_smoothing'):
-        do_smoothing = X.do_smoothing
-
-    # Smoothing factor for above option.
-    scaling_factor = 2.0
-    if hasattr(X, 'smoothing_scaling_factor'):
-        scaling_factor = X.smoothing_scaling_factor
-
-    # number of iterations to smooth over, each smoothing using cubic spline,
-    # and resamples by iter * scaling_factor for each iteration
-    max_smooth_iter = 1
-    if hasattr(X, 'max_smooth_iter'):
-        max_smooth_iter = X.max_smooth_iter
-
-    # use the convex combination of weights method
-    user_no_weights = False
-    weight_threshold = 0.5
-    if hasattr(X, 'weight_threshold'):
-        weight_threshold = X.weight_threshold
-
-    if hasattr(X, 'use_weights'):
-        if not X.use_weights:
-            user_no_weights = True
-
-    wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\"," \
-              "     GEOGCS[\"GCS_North_American_1983\"," \
-              "         DATUM[\"North_American_Datum_1983\"," \
-              "             SPHEROID[\"GRS_1980\",6378137,298.257222101]]," \
-              "         PRIMEM[\"Greenwich\",0]," \
-              "         UNIT[\"Degree\",0.017453292519943295]]," \
-              "     PROJECTION[\"Albers_Conic_Equal_Area\"]," \
-              "     PARAMETER[\"False_Easting\",0]," \
-              "     PARAMETER[\"False_Northing\",0]," \
-              "     PARAMETER[\"longitude_of_center\",-96]," \
-              "     PARAMETER[\"Standard_Parallel_1\",20]," \
-              "     PARAMETER[\"Standard_Parallel_2\",60]," \
-              "     PARAMETER[\"latitude_of_center\",40]," \
-              "     UNIT[\"Meter\",1]," \
-              "     AUTHORITY[\"EPSG\",\"102008\"]]"
-    if hasattr(X, 'wkt_out'):
-        wkt_out = X.wkt_out
-
-    # use a custom extent instead of the entire input DEM to define the meshing region
-    # extent = [xmin, ymin, xmax, ymax] in source SRS
-
-    extent = None
-    if hasattr(X, 'extent'):
-        extent = X.extent
-
-    #Clip to a shape file
-    clip_to_shp = None
-    if hasattr(X, 'clip_to_shp'):
-        clip_to_shp = X.clip_to_shp
-
-        if not os.path.exists(clip_to_shp):
-            raise Exception(f'Clipping shape file is not valid. Path given was\n {clip_to_shp}')
-
-    if clip_to_shp and extent:
-        raise Exception('Cannot specify both extent and a shape file to clip to')
-
-    nworkers = os.cpu_count() or 1
-
-    # on linux we can ensure that we respect cpu affinity
-    if 'sched_getaffinity' in dir(os):
-        nworkers = len(os.sched_getaffinity(0))
-
-    if hasattr(X, 'nworkers'):
-        nworkers = X.nworkers
-
-    # GDAL workers are for the initial regularize call where multiple gdalwarp processes are started
-    # these are memory heavy so this can be limited if required
-    nworkers_gdal = nworkers
-    if hasattr(X, 'nworkers_gdal'):
-        nworkers_gdal = X.nworkers_gdal
-    try:
-        nworkers_gdal = os.environ['MESHER_NWORKERS_GDAL']
-
-        if hasattr(X, 'nworkers_gdal'):
-            print('Warning: Overridding configfile nworkers_gdal with environment variable MESHER_NWORKERS_GDAL')
-    except KeyError as E:
-        pass
-
-    try:
-        nworkers = os.environ['MESHER_NWORKERS']
-
-        if hasattr(X, 'nworkers'):
-            print('Warning: Overridding configfile nworkers with environment variable MESHER_NWORKERS')
-    except KeyError as E:
-        pass
-    nworkers = int(nworkers)
-    nworkers_gdal = int(nworkers_gdal)
-
-    try:
-        cache = os.environ['GDAL_CACHEMAX']
-        print(
-            'Warning: GDAL_CACHEMAX={0}. Ensure this is reasonable for the number of parallel processes specified'.format(
-                cache))
-    except:
-        # the user doesn't have the GDAL_CACHEMAX defined, which is good. Set it to a reasonable value
-        os.environ['GDAL_CACHEMAX'] = "{0}%".format(30.0 / nworkers)
-
-    print('Using {0} CPUs and per-CPU memory cache = {1}'.format(nworkers, os.environ['GDAL_CACHEMAX']))
+    # Read configuration
+    X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
+    initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
+    nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
+    simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out = read_config(
+        configfile)
     ########################################################
 
-    # we need to make sure we pickup the right paths to all the gdal scripts
-    gdal_prefix = ''
-    try:
-        gdal_prefix = subprocess.run(["gdal-config", "--prefix"], stdout=subprocess.PIPE).stdout.decode()
-        gdal_prefix = gdal_prefix.replace('\n', '')
-        gdal_prefix += '/bin/'
-    except:
-        raise BaseException(""" ERROR: Could not find gdal-config, please ensure it is installed and on $PATH """)
+    gdal_prefix = find_gdal_prefix()
 
     base_name = os.path.basename(dem_filename)
     base_name = os.path.splitext(base_name)[0]
@@ -335,8 +87,6 @@ def main():
     # Delete previous dir (if exists)
     if os.path.isdir(base_dir) and not reuse_mesh:
         shutil.rmtree(base_dir, ignore_errors=True)
-
-
 
     # these have to be separate ifs for the logic to work correctly
     if not reuse_mesh:
@@ -395,6 +145,8 @@ def main():
                                 dem_filename, base_dir + base_name + output_file_name, cutline_cmd, srs_out.ExportToProj4())],
                           shell=True)
 
+    # fill NoData holes in the source DEM
+    # default is 5 * resolution
     if fill_holes:
         gt = src_ds.GetGeoTransform()
 
@@ -424,6 +176,8 @@ def main():
         min_area = abs(
             pixel_width * pixel_height)
 
+
+    # DEM smoothing passes
     if do_smoothing:
         for itr in range(max_smooth_iter):
 
@@ -731,6 +485,7 @@ def main():
 
     # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
+        start_time = time.perf_counter()
         execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                   (mesher_path,
                    base_dir + poly_file,
@@ -771,6 +526,7 @@ def main():
 
         print(execstr)
         subprocess.check_call(execstr, shell=True)
+        print('Meshing took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
     # remove them
@@ -790,6 +546,7 @@ def main():
 
     invalid_nodes = []  # any nodes that are outside of the domain.
     print('Reading nodes')
+    start_time_readingnodes = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
         for line in f:
             if '#' not in line:
@@ -831,7 +588,7 @@ def main():
 
     read_header = False
 
-    print('Computing parameters and initial conditions')
+    print('Repairing invalid triangles if needed...')
 
     mesh['mesh']['elem'] = []
     mesh['mesh']['is_geographic'] = is_geographic
@@ -906,6 +663,7 @@ def main():
                                 print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
+    print('Reading + repairing nodes took %s s' % str(round(time.perf_counter() - start_time_readingnodes, 2)))
 
     if len(invalid_nodes) > 0:
         errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
@@ -925,6 +683,7 @@ def main():
     if csize < 1:
         csize = 1
 
+    print('Computing parameters and initial conditions')
     with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
         for p, i in executor.map(
                 partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
@@ -971,6 +730,232 @@ def main():
     with open(user_output_dir + base_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
     print('Done')
+
+
+def find_gdal_prefix():
+    # we need to make sure we pickup the right paths to all the gdal scripts
+    gdal_prefix = ''
+    try:
+        gdal_prefix = subprocess.run(["gdal-config", "--prefix"], stdout=subprocess.PIPE).stdout.decode()
+        gdal_prefix = gdal_prefix.replace('\n', '')
+        gdal_prefix += '/bin/'
+    except:
+        raise BaseException(""" ERROR: Could not find gdal-config, please ensure it is installed and on $PATH """)
+    return gdal_prefix
+
+
+def read_config(configfile):
+    # Load in configuration file as module
+    X = importlib.machinery.SourceFileLoader('config', configfile)
+    X = X.load_module()
+    # get config file dire
+    cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
+    os.chdir(cwd)
+    dem_filename = X.dem_filename.strip()
+    max_area = X.max_area
+    # load any user given parameter files
+    parameter_files = {}
+    if hasattr(X, 'parameter_files'):
+        parameter_files = X.parameter_files
+
+        for key, data in parameter_files.items():
+            if isinstance(data['file'], list):
+                for i in range(len(data['file'])):
+                    parameter_files[key]['file'][i] = parameter_files[key]['file'][i].strip()
+    # initial conditions to apply to the triangles with
+    initial_conditions = {}
+    if hasattr(X, 'initial_conditions'):
+        initial_conditions = X.initial_conditions
+
+        for key, data in initial_conditions.items():
+            initial_conditions[key]['file'] = initial_conditions[key]['file'].strip()
+    # any extra user-specific constraints. E.g., streams
+    constraints = {}
+    if hasattr(X, 'constraints'):
+        constraints = X.constraints
+
+        for key, data in constraints.items():
+            constraints[key]['file'] = constraints[key]['file'].strip()
+    # simplify applies a simplification routine in GDAL to the outer boundary such
+    # that the error between the simplified geom and the original is no more than simplify_tol.
+    # This allows the mesh generator more lee way in not creating small triangles allong the boundary
+    simplify = False
+    simplify_tol = 10
+    if hasattr(X, 'simplify'):
+        simplify = X.simplify
+
+        if hasattr(X, 'simplify_tol'):
+            simplify_tol = X.simplify_tol
+    # simplify buffer contracts the outer geometry by bufferDist to help avoid creating small triangles
+    bufferDist = -10  # default to -10, will only trigger is simplify is set to T
+    if hasattr(X, 'simplify_buffer'):
+        bufferDist = X.simplify_buffer
+    # Can set simplify_buffer to 0, but we can also just disable this here
+    no_simplify_buffer = False
+    if hasattr(X, 'no_simplify_buffer'):
+        bufferDist = X.no_simplify_buffer
+    if bufferDist > 0:
+        print('Buffer must be < 0 as we need to shrink the extent.')
+        exit(-1)
+    # Enable lloyd iterations "The goal of this mesh optimization is to improve the angles inside the mesh,
+    # and make them as close as possible to 60 degrees." 100 iterations is a suggested amount
+    # https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization
+    lloyd_itr = 0
+    if hasattr(X, 'lloyd_itr'):
+        lloyd_itr = X.lloyd_itr
+    # maximum tolerance, as measured by the error metric, between the triangle and the elevation raster.
+    # -1 skips the tolerance check -- useful for producing uniform triangles
+    max_tolerance = None
+    if hasattr(X, 'max_tolerance'):
+        max_tolerance = X.max_tolerance
+    # Choice of error metric.
+    # Can be RMSE or tolerance
+    errormetric = 'rmse'
+    if hasattr(X, 'errormetric'):
+        errormetric = X.errormetric
+    # if a mesh was already generated, and only applying a new parametrization is required,
+    # enabling this skips the mesh generation step
+    reuse_mesh = False
+    if hasattr(X, 'reuse_mesh'):
+        reuse_mesh = X.reuse_mesh
+    mesher_path = os.path.dirname(os.path.abspath(__file__)) + '/mesher'
+    # uses GDAL to fill holes
+    fill_holes = False
+    if hasattr(X, 'fill_holes'):
+        fill_holes = X.fill_holes
+    # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
+    # over this
+    using_mesher_environ = False
+    try:
+        mesher_path = os.environ['MESHER_EXE']
+        using_mesher_environ = True
+    except KeyError as E:
+        pass
+    # path to mesher executable
+    if hasattr(X, 'mesher_path'):
+        mesher_path = X.mesher_path
+
+        if using_mesher_environ:
+            warnings.warn(
+                "Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from "
+                "the configuration file")
+
+            # enable verbose output for debugging
+    verbose = False
+    if hasattr(X, 'verbose'):
+        verbose = X.verbose
+    user_output_dir = cwd + os.path.sep
+    # output to the specific directory, instead of the root dir of the calling python script
+    if hasattr(X, 'user_output_dir'):
+        user_output_dir += X.user_output_dir
+    else:
+        # use the config filename as output path
+        (file, ext) = os.path.splitext(os.path.basename(configfile))
+        user_output_dir += file
+    if user_output_dir[-1] is not os.path.sep:
+        user_output_dir += os.path.sep
+    # should we write a shape file of the USM, pretty costly on the big meshes
+    output_write_shp = True
+    if hasattr(X, 'write_shp'):
+        output_write_shp = X.write_shp
+    output_write_vtu = True
+    if hasattr(X, 'write_vtu'):
+        output_write_vtu = X.write_vtu
+    # Use the input file's projection.
+    # This is useful for preserving a UTM input. Does not work if the input file is geographic.
+    use_input_prj = True
+    if hasattr(X, 'use_input_prj'):
+        use_input_prj = X.use_input_prj
+    # Do smoothing of the input DEM to create a more smooth mesh. This can help if the DEM quality is poor or if
+    # triangles close to the elevation raster cell size is required
+    do_smoothing = False
+    if hasattr(X, 'do_smoothing'):
+        do_smoothing = X.do_smoothing
+    # Smoothing factor for above option.
+    scaling_factor = 2.0
+    if hasattr(X, 'smoothing_scaling_factor'):
+        scaling_factor = X.smoothing_scaling_factor
+    # number of iterations to smooth over, each smoothing using cubic spline,
+    # and resamples by iter * scaling_factor for each iteration
+    max_smooth_iter = 1
+    if hasattr(X, 'max_smooth_iter'):
+        max_smooth_iter = X.max_smooth_iter
+    # use the convex combination of weights method
+    user_no_weights = False
+    weight_threshold = 0.5
+    if hasattr(X, 'weight_threshold'):
+        weight_threshold = X.weight_threshold
+    if hasattr(X, 'use_weights'):
+        if not X.use_weights:
+            user_no_weights = True
+    wkt_out = "PROJCS[\"North_America_Albers_Equal_Area_Conic\"," \
+              "     GEOGCS[\"GCS_North_American_1983\"," \
+              "         DATUM[\"North_American_Datum_1983\"," \
+              "             SPHEROID[\"GRS_1980\",6378137,298.257222101]]," \
+              "         PRIMEM[\"Greenwich\",0]," \
+              "         UNIT[\"Degree\",0.017453292519943295]]," \
+              "     PROJECTION[\"Albers_Conic_Equal_Area\"]," \
+              "     PARAMETER[\"False_Easting\",0]," \
+              "     PARAMETER[\"False_Northing\",0]," \
+              "     PARAMETER[\"longitude_of_center\",-96]," \
+              "     PARAMETER[\"Standard_Parallel_1\",20]," \
+              "     PARAMETER[\"Standard_Parallel_2\",60]," \
+              "     PARAMETER[\"latitude_of_center\",40]," \
+              "     UNIT[\"Meter\",1]," \
+              "     AUTHORITY[\"EPSG\",\"102008\"]]"
+    if hasattr(X, 'wkt_out'):
+        wkt_out = X.wkt_out
+    # use a custom extent instead of the entire input DEM to define the meshing region
+    # extent = [xmin, ymin, xmax, ymax] in source SRS
+    extent = None
+    if hasattr(X, 'extent'):
+        extent = X.extent
+    # Clip to a shape file
+    clip_to_shp = None
+    if hasattr(X, 'clip_to_shp'):
+        clip_to_shp = X.clip_to_shp
+
+        if not os.path.exists(clip_to_shp):
+            raise Exception(f'Clipping shape file is not valid. Path given was\n {clip_to_shp}')
+    if clip_to_shp and extent:
+        raise Exception('Cannot specify both extent and a shape file to clip to')
+    nworkers = os.cpu_count() or 1
+    # on linux we can ensure that we respect cpu affinity
+    if 'sched_getaffinity' in dir(os):
+        nworkers = len(os.sched_getaffinity(0))
+    if hasattr(X, 'nworkers'):
+        nworkers = X.nworkers
+    # GDAL workers are for the initial regularize call where multiple gdalwarp processes are started
+    # these are memory heavy so this can be limited if required
+    nworkers_gdal = nworkers
+    if hasattr(X, 'nworkers_gdal'):
+        nworkers_gdal = X.nworkers_gdal
+    try:
+        nworkers_gdal = os.environ['MESHER_NWORKERS_GDAL']
+
+        if hasattr(X, 'nworkers_gdal'):
+            print('Warning: Overridding configfile nworkers_gdal with environment variable MESHER_NWORKERS_GDAL')
+    except KeyError as E:
+        pass
+    try:
+        nworkers = os.environ['MESHER_NWORKERS']
+
+        if hasattr(X, 'nworkers'):
+            print('Warning: Overridding configfile nworkers with environment variable MESHER_NWORKERS')
+    except KeyError as E:
+        pass
+    nworkers = int(nworkers)
+    nworkers_gdal = int(nworkers_gdal)
+    try:
+        cache = os.environ['GDAL_CACHEMAX']
+        print(
+            'Warning: GDAL_CACHEMAX={0}. Ensure this is reasonable for the number of parallel processes specified'.format(
+                cache))
+    except:
+        # the user doesn't have the GDAL_CACHEMAX defined, which is good. Set it to a reasonable value
+        os.environ['GDAL_CACHEMAX'] = "{0}%".format(30.0 / nworkers)
+    print('Using {0} CPUs and per-CPU memory cache = {1}'.format(nworkers, os.environ['GDAL_CACHEMAX']))
+    return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out
 
 
 def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4,
@@ -1121,10 +1106,39 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
                            pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes))
 
-    with futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for (r) in executor.map(_future_regularize_inputs, param_args):
-            ret.append(r)
+    with open('pickled_param_args.pickle', 'wb') as f:
+        cloudpickle.dump(param_args, f)
+
+    # with futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    #     for (r) in executor.map(_future_regularize_inputs, param_args):
+    #         ret.append(r)
+
+
+    if False:
+        exec_str = f"""{settings['postprocess_exec_str']} {timestamp} {False} {weight_002} {weight_036} {save_weights} {load_weights} 0.002"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.path.join(settings['snowcast_base']))
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_regularize_inputs.py'),
+                                         'pickled_param_args.pickle', 'True'],
+                                   maxprocs=4)
+        comm.Disconnect()
+
+    os.remove('pickled_param_args.pickle')
+
+    ret = []
+    for file in glob.glob('pickled_param_args_rets_*.pickle'):
+        with open(file,'rb') as f:
+            ret.append(cloudpickle.load(f))
+        os.remove(file)
+
     for r in ret:
+        if len(r) == 0:
+            continue
+
+        # it comes as a [ {} ]
+        r = r[0]
         key = r['key']
         input_files[key]['filename'] = r['filename']
         input_files[key]['file'] = None
@@ -1135,74 +1149,7 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
     return total_weights, use_weights
 
 
-def _future_regularize_inputs(args):
-    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin, fill_holes = args
 
-    # make a copy as this exec string is reused for inital conditions
-    # and we don't want the changes made here to impact it
-    estr = exec_str
-    if data['method'] == 'mode':
-        estr = exec_str + 'mode'
-    else:
-        estr = exec_str + 'average'
-
-    do_cell_resize = True
-    estr = estr + ' -tr %s %s'
-    # there can be multiple files per param output that we use a classifier to merge into one.
-    # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
-    if isinstance(data['file'], list) and len(data['file']) == 1:
-        print('Error @ ' + key + ': Do not use [ ] for a single file.')
-        exit(-1)
-    if not 'classifier' in data and isinstance(data['file'], list):
-        print(
-            'Error @ ' + key + ': If multiple input files are specified for a single parameter a classifer must be provided.')
-        exit(-1)
-    if 'tolerance' in data and isinstance(data['file'], list):
-        print(
-            'Error @ ' + key + ': If multiple input files are specified for a single parameter this cannot be used with a tolerance.')
-        exit(-1)
-    if isinstance(data['file'], list) and not isinstance(data['method'], list):
-        print(
-            'Error @ ' + key + ': If multiple input files are specified for a single parameter you need to specify each aggregation method.')
-        exit(-1)
-    if not isinstance(data['file'], list) and isinstance(data['method'], list):
-        print(
-            'Error @ ' + key + ': If a single input file is specified you cannot specify multiple aggregation methods.')
-        exit(-1)
-    if not isinstance(data['file'], list):
-        data['file'] = [data['file']]
-    if not isinstance(data['method'], list):
-        data['method'] = [data['method']]
-
-    ret_df = dict()
-    ret_df['filename'] = []
-    ret_df['key'] = key
-
-    for f in data['file']:
-        # we need to handle a path being passed in
-        output_param_fname = os.path.basename(f)
-        output_param_fname = os.path.splitext(output_param_fname)[0]
-
-        if gdal.Open(f).GetProjection() == '':
-            print("Parameter " + f + " must have spatial reference information.")
-            exit(1)
-
-        mangle = uuid.uuid4().hex[:8]
-
-        out_name = base_dir + output_param_fname + '_' + mangle + '_projected.tif'
-
-        # force all the parameter files to have the same extent as the input DEM
-        subprocess.check_call([estr % (gdal_prefix,
-                                       f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
-                                       pixel_height)], shell=True)
-        if fill_holes:
-            dist = max([pixel_height,pixel_width]) * 5
-            exec_str = '%sgdal_fillnodata.py %s -md %d' % (gdal_prefix, out_name, dist)
-            subprocess.check_call([exec_str], shell=True)
-
-        ret_df['filename'].append(out_name)
-
-    return ret_df
 
 
 # Print iterations progress
