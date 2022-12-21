@@ -552,7 +552,7 @@ def main():
 
     invalid_nodes = []  # any nodes that are outside of the domain.
     print('Reading nodes')
-    start_time_readingnodes = time.perf_counter()
+    start_time = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
         for line in f:
             if '#' not in line:
@@ -574,9 +574,11 @@ def main():
                     mesh['mesh']['vertex'].append([mx, my, mz])
 
     print('Length of invalid nodes = ' + str(len(invalid_nodes)))
+    print('Reading nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     # read in the neighbour file, triangle topology
     print('Reading in neighbour file')
+    start_time = time.perf_counter()
     read_header = False
     mesh['mesh']['neigh'] = []
     with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
@@ -593,8 +595,10 @@ def main():
                     mesh['mesh']['neigh'].append([v0, v1, v2])
 
     read_header = False
+    print('Reading neigh file took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     print('Repairing invalid triangles if needed...')
+    start_time = time.perf_counter()
 
     mesh['mesh']['elem'] = []
     mesh['mesh']['is_geographic'] = is_geographic
@@ -617,7 +621,6 @@ def main():
         ics[key] = []
 
     # loop through all the triangles and assign the parameter and ic values to the triangle
-    start_time = time.perf_counter()
     with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
         for line in elem:
             if '#' not in line:
@@ -669,7 +672,7 @@ def main():
                                 print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
                             invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
                     mesh['mesh']['elem'].append([v0, v1, v2])
-    print('Reading + repairing nodes took %s s' % str(round(time.perf_counter() - start_time_readingnodes, 2)))
+    print('Repairing nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     if len(invalid_nodes) > 0:
         errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
@@ -690,8 +693,9 @@ def main():
         csize = 1
 
     print('Computing parameters and initial conditions')
+    start_time = time.perf_counter()
 
-    my_tris = np.array_split([x for x in range(mesh['mesh']['nelem'])], comm_size)
+    my_tris = np.array_split([x for x in range(mesh['mesh']['nelem'])], MPI_nworkers)
 
     for cz in range(MPI_nworkers):
         subset_mesh = {'mesh': {}}
@@ -1005,7 +1009,8 @@ def read_config(configfile):
     if hasattr(X, 'MPI_exec_str'):
         MPI_exec_str = X.MPI_exec_str
 
-    MPI_nworkers = 1
+    # on macos M1, the 2 efficiency cores don't seem to be targetable by OpenMPI?
+    MPI_nworkers = nworkers
     if hasattr(X, 'MPI_nworkers'):
         MPI_nworkers = X.MPI_nworkers
 
@@ -1013,7 +1018,7 @@ def read_config(configfile):
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
-        wkt_out, MPI_exec_str,nworkers
+        wkt_out, MPI_exec_str, MPI_nworkers
 
 
 
