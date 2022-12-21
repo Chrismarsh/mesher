@@ -21,6 +21,7 @@ import re
 import json
 import os
 import numpy as np
+from operator import itemgetter
 from functools import partial
 import sys
 import shutil
@@ -69,10 +70,12 @@ def main():
 
     # Read configuration
     X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
-    initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
-    nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
-    simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out = read_config(
-        configfile)
+        initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
+        nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
+        simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
+        MPI_exec_str, MPI_nworkers = read_config(configfile)
+
+
     ########################################################
 
     gdal_prefix = find_gdal_prefix()
@@ -227,11 +230,13 @@ def main():
 
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
-                                                               srs_out, xmax, xmin, ymax, ymin, fill_holes, nworkers_gdal)
+                                                               srs_out, xmax, xmin, ymax, ymin, fill_holes,
+                                                               MPI_exec_str, MPI_nworkers)
 
     total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
                                                          pixel_height, pixel_width,
-                                                         srs_out, xmax, xmin, ymax, ymin, fill_holes, nworkers_gdal)
+                                                         srs_out, xmax, xmin, ymax, ymin, fill_holes,
+                                                         MPI_exec_str, MPI_nworkers)
 
     use_weights = use_weights_param or use_weights_ic
 
@@ -686,54 +691,59 @@ def main():
 
     print('Computing parameters and initial conditions')
 
-    param_args = [gt, is_geographic, mesh, parameter_files, initial_conditions,
-                    src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()]
+    my_tris = np.array_split([x for x in range(mesh['mesh']['nelem'])], comm_size)
 
-    with open('pickled_param_args.pickle', 'wb') as f:
-        cloudpickle.dump(param_args, f)
+    for cz in range(MPI_nworkers):
+        subset_mesh = {'mesh': {}}
+        subset_mesh['mesh']['vertex'] = mesh['mesh']['vertex']
+        subset_mesh['mesh']['nvertex'] = mesh['mesh']['nvertex']
+        # we don't need neigh for param estimation
+        # subset_mesh['mesh']['neigh'] = mesh['mesh']['neigh']
 
+        # because we have the full vertex set, we don't have to futz around remaping the elem vertex ids
+        subset_mesh['mesh']['elem'] = itemgetter(*my_tris[cz])(mesh['mesh']['elem'])
 
+        # we need to pass the local number tri count through to the MPI process
+        subset_mesh['mesh']['nelem'] = len(my_tris[cz])
 
-    if False:
-        exec_str = f"""{settings['postprocess_exec_str']} {timestamp} {False} {weight_002} {weight_036} {save_weights} {load_weights} 0.002"""
+        param_args = [gt, is_geographic, subset_mesh, parameter_files, initial_conditions,
+                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()]
+
+        with open(f'pickled_param_args_{cz}.pickle', 'wb') as f:
+            cloudpickle.dump(param_args, f)
+
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} pickled_param_args_*.pickle', 'True'"""
         print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.path.join(settings['snowcast_base']))
+        subprocess.check_call([exec_str], shell=True) #, cwd=os.path.join(settings['snowcast_base']))
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
                                    args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_do_parameterize.py'),
-                                         'pickled_param_args.pickle', 'True'],
-                                   maxprocs=4)
+                                         'pickled_param_args_*.pickle', 'True'],
+                                   maxprocs=MPI_nworkers)
         comm.Disconnect()
 
-    os.remove('pickled_param_args.pickle')
 
     files = sorted(glob.glob('pickled_param_args_rets_*.pickle'))
 
     for file in files:
-        with open(file,'rb') as f:
+        with open(file, 'rb') as f:
             ret_tri.extend(cloudpickle.load(f))
         os.remove(file)
 
-
-    # with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
-    #     for p, i in executor.map(
-    #             partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
-    #                     src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
-    #             chunksize=csize):
-    #         ret_tri.append(p)
-    #         ret_tri_ic.append(i)
-    # pdb.set_trace()
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
 
     for key, data in initial_conditions.items():
         initial_conditions[key]['file'] = None
 
-
     for t in ret_tri:
-        # pdb.set_trace()
         for key, data in t.items():
             params[key].append(data)
+
+    #reset this as it was mangled during the MPI call
+    params['id'] = [x for x in range(0, mesh['mesh']['nelem'])]
+
 
     for t in ret_tri_ic:
         for key, data in t.items():
@@ -751,10 +761,12 @@ def main():
         print('Writing shp file...')
         write_shp(base_dir + base_name + '_USM.shp', mesh, params, ics)
 
+
     print('Saving mesh to file ' + base_name + '.mesh')
     with open(user_output_dir + base_name + '.mesh', 'w') as outfile:
         json.dump(mesh, outfile, indent=4)
 
+    # pdb.set_trace()
     print('Saving parameters to file ' + base_name + '.param')
     with open(user_output_dir + base_name + '.param', 'w') as outfile:
         json.dump(params, outfile, indent=4)
@@ -988,14 +1000,27 @@ def read_config(configfile):
         # the user doesn't have the GDAL_CACHEMAX defined, which is good. Set it to a reasonable value
         os.environ['GDAL_CACHEMAX'] = "{0}%".format(30.0 / nworkers)
     print('Using {0} CPUs and per-CPU memory cache = {1}'.format(nworkers, os.environ['GDAL_CACHEMAX']))
-    return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out
+
+    MPI_exec_str = None
+    if hasattr(X, 'MPI_exec_str'):
+        MPI_exec_str = X.MPI_exec_str
+
+    MPI_nworkers = 1
+    if hasattr(X, 'MPI_nworkers'):
+        MPI_nworkers = X.MPI_nworkers
+
+    return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
+        initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
+        nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
+        simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
+        wkt_out, MPI_exec_str,nworkers
 
 
 
 
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
-                      xmax, xmin, ymax, ymin, fill_holes, max_workers):
+                      xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
@@ -1014,15 +1039,15 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
     with open('pickled_param_args.pickle', 'wb') as f:
         cloudpickle.dump(param_args, f)
 
-    if False:
-        exec_str = f"""{settings['postprocess_exec_str']} {timestamp} {False} {weight_002} {weight_036} {save_weights} {load_weights} 0.002"""
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} 'pickled_param_args.pickle', 'True'"""
         print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.path.join(settings['snowcast_base']))
+        subprocess.check_call([exec_str], shell=True)#, cwd=os.path.join(settings['snowcast_base']))
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
                                    args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_regularize_inputs.py'),
                                          'pickled_param_args.pickle', 'True'],
-                                   maxprocs=4)
+                                   maxprocs=MPI_nworkers)
         comm.Disconnect()
 
     os.remove('pickled_param_args.pickle')
@@ -1308,9 +1333,23 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
 
         # for this section,
         # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
+        # pdb.set_trace()
         for key, data in parameter_files.items():
-            output = data[elem]
-            feature.SetField(key[0:10], output)
+            try:
+                output = data[elem]
+                # pdb.set_trace()
+                feature.SetField(key[0:10], float(output))
+            except TypeError as e:
+
+                print(e)
+                print('---')
+                print(key)
+                print(data)
+                print('---')
+                print(elem)
+                print(output)
+                print('---')
+                raise(e)
 
         for key, data in initial_conditions.items():
             output = data[elem]

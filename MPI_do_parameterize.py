@@ -144,7 +144,7 @@ def do_parameterize(args, elem):
                     raise RuntimeError('Error: Unable to open raster for: %s' % key)
                 initial_conditions[key]['file'].append(ds)
 
-    params['id'] = elem
+    params['id'] = int(elem)
 
     v0 = mesh['mesh']['elem'][elem][0]
     v1 = mesh['mesh']['elem'][elem][1]
@@ -224,7 +224,7 @@ def do_parameterize(args, elem):
             print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
             exit(1)
 
-        params[key] = output
+        params[key] = float(output)
 
     for key, data in initial_conditions.items():
         output = []
@@ -254,21 +254,22 @@ def main(pickle_file: str,
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
 
+    # load our correct mesh subset file
+    pickle_file = pickle_file.replace('*', str(MPI.COMM_WORLD.rank))
+
     with open(pickle_file, 'rb') as f:
         param_args = cloudpickle.load(f)
 
-    my_tris = np.array_split([x for x in range(param_args[2]['mesh']['nelem'])], MPI.COMM_WORLD.size)
-    my_tris = my_tris[MPI.COMM_WORLD.rank]
-
     ret_tri = []
 
-    for elem in my_tris:
+    for elem in range(0, param_args[2]['mesh']['nelem']):
         ret_tri.append(do_parameterize(param_args, elem))
 
     # there is no way to return the uuid mangled filename + param name  so save it to a pickle which we can get later
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
         cloudpickle.dump(ret_tri, f)
 
+    os.remove(pickle_file)
     # have been run from the MPI.spawn, so disconnect from parent
     if disconnect:
         comm = MPI.Comm.Get_parent()
