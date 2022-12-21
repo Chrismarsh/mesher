@@ -98,6 +98,7 @@ def main(pickle_file: str,
     for args in param_args_split[MPI.COMM_WORLD.rank]:
         r.append(regularize_inputs(args))
 
+    # there is no way to return the uuid mangled filename + param name  so save it to a pickly
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
         cloudpickle.dump(r,f)
 

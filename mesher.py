@@ -33,6 +33,7 @@ from concurrent import futures
 import time
 from mpi4py import MPI
 import glob
+import ipdb as pdb
 
 
 # This reverts to Python <= 3.7 behaviours. It "worked" before...
@@ -684,21 +685,53 @@ def main():
         csize = 1
 
     print('Computing parameters and initial conditions')
-    with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
-        for p, i in executor.map(
-                partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
-                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
-                chunksize=csize):
-            ret_tri.append(p)
-            ret_tri_ic.append(i)
 
+    param_args = [gt, is_geographic, mesh, parameter_files, initial_conditions,
+                    src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()]
+
+    with open('pickled_param_args.pickle', 'wb') as f:
+        cloudpickle.dump(param_args, f)
+
+
+
+    if False:
+        exec_str = f"""{settings['postprocess_exec_str']} {timestamp} {False} {weight_002} {weight_036} {save_weights} {load_weights} 0.002"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.path.join(settings['snowcast_base']))
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_do_parameterize.py'),
+                                         'pickled_param_args.pickle', 'True'],
+                                   maxprocs=4)
+        comm.Disconnect()
+
+    os.remove('pickled_param_args.pickle')
+
+    files = sorted(glob.glob('pickled_param_args_rets_*.pickle'))
+
+    for file in files:
+        with open(file,'rb') as f:
+            ret_tri.extend(cloudpickle.load(f))
+        os.remove(file)
+
+
+    # with futures.ProcessPoolExecutor(max_workers=nworkers) as executor:
+    #     for p, i in executor.map(
+    #             partial(do_parameterize, gt, is_geographic, mesh, parameter_files, initial_conditions,
+    #                     src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()), tris,
+    #             chunksize=csize):
+    #         ret_tri.append(p)
+    #         ret_tri_ic.append(i)
+    # pdb.set_trace()
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
 
     for key, data in initial_conditions.items():
         initial_conditions[key]['file'] = None
 
+
     for t in ret_tri:
+        # pdb.set_trace()
         for key, data in t.items():
             params[key].append(data)
 
@@ -958,135 +991,7 @@ def read_config(configfile):
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out
 
 
-def do_parameterize(gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4,
-                    elem):
-    params = {}
-    ics = {}
-    srs_out = osr.SpatialReference()
 
-    srs_out.ImportFromProj4(srs_proj4)
-
-    for key, data in parameter_files.items():
-        if data['file'] is None:
-            parameter_files[key]['file'] = []
-            for f in data['filename']:
-                ds = gdal.Open(f)
-                if ds is None:
-                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
-                parameter_files[key]['file'].append(ds)
-
-    for key, data in initial_conditions.items():
-        if data['file'] is None:
-            initial_conditions[key]['file'] = []
-            for f in data['filename']:
-                ds = gdal.Open(f)
-                if ds is None:
-                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
-                initial_conditions[key]['file'].append(ds)
-
-    params['id'] = elem
-
-    v0 = mesh['mesh']['elem'][elem][0]
-    v1 = mesh['mesh']['elem'][elem][1]
-    v2 = mesh['mesh']['elem'][elem][2]
-
-    # Create a temporary vector layer in memory
-    mem_drv = ogr.GetDriverByName('Memory')
-    mem_ds = mem_drv.CreateDataSource('out')
-    mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
-
-    # we need this to do the area calculation
-    ring = ogr.Geometry(ogr.wkbLinearRing)
-    ring.AddPoint(mesh['mesh']['vertex'][v0][0], mesh['mesh']['vertex'][v0][1])
-    ring.AddPoint(mesh['mesh']['vertex'][v1][0], mesh['mesh']['vertex'][v1][1])
-    ring.AddPoint(mesh['mesh']['vertex'][v2][0], mesh['mesh']['vertex'][v2][1])
-    ring.AddPoint(mesh['mesh']['vertex'][v0][0],
-                  mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
-
-    # need this for the area calculation
-    tpoly = ogr.Geometry(ogr.wkbPolygon)
-    tpoly.AddGeometry(ring)
-
-    feature = ogr.Feature(mem_layer.GetLayerDefn())
-    feature.SetGeometry(tpoly)
-
-    mem_layer.CreateFeature(feature)
-
-    area = 0
-    # if the output is geographic, we need to project to get a reasonable area
-    if is_geographic:
-        #use an equal area mollweide projection
-        srs_moll = osr.SpatialReference()
-
-        srs_moll.ImportFromProj4("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
-
-        # go from what we are outputting (which is geographic) to moll to compute the area
-        transform = osr.CoordinateTransformation(srs_out, srs_moll)
-        p = tpoly.Clone()
-        p.Transform(transform)
-
-        area = p.GetArea()
-    else:
-        area = tpoly.GetArea()
-
-    params['area'] = area
-
-    # calculate new geotransform of the feature subset
-    geom = feature.geometry()
-    src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
-    new_gt = (
-        (gt[0] + (src_offset[0] * gt[1])),
-        gt[1],
-        0.0,
-        (gt[3] + (src_offset[1] * gt[5])),
-        0.0,
-        gt[5]
-    )
-
-    # get the value under each triangle from each parameter file
-    for key, data in parameter_files.items():
-        output = []
-
-        for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
-
-        if 'classifier' in data:
-            fn = cloudpickle.loads(data['classifier'])
-            output = fn(*output)
-        else:
-            output = output[0]  # flatten the list for the append below
-
-        # we want to write actual NaN to vtu for better displaying
-        if output == -9999:
-            output = float('nan')
-
-        if output is None and 'classifier' in data:
-            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
-            exit(1)
-
-        params[key] = output
-
-    for key, data in initial_conditions.items():
-        output = []
-
-        for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
-
-        if 'classifier' in data:
-            output = cloudpickle.loads(data['classifier'])(*output)
-        else:
-            output = output[0]  # flatten the list for the append below
-
-        if output == -9999:
-            output = float('nan')
-
-        if output is None and 'classifier' in data:
-            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
-            exit(1)
-
-        ics[key] = output
-
-    return params, ics
 
 
 def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
@@ -1108,11 +1013,6 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
 
     with open('pickled_param_args.pickle', 'wb') as f:
         cloudpickle.dump(param_args, f)
-
-    # with futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-    #     for (r) in executor.map(_future_regularize_inputs, param_args):
-    #         ret.append(r)
-
 
     if False:
         exec_str = f"""{settings['postprocess_exec_str']} {timestamp} {False} {weight_002} {weight_036} {save_weights} {load_weights} 0.002"""
