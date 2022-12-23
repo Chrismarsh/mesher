@@ -22,7 +22,7 @@ import json
 import os
 import numpy as np
 from operator import itemgetter
-from functools import partial
+
 import sys
 import shutil
 import importlib
@@ -30,22 +30,14 @@ import vtk
 import warnings
 import uuid
 import cloudpickle
-from concurrent import futures
+
 import time
 from mpi4py import MPI
 import glob
-import ipdb as pdb
 
+import inspect
 
-# This reverts to Python <= 3.7 behaviours. It "worked" before...
-# Long term it's almost certainly a Bad Idea and should be resolved.
-# > Changed in version 3.8: On macOS, the spawn start method is now the default.
-# >The fork start method should be considered unsafe as it can lead to crashes of the subprocess. See bpo-33725.
-# Setting this to 'spawn' results in the imported config file not being available for the child processes
-# Ref https://bugs.python.org/issue33725
-import multiprocessing as mp
-mp.set_start_method("fork")
-
+import mesher
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -724,7 +716,8 @@ def main():
         subprocess.check_call([exec_str], shell=True) #, cwd=os.path.join(settings['snowcast_base']))
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_do_parameterize.py'),
+                                   args=[os.path.join(os.path.join(os.path.dirname(mesher.__file__),
+                                                      'MPI_do_parameterize.py')),
                                          'pickled_param_args_*.pickle', 'True', configfile],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
@@ -1052,7 +1045,8 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         subprocess.check_call([exec_str], shell=True)#, cwd=os.path.join(settings['snowcast_base']))
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_regularize_inputs.py'),
+                                   args=[os.path.join(os.path.dirname(mesher.__file__),
+                                                      'MPI_regularize_inputs.py'),
                                          'pickled_param_args.pickle', 'True'],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()

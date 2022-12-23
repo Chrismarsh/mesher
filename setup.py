@@ -3,6 +3,7 @@ import subprocess
 from skbuild.exceptions import SKBuildError
 from skbuild.cmaker import get_cmake_version
 import packaging.version
+from setuptools import find_packages
 import os
 
 def get_installed_gdal_version():
@@ -44,27 +45,31 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-      version='2.0.dev3',
-      description='Landsurface model mesh generation',
-      long_description="""
-      Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
-      Triangle quality is guaranteed as well as a smooth graduation from small to large triangles. Including these additional features resulted in a better representation of spatial heterogeneity versus classic topography-only mesh generation.
-      The paper describing mesher can be `found here <https://www.usask.ca/hydrology/papers/Marsh,_et_al_2018.pdf>`_
-
-        Key points
-        
-        *  A novel multi-objective unstructured mesh generation software, Mesher
-        *  Heterogeneity in topography is resolved as well as hydrologically important surface and sub-surface attributes
-        *  Spatial heterogeneity is better preserved compared to existing mesh generators
-      """,
-      author='Chris Marsh',
-      author_email='chris.marsh@usask.ca',
-      url="https://github.com/Chrismarsh/mesher",
-      include_package_data=True,
-      cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
-                  '-DUSE_CONAN:BOOL='+USE_CONAN],
-      scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
-      install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle','metis','mpi4py'],
-      setup_requires=setup_requires,
-      python_requires='>=3.7'
-     )
+    version='2.0.dev8',
+    description='Landsurface model mesh generation',
+    long_description="""
+    Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
+    Triangle quality is guaranteed as well as a smooth graduation from small to large triangles. Including these additional features resulted in a better representation of spatial heterogeneity versus classic topography-only mesh generation.
+    The paper describing mesher can be `found here <https://www.usask.ca/hydrology/papers/Marsh,_et_al_2018.pdf>`_
+    
+    Key points
+    
+    *  A novel multi-objective unstructured mesh generation software, Mesher
+    *  Heterogeneity in topography is resolved as well as hydrologically important surface and sub-surface attributes
+    *  Spatial heterogeneity is better preserved compared to existing mesh generators
+    """,
+    author='Chris Marsh',
+    author_email='chris.marsh@usask.ca',
+    url="https://github.com/Chrismarsh/mesher",
+    packages=find_packages(where="pysrc"),
+    package_dir={
+        '': 'pysrc',
+    },
+    include_package_data=True,
+    cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
+              '-DUSE_CONAN:BOOL='+USE_CONAN],
+    scripts=["meshgen.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py"],
+    install_requires=['vtk','pygdal'+get_installed_gdal_version(),'numpy','scipy','matplotlib','cloudpickle','metis','mpi4py'],
+    setup_requires=setup_requires,
+    python_requires='>=3.7'
+    )
