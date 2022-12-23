@@ -6,6 +6,10 @@ import numpy as np
 import uuid
 from osgeo import gdal, ogr, osr
 import subprocess
+import shutil
+import importlib
+
+import ipdb as pdb
 
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
@@ -47,7 +51,9 @@ def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
 
 
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
+
     raster = rds.GetRasterBand(1)
+
     src_array = raster.ReadAsArray(*src_offset)
 
     # Rasterize it
@@ -83,8 +89,8 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
         elif aggMethod == 'min':
             output = float(np.nanmin(src_array))
         else:
-            print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
-            exit(-1)
+            raise Exception('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
+
 
     # feature.SetField(key, output)
 
@@ -117,8 +123,14 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
     return output
 
-def do_parameterize(args, elem):
-    gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4 = args
+
+def do_parameterize(gt, is_geographic, mesh,
+                    parameter_files, current_parameter,
+                    initial_conditions, RasterXSize, RasterYSize, srs_proj4,
+                    elem, configfile):
+
+    X = importlib.machinery.SourceFileLoader('config', configfile)
+    X = X.load_module()
 
     params = {}
     ics = {}
@@ -126,23 +138,23 @@ def do_parameterize(args, elem):
 
     srs_out.ImportFromProj4(srs_proj4)
 
-    for key, data in parameter_files.items():
-        if data['file'] is None:
-            parameter_files[key]['file'] = []
-            for f in data['filename']:
-                ds = gdal.Open(f)
-                if ds is None:
-                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
-                parameter_files[key]['file'].append(ds)
+    # for key, data in parameter_files.items():
+    #     if data['file'] is None:
+    #         parameter_files[key]['file'] = []
+    #         for f in data['filename']:
+    #             ds = gdal.Open(f)
+    #             if ds is None:
+    #                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
+    #             parameter_files[key]['file'].append(ds)
 
-    for key, data in initial_conditions.items():
-        if data['file'] is None:
-            initial_conditions[key]['file'] = []
-            for f in data['filename']:
-                ds = gdal.Open(f)
-                if ds is None:
-                    raise RuntimeError('Error: Unable to open raster for: %s' % key)
-                initial_conditions[key]['file'].append(ds)
+    # for key, data in initial_conditions.items():
+    #     if data['file'] is None:
+    #         initial_conditions[key]['file'] = []
+    #         for f in data['filename']:
+    #             ds = gdal.Open(f)
+    #             if ds is None:
+    #                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
+    #             initial_conditions[key]['file'].append(ds)
 
     params['id'] = int(elem)
 
@@ -204,52 +216,56 @@ def do_parameterize(args, elem):
     )
 
     # get the value under each triangle from each parameter file
-    for key, data in parameter_files.items():
-        output = []
+    # for key, data in parameter_files.items():
 
-        for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
+    key = current_parameter
+    data = parameter_files[key]
 
-        if 'classifier' in data:
-            fn = cloudpickle.loads(data['classifier'])
-            output = fn(*output)
-        else:
-            output = output[0]  # flatten the list for the append below
+    output = []
 
-        # we want to write actual NaN to vtu for better displaying
-        if output == -9999:
-            output = float('nan')
+    for f, m in zip(data['file'], data['method']):
+        output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
-        if output is None and 'classifier' in data:
-            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
-            exit(1)
+    if 'classifier' in data:
+        fn = cloudpickle.loads(data['classifier'])
+        output = fn(*output)
+    else:
+        output = output[0]  # flatten the list for the append below
 
-        params[key] = float(output)
+    # we want to write actual NaN to vtu for better displaying
+    if output == -9999:
+        output = float('nan')
 
-    for key, data in initial_conditions.items():
-        output = []
+    if output is None and 'classifier' in data:
+        raise Exception(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
 
-        for f, m in zip(data['file'], data['method']):
-            output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
+    params[key] = float(output)
 
-        if 'classifier' in data:
-            output = cloudpickle.loads(data['classifier'])(*output)
-        else:
-            output = output[0]  # flatten the list for the append below
-
-        if output == -9999:
-            output = float('nan')
-
-        if output is None and 'classifier' in data:
-            print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
-            exit(1)
-
-        ics[key] = output
+    # for key, data in initial_conditions.items():
+    #     output = []
+    #
+    #     for f, m in zip(data['file'], data['method']):
+    #         output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
+    #
+    #     if 'classifier' in data:
+    #         output = cloudpickle.loads(data['classifier'])(*output)
+    #     else:
+    #         output = output[0]  # flatten the list for the append below
+    #
+    #     if output == -9999:
+    #         output = float('nan')
+    #
+    #     if output is None and 'classifier' in data:
+    #         print(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
+    #         exit(1)
+    #
+    #     ics[key] = output
 
     return params #, ics
 
 def main(pickle_file: str,
-         disconnect: bool):
+         disconnect: bool,
+         configfile: str):
     # if called from SLURM, etc, these cli are coming in as strings
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
@@ -260,11 +276,31 @@ def main(pickle_file: str,
     with open(pickle_file, 'rb') as f:
         param_args = cloudpickle.load(f)
 
+    gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4 = param_args
+
     ret_tri = []
 
-    for elem in range(0, param_args[2]['mesh']['nelem']):
-        ret_tri.append(do_parameterize(param_args, elem))
+    for key, data in parameter_files.items():
 
+        print(f'Rank {MPI.COMM_WORLD.rank} {key}')
+        parameter_files[key]['file'] = []
+
+        # load the data
+        for f in data['filename']:
+            ds = gdal.Open(f)
+            if ds is None:
+                raise RuntimeError(f'Error: Unable to open raster for: {key}')
+
+            parameter_files[key]['file'].append(ds)
+
+        for elem in range(0, param_args[2]['mesh']['nelem']):
+            ret_tri.append(do_parameterize(gt, is_geographic, mesh, parameter_files, key,
+                                           initial_conditions, RasterXSize, RasterYSize,
+                                           srs_proj4, elem, configfile))
+
+        parameter_files[key]['file'] = []
+
+    print(f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
     # there is no way to return the uuid mangled filename + param name  so save it to a pickle which we can get later
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
         cloudpickle.dump(ret_tri, f)

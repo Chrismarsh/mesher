@@ -228,15 +228,17 @@ def main():
 
     exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
 
+    # pdb.set_trace()
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
                                                                srs_out, xmax, xmin, ymax, ymin, fill_holes,
                                                                MPI_exec_str, MPI_nworkers)
 
-    total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
-                                                         pixel_height, pixel_width,
-                                                         srs_out, xmax, xmin, ymax, ymin, fill_holes,
-                                                         MPI_exec_str, MPI_nworkers)
+    # total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
+    #                                                      pixel_height, pixel_width,
+    #                                                      srs_out, xmax, xmin, ymax, ymin, fill_holes,
+    #                                                      MPI_exec_str, MPI_nworkers)
+    total_weights_ic, use_weights_ic = 0, False
 
     use_weights = use_weights_param or use_weights_ic
 
@@ -723,7 +725,7 @@ def main():
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
                                    args=[os.path.join('/Users/cmarsh/Documents/science/code/mesher/MPI_do_parameterize.py'),
-                                         'pickled_param_args_*.pickle', 'True'],
+                                         'pickled_param_args_*.pickle', 'True', configfile],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
 
