@@ -710,14 +710,15 @@ def main():
         with open(f'pickled_param_args_{cz}.pickle', 'wb') as f:
             cloudpickle.dump(param_args, f)
 
+    MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher.__file__),
+                                                      'MPI_do_parameterize.py'))
     if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} pickled_param_args_*.pickle', 'True'"""
+        exec_str = f"""{MPI_exec_str} pickled_param_args_*.pickle True {configfile}"""
         print(exec_str)
-        subprocess.check_call([exec_str], shell=True) #, cwd=os.path.join(settings['snowcast_base']))
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[os.path.join(os.path.join(os.path.dirname(mesher.__file__),
-                                                      'MPI_do_parameterize.py')),
+                                   args=[MPI_do_parameterize_path,
                                          'pickled_param_args_*.pickle', 'True', configfile],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
@@ -1008,6 +1009,10 @@ def read_config(configfile):
     MPI_nworkers = nworkers
     if hasattr(X, 'MPI_nworkers'):
         MPI_nworkers = X.MPI_nworkers
+    elif not hasattr(X, 'MPI_nworkers') and MPI_exec_str:
+        raise RuntimeError('If MPI_exec_str is provided, then MPI_nworkers must also be provided')
+
+
 
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
@@ -1039,14 +1044,15 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
     with open('pickled_param_args.pickle', 'wb') as f:
         cloudpickle.dump(param_args, f)
 
+    MPI_regularize_path = os.path.join(os.path.dirname(mesher.__file__),
+                                                      'MPI_regularize_inputs.py')
     if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} 'pickled_param_args.pickle', 'True'"""
+        exec_str = f"""{MPI_exec_str} pickled_param_args.pickle False"""
         print(exec_str)
-        subprocess.check_call([exec_str], shell=True)#, cwd=os.path.join(settings['snowcast_base']))
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
     else:
         comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[os.path.join(os.path.dirname(mesher.__file__),
-                                                      'MPI_regularize_inputs.py'),
+                                   args=[MPI_regularize_path,
                                          'pickled_param_args.pickle', 'True'],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
