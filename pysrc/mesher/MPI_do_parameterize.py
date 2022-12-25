@@ -266,7 +266,7 @@ def main(pickle_file: str,
         disconnect = str2bool(disconnect)
 
     # load our correct mesh subset file
-    pickle_file = pickle_file.replace('*', str(MPI.COMM_WORLD.rank))
+    pickle_file = pickle_file.replace('RANK', str(MPI.COMM_WORLD.rank))
 
     with open(pickle_file, 'rb') as f:
         param_args = cloudpickle.load(f)
