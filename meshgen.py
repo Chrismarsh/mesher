@@ -713,7 +713,7 @@ def main():
     MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher.__file__),
                                                       'MPI_do_parameterize.py'))
     if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle True {configfile}"""
+        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""
         print(exec_str)
         subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
     else:
