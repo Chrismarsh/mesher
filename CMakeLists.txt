@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
+if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(CMAKE_FIND_FRAMEWORK LAST) # under some circumstances, gdal can be in the frameworks dir that super breaks everything
+endif()
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
 option(USE_CONAN "Build with using conan dependencies" FALSE)
