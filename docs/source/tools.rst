@@ -71,6 +71,12 @@ File for output. Overwrite input file
 
 ``nd`` Performing ND fill-in minimization
 
+``metis`` Performing METIS communication minimization partitioning. Requires ``-n <value>`` where ``<value>`` is the number of partitions. If this mesh is used later for MPI simulation, this should correspond to the number of MPI ranks that will be used.
+
+.. confval:: n
+
+If ``metis`` type is selected, this is required. Number of partitions.
+
 
 meshstats.py
 *************
