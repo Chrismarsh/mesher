@@ -10,3 +10,4 @@ parameter_files = {
                   'method': 'mode',
                   'tolerance':.9}
 }
+MPI_nworkers = 1

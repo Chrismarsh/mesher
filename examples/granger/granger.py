@@ -6,3 +6,4 @@ min_area = 5**2     #triangle area below which we will no longer refine, regardl
 
 lloyd_itr=1
 simplify=True
+MPI_nworkers = 1

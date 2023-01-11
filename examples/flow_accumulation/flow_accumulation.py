@@ -19,3 +19,4 @@ parameter_files = {
                    }
 
 
+MPI_nworkers = 1

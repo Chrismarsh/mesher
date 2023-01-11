@@ -17,3 +17,4 @@ parameter_files = {
 
 lloyd_itr=1
 simplify=True
+MPI_nworkers = 1

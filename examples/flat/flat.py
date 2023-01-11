@@ -7,5 +7,5 @@ max_area= 9999999999999999**2  #Effectively unlimited upper area -- allow tolera
 max_tolerance = 5    # 5m max RMSE between triangle and underlying elevation set to -1 to skip tolerance checks
 min_area = 5**2     # triangle area below which we will no longer refine, regardless of max_tolerance
 
-
+MPI_nworkers = 1
 

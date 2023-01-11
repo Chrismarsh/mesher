@@ -15,3 +15,4 @@ constraints = { 'river_network' :
  			}
 
 lloyd_itr=1
+MPI_nworkers = 1

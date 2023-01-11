@@ -11,3 +11,4 @@ constraints = { 'river_network' :
 						'simplify':1 # will be in original projection units
 					}
  			}
+MPI_nworkers = 1
