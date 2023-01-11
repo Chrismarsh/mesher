@@ -102,6 +102,8 @@ jobs:
           sudo apt-get install libboost-filesystem-dev
           sudo apt-get install libboost-program-options-dev
           sudo apt-get install libmetis-dev
+          sudo apt-get install libopenmpi-dev
+          sudo apt-get install openmpi-bin
 
           if [[ "$UBUNTU_VER" = "ubuntu-20.04" ]]; then
             sudo apt-get install python3-gdal
@@ -119,6 +121,7 @@ jobs:
           brew install cgal
           brew install ninja
           brew install metis
+          brew install openmpi
 
       - name: env linux
         if: startsWith( matrix.cfg.os, 'ubuntu' )
