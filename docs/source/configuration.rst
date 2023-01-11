@@ -8,10 +8,10 @@ Mesher depends heavily upon GDAL to handle the geospatial data and the GDAL pyth
 
 Required
 =========
-Configuration files are stored in a python file and passed as an argument to ``mesher.py`` on the command line. For example:
+Configuration files are stored in a python file and passed as an argument to ``meshgen.py`` on the command line. For example:
 ::
 
-   python mesher.py example_mesher_config.py
+   python meshgen.py example_mesher_config.py
 
 
 Therefore this configuration file must be compliant python code, but as such can contain arbitrary python code.
@@ -78,7 +78,7 @@ The RMSE produces the best distribution of triangle sizes and does not penalized
 
    :type: string
 
-The ``mesher.py`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
+The ``meshgen.py`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
 
 .. confval:: nworkers
 
@@ -503,8 +503,36 @@ This is further shown in :ref:`examples:flat_stream`.
 Amount to simplify the shapefile edges by. Measured as maximum error between old and new lines. In the units of the shp file.
 
 
+MPI
+======
 
+By default Mesher will use MPI to launch the Mesher backend tasks.
 
+.. confval:: MPI_nworkers
+
+    :type: int
+    :default: Number of cores on machine (e.g., 4, 8, 10, etc)
+
+    Set this to limit the number of processors used.
+
+If Mesher is used on a cluster to process a large domain, the use of a job scheduler, such as SLURM, may be optimal.
+
+.. confval:: MPI_exec_str
+
+    :type: string
+    :default: None
+
+    Set this to a command to use to invoked the MPI job. For example
+    `MPI_exec_str='./submit_job.sh job.sh'`
+    where `submit_job.sh` invokes the queue submission, e.g.,
+    `sbatch "$@"`
+    and `job.sh` contains
+    `srun --label --unbuffered  python "$@"`
+
+    The exec string used is `f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""` where MPI_do_parameterize_path
+    holds the path to the helper script that is run with python.
+
+    If `MPI_exec_str` is provided `MPI_nworkers` must also be provided.
 
 
 

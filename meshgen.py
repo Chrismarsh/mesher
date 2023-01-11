@@ -36,7 +36,7 @@ from mpi4py import MPI
 import glob
 
 import inspect
-
+from natsort import natsorted
 import mesher
 
 gdal.UseExceptions()  # Enable exception support
@@ -54,7 +54,7 @@ def main():
     # Check user defined configuration file
 
     if len(sys.argv) == 1:
-        print('ERROR: mesher.py requires one argument [configuration file] (i.e. mesher.py Bow.py)')
+        print('ERROR: meshgen.py requires one argument [configuration file] (i.e. meshgen.py Bow.py)')
         return
 
     # Get name of configuration file/module
@@ -698,7 +698,7 @@ def main():
         # we don't need neigh for param estimation
         # subset_mesh['mesh']['neigh'] = mesh['mesh']['neigh']
 
-        # because we have the full vertex set, we don't have to futz around remaping the elem vertex ids
+        # because we have the full vertex set, we don't have to futz around remapping the elem vertex ids
         subset_mesh['mesh']['elem'] = itemgetter(*my_tris[cz])(mesh['mesh']['elem'])
 
         # we need to pass the local number tri count through to the MPI process
@@ -724,7 +724,8 @@ def main():
         comm.Disconnect()
 
 
-    files = sorted(glob.glob('pickled_param_args_rets_*.pickle'))
+    files = natsorted(glob.glob('pickled_param_args_rets_*.pickle'))
+    # print(files)
 
     for file in files:
         with open(file, 'rb') as f:
@@ -1061,22 +1062,24 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
 
     ret = []
     for file in glob.glob('pickled_param_args_rets_*.pickle'):
-        with open(file,'rb') as f:
+        with open(file, 'rb') as f:
             ret.append(cloudpickle.load(f))
         os.remove(file)
 
-    for r in ret:
-        if len(r) == 0:
+    for w in ret:
+        if len(w) == 0:
             continue
 
         # it comes as a [ {} ]
-        r = r[0]
-        key = r['key']
-        input_files[key]['filename'] = r['filename']
-        input_files[key]['file'] = None
 
-        if not isinstance(input_files[key]['method'], list):
-            input_files[key]['method'] = [input_files[key]['method']]
+        # r will a list of dicts, len(r) is the amount of work that MPI rank did
+        for r in w:
+            key = r['key']
+            input_files[key]['filename'] = r['filename']
+            input_files[key]['file'] = None
+
+            if not isinstance(input_files[key]['method'], list):
+                input_files[key]['method'] = [input_files[key]['method']]
 
     return total_weights, use_weights
 

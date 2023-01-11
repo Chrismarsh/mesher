@@ -273,7 +273,7 @@ def main(pickle_file: str,
 
     gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4 = param_args
 
-    ret_tri = []
+    ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
 
     for key, data in parameter_files.items():
 
@@ -288,10 +288,18 @@ def main(pickle_file: str,
 
             parameter_files[key]['file'].append(ds)
 
-        for elem in range(0, param_args[2]['mesh']['nelem']):
-            ret_tri.append(do_parameterize(gt, is_geographic, mesh, parameter_files, key,
+        for elem in range(0, mesh['mesh']['nelem']):
+            ret = do_parameterize(gt, is_geographic, mesh, parameter_files, key,
                                            initial_conditions, RasterXSize, RasterYSize,
-                                           srs_proj4, elem, configfile))
+                                           srs_proj4, elem, configfile)
+            # ret looks
+            # [{'id': 10354, 'area': 3485.748251695186, 'landcover': 4.0},
+            #  {'id': 10355, 'area': 3740.141789605841, 'landcover': 4.0},
+            #  {'id': 10356, 'area': 2721.806314367801, 'landcover': 4.0}]
+            for k, d in ret.items():
+                ret_tri[ret['id']][k] = d
+
+            # ret_tri.append(ret)
 
         parameter_files[key]['file'] = []
 
@@ -301,6 +309,7 @@ def main(pickle_file: str,
         cloudpickle.dump(ret_tri, f)
 
     os.remove(pickle_file)
+
     # have been run from the MPI.spawn, so disconnect from parent
     if disconnect:
         comm = MPI.Comm.Get_parent()

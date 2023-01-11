@@ -100,7 +100,7 @@ def main(pickle_file: str,
 
     # there is no way to return the uuid mangled filename + param name  so save it to a pickly
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
-        cloudpickle.dump(r,f)
+        cloudpickle.dump(r, f)
 
     # have been run from the MPI.spawn, so disconnect from parent
     if disconnect:
