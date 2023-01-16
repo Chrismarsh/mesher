@@ -30,7 +30,7 @@ class CHMConan(ConanFile):
         self.requires("boost/[>=1.75.0]")
         self.requires("gdal/3.5.2")
         self.requires("proj/9.0.1")
-        self.requires("metis/[>=5]@CHM/stable")
+        self.requires("metis/5.1.1")
 
         self.requires("zlib/1.2.13", override=True)
         self.requires("libtiff/4.4.0", override=True)
