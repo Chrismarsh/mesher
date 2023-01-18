@@ -797,8 +797,16 @@ def read_config(configfile):
     # get config file dire
     cwd = os.path.join(os.getcwd(), os.path.dirname(configfile))
     os.chdir(cwd)
+
+    if not hasattr(X, 'dem_filename'):
+        raise Exception('dem_filename must be specified in the configuration file')
+
+    if not hasattr(X, 'max_area'):
+        raise Exception('max_area must be specified in the configuration file')
+
     dem_filename = X.dem_filename.strip()
     max_area = X.max_area
+    
     # load any user given parameter files
     parameter_files = {}
     if hasattr(X, 'parameter_files'):
@@ -808,6 +816,7 @@ def read_config(configfile):
             if isinstance(data['file'], list):
                 for i in range(len(data['file'])):
                     parameter_files[key]['file'][i] = parameter_files[key]['file'][i].strip()
+
     # initial conditions to apply to the triangles with
     initial_conditions = {}
     if hasattr(X, 'initial_conditions'):
