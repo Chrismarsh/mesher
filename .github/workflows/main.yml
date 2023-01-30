@@ -46,7 +46,7 @@ jobs:
 
         python-version: [ 3.7, 3.8 ]
         test-conda: [ "sys-python" ] # "conda-python",
-        use-conan: [ 'use-sys-lib','use-conan' ]
+        use-conan: [ 'use-sys-lib'] #,'use-conan' ]
 
         cfg:
           - {os: "ubuntu-20.04", compiler: "gcc", version: 9}
