@@ -137,7 +137,7 @@ list(APPEND EXTERNAL_LINK GDAL::GDAL)
 
 if(USE_CONAN)
     find_package(proj REQUIRED)
-    list(APPEND EXTERNAL_LINK proj::proj)
+    list(APPEND EXTERNAL_LINK PROJ::proj)
 
 endif()
 
