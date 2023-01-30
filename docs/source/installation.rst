@@ -127,8 +127,9 @@ The Anaconda python environment supports ``pip`` installs. This example shows in
   source $HOME/conda/bin/activate
   conda init
   conda update -y --all
-  conda create -y --name mesher python=3.7
+  conda create -y --name mesher python=3.8
   conda activate mesher
+  conda install -c conda-forge p11-kit # reported as required as per https://github.com/Chrismarsh/mesher/issues/20
   pip install mesher
 
 This approach will use the system installed gdal.
