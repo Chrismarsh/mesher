@@ -243,6 +243,10 @@ def main():
     if use_weights and topo_weight < 0:
         raise RuntimeError("Parameter weights must equal 1")
 
+    # the empty area to trigger area computations later
+    # needs to happen here after the regularization as this doesn't have anything to regularize
+    parameter_files['area'] = {}
+
     plgs_shp = base_name + '.shp'
 
     dem = src_ds.GetRasterBand(1)
@@ -806,7 +810,7 @@ def read_config(configfile):
 
     dem_filename = X.dem_filename.strip()
     max_area = X.max_area
-    
+
     # load any user given parameter files
     parameter_files = {}
     if hasattr(X, 'parameter_files'):

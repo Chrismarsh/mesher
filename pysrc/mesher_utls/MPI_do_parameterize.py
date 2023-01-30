@@ -133,24 +133,6 @@ def do_parameterize(gt, is_geographic, mesh,
 
     srs_out.ImportFromProj4(srs_proj4)
 
-    # for key, data in parameter_files.items():
-    #     if data['file'] is None:
-    #         parameter_files[key]['file'] = []
-    #         for f in data['filename']:
-    #             ds = gdal.Open(f)
-    #             if ds is None:
-    #                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
-    #             parameter_files[key]['file'].append(ds)
-
-    # for key, data in initial_conditions.items():
-    #     if data['file'] is None:
-    #         initial_conditions[key]['file'] = []
-    #         for f in data['filename']:
-    #             ds = gdal.Open(f)
-    #             if ds is None:
-    #                 raise RuntimeError('Error: Unable to open raster for: %s' % key)
-    #             initial_conditions[key]['file'].append(ds)
-
     params['id'] = int(elem)
 
     v0 = mesh['mesh']['elem'][elem][0]
@@ -170,6 +152,7 @@ def do_parameterize(gt, is_geographic, mesh,
     ring.AddPoint(mesh['mesh']['vertex'][v0][0],
                   mesh['mesh']['vertex'][v0][1])  # add again to complete the ring.
 
+
     # need this for the area calculation
     tpoly = ogr.Geometry(ogr.wkbPolygon)
     tpoly.AddGeometry(ring)
@@ -179,27 +162,31 @@ def do_parameterize(gt, is_geographic, mesh,
 
     mem_layer.CreateFeature(feature)
 
-    area = 0
-    # if the output is geographic, we need to project to get a reasonable area
-    if is_geographic:
-        #use an equal area mollweide projection
-        srs_moll = osr.SpatialReference()
+    # if we are computing area, we must handle this slightly differ
+    if current_parameter == 'area':
+        area = 0
+        # if the output is geographic, we need to project to get a reasonable area
+        if is_geographic:
+            #use an equal area mollweide projection
+            srs_moll = osr.SpatialReference()
 
-        srs_moll.ImportFromProj4("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
+            srs_moll.ImportFromProj4("+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +datum=WGS84 +units=m +no_defs ")
 
-        # go from what we are outputting (which is geographic) to moll to compute the area
-        transform = osr.CoordinateTransformation(srs_out, srs_moll)
-        p = tpoly.Clone()
-        p.Transform(transform)
+            # go from what we are outputting (which is geographic) to moll to compute the area
+            transform = osr.CoordinateTransformation(srs_out, srs_moll)
+            p = tpoly.Clone()
+            p.Transform(transform)
 
-        area = p.GetArea()
-    else:
-        area = tpoly.GetArea()
+            area = p.GetArea()
+        else:
+            area = tpoly.GetArea()
 
-    params['area'] = area
+        params[current_parameter] = area
+        return params  # exit early
 
     # calculate new geotransform of the feature subset
     geom = feature.geometry()
+
     src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
     new_gt = (
         (gt[0] + (src_offset[0] * gt[1])),
@@ -281,12 +268,13 @@ def main(pickle_file: str,
         parameter_files[key]['file'] = []
 
         # load the data
-        for f in data['filename']:
-            ds = gdal.Open(f)
-            if ds is None:
-                raise RuntimeError(f'Error: Unable to open raster for: {key}')
+        if key != 'area':
+            for f in data['filename']:
+                ds = gdal.Open(f)
+                if ds is None:
+                    raise RuntimeError(f'Error: Unable to open raster for: {key}')
 
-            parameter_files[key]['file'].append(ds)
+                parameter_files[key]['file'].append(ds)
 
         for elem in range(0, mesh['mesh']['nelem']):
             ret = do_parameterize(gt, is_geographic, mesh, parameter_files, key,
