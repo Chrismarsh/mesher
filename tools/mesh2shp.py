@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 from osgeo import ogr, osr
 import json
 import os
