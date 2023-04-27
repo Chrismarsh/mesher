@@ -86,6 +86,7 @@ jobs:
           python -m pip install scikit-build>=0.10.0
           python -m pip install ninja
           python -m pip install wheel
+          python -m pip install numpy
 
       - name: Install linux dependencies
         if: startsWith( matrix.cfg.os, 'ubuntu' )
