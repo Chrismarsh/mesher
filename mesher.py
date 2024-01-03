@@ -218,7 +218,7 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s  -r '
+    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s'
 
     # pdb.set_trace()
     total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,

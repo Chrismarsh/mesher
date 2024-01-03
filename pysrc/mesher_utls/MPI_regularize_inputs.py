@@ -16,16 +16,7 @@ def str2bool(s: str) -> bool:
 def regularize_inputs(args):
     base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin, fill_holes = args
 
-    # make a copy as this exec string is reused for inital conditions
-    # and we don't want the changes made here to impact it
-    estr = exec_str
-    if data['method'] == 'mode':
-        estr = exec_str + 'mode'
-    else:
-        estr = exec_str + 'average'
 
-    do_cell_resize = True
-    estr = estr + ' -tr %s %s'
     # there can be multiple files per param output that we use a classifier to merge into one.
     # we need to process each one. Also you can't use a tolerance with the merging classifier as that makes no sense
     if isinstance(data['file'], list) and len(data['file']) == 1:
@@ -56,7 +47,19 @@ def regularize_inputs(args):
     ret_df['filename'] = []
     ret_df['key'] = key
 
-    for f in data['file']:
+    for f, resample_method in zip(data['file'], data['method']):
+
+        # make a copy as this exec string is reused for inital conditions
+        # and we don't want the changes made here to impact it
+        estr = exec_str
+        if resample_method == 'mode':
+            estr = exec_str + ' -r mode'
+        else:
+            estr = exec_str + ' -r average'
+
+        do_cell_resize = True
+        estr = estr + ' -tr %s %s'
+
         # we need to handle a path being passed in
         output_param_fname = os.path.basename(f)
         output_param_fname = os.path.splitext(output_param_fname)[0]
