@@ -35,7 +35,7 @@ Path to the *n* input parameter files to merge into one
 Optional path to the output parameter file. If not given, defaults to a filename of concatenated input files.
 
 
-mesherpermuation.py
+meshpermutation.py
 *******************
 Because of how the triangles are generated and subsequently written to file, triangles that are close in space may not be close in the file. Therefore, if the mesh is used in a numerical model, it may result in inefficient access. This tool computes the permutation of a mesh that minimizes the bandwidth of the connectivity matrix. 
 
@@ -57,7 +57,7 @@ This tool adds a new field ``cell_global_id`` to the ``.mesh`` file. A consuming
 Usage:
 ::
 
-   mesherpermuation.py [-h] [-o outfile] [-t type] [-i infile]
+   meshpermutation.py [-h] [-o outfile] [-t type] [-i infile]
 
 .. confval:: outfile
 

@@ -6,19 +6,23 @@ import packaging.version
 from setuptools import find_packages
 import os
 
-def get_installed_gdal_version():
+def gdal_dependency():
     try:
-        version = subprocess.run(["gdal-config","--version"], stdout=subprocess.PIPE).stdout.decode()
-
+        version = subprocess.run(["gdal-config", "--version"], stdout=subprocess.PIPE).stdout.decode()
         version = version.replace('\n', '')
 
-        version = "=="+version
-        return version
+        gdal_depends = ''
+        if packaging.version.parse(version) >= packaging.version.parse("3.5.0"):
+            # >= 3.5 required for this type of gdal python binding install
+            gdal_depends = f'GDAL[numpy]=={version}.*'
+        else:
+            gdal_depends = f'pygdal=={version}.*'
+
+        return gdal_depends
     except FileNotFoundError as e:
         raise(""" ERROR: Could not find the system install of GDAL. 
                   Please install it via your package manage of choice.
-                """
-            )
+                """)
 
 # Add CMake as a build requirement if cmake is not installed or is too low a version
 # https://scikit-build.readthedocs.io/en/latest/usage.html#adding-cmake-as-building-requirement-only-if-not-installed-or-too-low-a-version
@@ -39,7 +43,7 @@ except KeyError as e:
 USE_CONAN = str(USE_CONAN).upper() 
 
 setup(name='mesher',
-    version='2.0.6',
+    version='2.0.7',
     description='Landsurface model mesh generation',
     long_description="""
     Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution. 
@@ -63,7 +67,7 @@ setup(name='mesher',
     cmake_args=['-DCMAKE_BUILD_TYPE:STRING=Release',
               '-DUSE_CONAN:BOOL='+USE_CONAN],
     scripts=["mesher.py","tools/mesh2vtu.py", "tools/meshmerge.py","tools/meshpermutation.py","tools/meshstats.py", "tools/mesh2shp.py"],
-    install_requires=['vtk','numpy', 'scipy', 'matplotlib', 'cloudpickle', 'gdal[numpy]'+get_installed_gdal_version(),
+    install_requires=['vtk','numpy', 'scipy', 'matplotlib', 'cloudpickle', gdal_dependency(),
                       'metis', 'mpi4py', 'natsort'],
     setup_requires=setup_requires,
     python_requires='>=3.7'
