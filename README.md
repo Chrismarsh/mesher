@@ -10,19 +10,17 @@ Detailed documentation is given [here](https://mesher-hydro.readthedocs.io).
 ### Install
 
 Detailed documentation on how to install is given [here](https://mesher-hydro.readthedocs.io/en/latest/installation.html).
+    The conan backed build described in the document is deprecated and will be removed soon
 
-In short:
-  - Python 3.7, 3.8
-  - Install GDAL development files from package manager (e.g., `gdal-devel`)
-  - C++14 compliant gcc (gcc 7.3+ is good)
-  - You **might** need to install `vtk-devel` from package manager if the python wheels for vtk don't exist on linux.
-      + Python 3.9 doesn't have VTK wheels yet on macos
-  
-Then:
+Build requirements
+  - Python >=3.7
+  - C++14 compliant gcc (>=gcc 7.3)
+  - gdal, cgal, boost, vtk, metis
 
 ```
 $ pip install mesher
 ```
+
 
 
 
