@@ -201,11 +201,18 @@ def plot_mat_connectivity(A,filename,**kwargs):
 
 ############################################################################
 ############################################################################
-if __name__=="__main__":
 
+
+def main():
     # Parse the input arguments
     args = vars(parser.parse_args())
-    if (args["outfile"]==None):
+    if args["outfile"] is None:
         args["outfile"] = args["infile"]
 
     append_global_cell_id_to_mesh_file(args)
+
+
+if __name__ == "__main__":
+    main()
+
+    main()

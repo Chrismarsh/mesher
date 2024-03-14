@@ -1,4 +1,25 @@
 [build-system]
-requires = ["setuptools", "wheel", "conan", "scikit-build>=0.11.1", "ninja","packaging"]
-#conan has an older distro req than scikit-build, so specify conan first to get the correct version
-# scikit version required for this https://github.com/scikit-build/scikit-build/issues/488
+requires = ["scikit-build-core"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mesher"
+version = "2.1.0"
+
+dependencies = ['vtk',
+    'numpy',
+    'scipy',
+    'matplotlib',
+    'cloudpickle',
+    'gdal[numpy]',
+    'metis',
+    'mpi4py',
+    'natsort'
+]
+
+[tool.scikit-build]
+wheel.packages = ["pysrc/mesher_utils"]
+
+[project.scripts]
+mesher = "mesher:main"
+meshpermutation = "tools/meshpermutation:main"
