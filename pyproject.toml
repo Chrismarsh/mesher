@@ -6,7 +6,8 @@ build-backend = "scikit_build_core.build"
 name = "mesher"
 version = "2.1.0"
 
-dependencies = ['vtk',
+dependencies = [
+    'vtk',
     'numpy',
     'scipy',
     'matplotlib',
@@ -17,9 +18,9 @@ dependencies = ['vtk',
     'natsort'
 ]
 
-[tool.scikit-build]
-wheel.packages = ["pysrc/mesher_utils"]
+#[tool.scikit-build]
+#wheel.packages = ["pysrc/mesher_utils"]
 
 [project.scripts]
 mesher = "mesher:main"
-meshpermutation = "tools/meshpermutation:main"
+meshpermutation = "tools.meshpermutation:main"

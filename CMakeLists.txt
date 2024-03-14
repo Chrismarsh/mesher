@@ -1,52 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
+cmake_policy(SET CMP0144 NEW)
+
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CMAKE_FIND_FRAMEWORK LAST) # under some circumstances, gdal can be in the frameworks dir that super breaks everything
 endif()
 
 option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
-option(USE_CONAN "Build with using conan dependencies" FALSE)
 
 set(CMAKE_BUILD_TYPE "Release")
-
-if(USE_CONAN AND NOT EXISTS "${CMAKE_BINARY_DIR}/conan.cmake")
-
-    message(STATUS "Downloading conan.cmake from https://github.com/conan-io/cmake-conan")
-    file(DOWNLOAD "https://raw.githubusercontent.com/conan-io/cmake-conan/develop/conan.cmake"
-            "${CMAKE_BINARY_DIR}/conan.cmake")
-endif()
-
-
-if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-    set(CONAN_LIB_STD "libstdc++11")
-    message(STATUS "Detected gnu compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
-elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
-    set(CONAN_LIB_STD "libc++")
-    message(STATUS "Detected clang compiler, setting compiler.libcxx=${CONAN_LIB_STD}")
-endif ()
-
-if(USE_CONAN)
-    include(${CMAKE_BINARY_DIR}/conan.cmake)
-    conan_add_remote(NAME bincrafters
-                URL https://bincrafters.jfrog.io/artifactory/api/conan/public-conan
-            )
-    conan_add_remote(NAME CHM
-            URL http://conan.snowcast.ca/artifactory/api/conan/chm
-            )
-
-    conan_cmake_run(CONANFILE conanfile.py
-                    SETTINGS compiler.cppstd=14
-                    SETTINGS compiler.libcxx=${CONAN_LIB_STD}
-                    BASIC_SETUP
-                    CMAKE_TARGETS
-                    KEEP_RPATHS
-                    NO_OUTPUT_DIRS
-                    BUILD missing)
-endif()
-
-#LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/CMake/")
-#LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/")
 
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
@@ -73,8 +36,8 @@ execute_process(
 )
 
 configure_file(
-        src/version.h.in
-        src/version.h
+        src-cxx/version.h.in
+        src-cxx/version.h
 )
 
 LIST(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
@@ -100,16 +63,11 @@ if(BUILD_CGAL)
     find_package(CGAL REQUIRED  HINTS ${CGAL_DIR})
 
 else()
-    if(NOT USE_CONAN)
-        find_package(CGAL REQUIRED )
-        list(APPEND EXTERNAL_LINK CGAL::CGAL)
-    else()
-        find_package(cgal REQUIRED ) #conan convention is lowercase
-        list(APPEND EXTERNAL_LINK cgal::cgal)
-    endif()
+    find_package(CGAL REQUIRED )
+    list(APPEND EXTERNAL_LINK CGAL::CGAL)
 endif()
 
-if(CGAL_FOUND AND NOT USE_CONAN)
+if(CGAL_FOUND)
     message(STATUS "Found CGAL ")
     message(STATUS "${CGAL_INCLUDE_DIRS}")
     include(${CGAL_USE_FILE}) #as per https://www.cgal.org/releases.html release 4.2
@@ -134,60 +92,27 @@ endif()
 find_package(GDAL 3.0 REQUIRED)
 list(APPEND EXTERNAL_LINK GDAL::GDAL)
 
-
-if(USE_CONAN)
-    find_package(proj REQUIRED)
-    list(APPEND EXTERNAL_LINK PROJ::proj)
-
-endif()
-
 find_package(Boost
             COMPONENTS
             program_options
             filesystem
             REQUIRED)
-if(NOT USE_CONAN)
-    list(APPEND EXTERNAL_LINK Boost::boost Boost::filesystem Boost::program_options)
-else()
-    list(APPEND EXTERNAL_LINK Boost::Boost)
-endif()
 
-
+list(APPEND EXTERNAL_LINK Boost::boost Boost::filesystem Boost::program_options)
 
 # we will need to be able to tell the python metis where the shared objects live
 set(metis_LIBS "")
-if( USE_CONAN)
-    find_package(metis 5.1 REQUIRED)
-else()
-    LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/")
-    find_package(metis 5.1 REQUIRED)
-    set(metis_LIBS "${METIS_LIBRARY}")
-endif()
 
-#do it this way because it needs to be a Python type! FALSE != False
-set(is_conan_build "False")
-if(USE_CONAN)
-    set(is_conan_build "True")
-endif()
+LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/")
+find_package(metis 5.1 REQUIRED)
+set(metis_LIBS "${METIS_LIBRARY}")
 
-file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'\nis_conan_build=${is_conan_build}")
 
-set(SOURCE_FILES src/mesher.cpp src/triangle.cpp src/raster.cpp)
 
-# only need fancy rpaths if we are shipping our libs alongside the binary via conan
-if(USE_CONAN)
-    # when we run make install all the RPATHs will be stripped out and set to these
-    # n.b. $ORIGIN should have its dollar sign escaped with a backslash to have it end up with proper
-    # syntax in the final executable.
-    # https://gitlab.kitware.com/cmake/community/-/wikis/doc/cmake/RPATH-handling
-    # !!!  these must be done before targets are defined in add_executable !!!!
-    if (APPLE)
-        set(CMAKE_INSTALL_RPATH "@executable_path/../lib")
-    else()
-        set(CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
-    endif()
-    set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-endif()
+file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_LIBS}\'")
+
+set(SOURCE_FILES src-cxx/mesher.cpp src-cxx/triangle.cpp src-cxx/raster.cpp)
+
 
 add_executable(mesher ${SOURCE_FILES})
 set_target_properties(mesher
@@ -198,7 +123,7 @@ target_compile_features(mesher PRIVATE cxx_std_14)
 target_include_directories(
         mesher
         PRIVATE
-        ${CMAKE_BINARY_DIR}/src # for clion generated files / out of source builds
+        ${CMAKE_BINARY_DIR}/src-cxx # for clion generated files / out of source builds
 )
 target_link_libraries(
         mesher
@@ -208,9 +133,3 @@ target_link_libraries(
 
 install(TARGETS mesher RUNTIME)
 install(FILES ${CMAKE_BINARY_DIR}/build-bin/metis-config.py DESTINATION bin)
-
-# only ship our libs if built with conan
-if(USE_CONAN)
-    install(DIRECTORY ${CMAKE_BINARY_DIR}/lib/
-            DESTINATION ${CMAKE_INSTALL_PREFIX}/lib)
-endif()
