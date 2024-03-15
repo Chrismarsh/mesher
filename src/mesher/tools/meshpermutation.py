@@ -9,17 +9,12 @@ import scipy.sparse.linalg as linalg
 import importlib
 
 # This is the path for the metis shared obj we detected during install
-metis_config_path = os.path.dirname(os.path.abspath(__file__)) + '/metis-config.py'
+metis_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'bin', 'metis-config.py')
 metisconfig = importlib.machinery.SourceFileLoader('metisconfig', metis_config_path)
 metisconfig = metisconfig.load_module()
 
-if metisconfig.is_conan_build:
-    filename = os.path.split(metisconfig.METIS_DLL)
-    filename = filename[1] #the so name
-    path = os.path.dirname(os.path.abspath(__file__)) + '/../lib/' + filename
-    os.environ["METIS_DLL"] = path
-else:
-    os.environ["METIS_DLL"] = metisconfig.METIS_DLL
+#needs to be set before the import
+os.environ["METIS_DLL"] = metisconfig.METIS_DLL
 import metis
 
 # Set up CL arguments

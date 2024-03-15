@@ -14,8 +14,17 @@ parser.add_argument("infile",
                     help="Files containing parameters to be merged.")
 
 
-def append_new_param_to_file(args):
+def main():
     """Read dictionary of arguments, find parameters, add new parameters to reference json file"""
+
+    # Parse the input arguments
+    args = vars(parser.parse_args())
+    if args["outfile"] is None:
+        name = ''
+        for f in args["infile"]:
+            filename = Path(f).resolve().stem
+            name = name + filename + '+'
+        args["outfile"] = '%s.param' % name[:-1]
 
     params = args["infile"]
 
@@ -47,13 +56,4 @@ def append_new_param_to_file(args):
 
 if __name__=="__main__":
 
-    # Parse the input arguments
-    args = vars(parser.parse_args())
-    if args["outfile"] is None:
-        name = ''
-        for f in args["infile"]:
-            filename = Path(f).resolve().stem
-            name = name + filename + '+'
-        args["outfile"] = '%s.param' % name[:-1]
-
-    append_new_param_to_file(args)
+    main()

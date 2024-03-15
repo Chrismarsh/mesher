@@ -7,6 +7,8 @@ import math
 import sys
 import csv
 gdal.UseExceptions()  # Enable exception support
+
+
 def main():
     if len(sys.argv) == 1:
         print('ERROR: meshstats requires one argument, the directory of the output from a mesher run (e.g.,  mesher.py Bow)')

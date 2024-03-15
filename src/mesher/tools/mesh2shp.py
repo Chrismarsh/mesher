@@ -3,10 +3,18 @@
 from osgeo import ogr, osr
 import json
 import os
-from tqdm import tqdm
 import argparse
 
-def main(args):
+def main():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-m", "--mesh", required=True,
+                        help="Mesh file for input.")
+
+    parser.add_argument("-s", "--shapefile", required=True,
+                        help="Shp file for output.")
+
+    args = vars(parser.parse_args())
 
     with open(args["mesh"]) as f:
         mesh = json.load(f)
@@ -37,7 +45,7 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     for key, value in initial_conditions.items():
         layer.CreateField(ogr.FieldDefn(key, ogr.OFTReal))
 
-    for elem in tqdm(range(mesh['mesh']['nelem'])):
+    for elem in range(mesh['mesh']['nelem']):
         v0 = mesh['mesh']['elem'][elem][0]
         v1 = mesh['mesh']['elem'][elem][1]
         v2 = mesh['mesh']['elem'][elem][2]
@@ -86,15 +94,5 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     output_usm = None  # close file
 
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-m", "--mesh", required=True,
-                        help="Mesh file for input.")
-
-    parser.add_argument("-s", "--shapefile", required=True,
-                        help="Shp file for output.")
-
-    args = vars(parser.parse_args())
-    main(args)
+    main()

@@ -23,4 +23,8 @@ dependencies = [
 
 [project.scripts]
 mesher = "mesher:main"
-meshpermutation = "tools.meshpermutation:main"
+mesh2shp = "mesher.tools.mesh2shp:main"
+mesh2vtu = "mesher.tools.mesh2vtu:main"
+mesh2merge = "mesher.tools.meshmerge:main"
+meshpermutation = "mesher.tools.meshpermutation:main"
+meshstats = "mesher.tools.meshstats:main"

@@ -39,7 +39,7 @@ import inspect
 from natsort import natsorted
 
 
-from mesher import mesher_utls
+from . import mesher_utls
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -879,11 +879,14 @@ def read_config(configfile):
     reuse_mesh = False
     if hasattr(X, 'reuse_mesh'):
         reuse_mesh = X.reuse_mesh
-    mesher_path = os.path.dirname(os.path.abspath(__file__)) + '/mesher'
+
     # uses GDAL to fill holes
     fill_holes = False
     if hasattr(X, 'fill_holes'):
         fill_holes = X.fill_holes
+
+    mesher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bin', 'mesher')
+
     # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
     # over this
     using_mesher_environ = False
@@ -1293,7 +1296,6 @@ def gdal_polygonize(src_filename, mask, dst_filename):
     mask_ds = gdal.Open(mask)
     maskband = mask_ds.GetRasterBand(1)
 
-    dst_ds = ogr.Open(dst_filename, update=1)
     drv = ogr.GetDriverByName("ESRI Shapefile")
     dst_ds = drv.CreateDataSource(dst_filename)
 
