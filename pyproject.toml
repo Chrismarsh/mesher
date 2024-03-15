@@ -5,7 +5,14 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "mesher"
 version = "2.1.0"
-
+authors = [
+    {name="Chris Marsh"}
+]
+description ="""Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution.
+    Triangle quality is guaranteed as well as a smooth graduation from small to large triangles. Including these additional features resulted in a better representation of spatial heterogeneity versus classic topography-only mesh generation.
+"""
+readme = "README.md"
+requires-python = ">=3.7"
 dependencies = [
     'vtk',
     'numpy',
@@ -18,8 +25,9 @@ dependencies = [
     'natsort'
 ]
 
-#[tool.scikit-build]
-#wheel.packages = ["pysrc/mesher_utils"]
+[project.urls]
+Homepage = "https://github.com/Chrismarsh/mesher"
+
 
 [project.scripts]
 mesher = "mesher:main"
