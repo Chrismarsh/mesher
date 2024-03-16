@@ -3,7 +3,7 @@ Examples
 
 This describes the validation and example datasets, along with sample ``mesher`` inputs.
 
-A zip containing all the example code and data can be found `here <https://github.com/Chrismarsh/mesher/raw/master/examples.zip>`_. 
+A zip containing all the example code and data can be found `here <https://github.com/Chrismarsh/mesher/blob/dev/examples/examples.zip>`_.
 
 flat
 ----
