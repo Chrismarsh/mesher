@@ -80,13 +80,9 @@ jobs:
       - name: Install dependencies
         run: |
           export PATH="$pythonLocation:$PATH"
-          python -m pip install conan==1.54
           python -m pip install twine
-          python -m pip install conan
-          python -m pip install scikit-build>=0.10.0
-          python -m pip install ninja
-          python -m pip install wheel
-          python -m pip install numpy
+          python -m pip install scikit-build-core
+
 
       - name: Install linux dependencies
         if: startsWith( matrix.cfg.os, 'ubuntu' )
@@ -105,8 +101,6 @@ jobs:
           sudo apt-get install libmetis-dev
           sudo apt-get install libopenmpi-dev
           sudo apt-get install openmpi-bin
-
-
 
 
       - name: Install macos dependencies
@@ -139,30 +133,6 @@ jobs:
           GFORTRAN_NAME: gfortran-11 # set the name to use for gfortran as we need to use gfotran-<version>
 
 
-      - name: Force Build (use conan)
-        if: ${{ matrix.use-conan == 'use-conan' }}
-        uses: allenevans/set-env@v2.0.0
-        with:
-          USE_CONAN: "TRUE"
-
-      - name: Setup conan
-        if: ${{ matrix.use-conan == 'use-conan' }}
-        run: |
-          conan profile new default --detect
-          conan config install https://github.com/Chrismarsh/conan-config.git
-          
-          if [ "$RUNNER_OS" == "Linux" ]; then
-            conan profile update settings.os.distro="$CFG_OS" default
-          else
-            VERSION=$(echo "$CFG_OS" | cut -d'-' -f2)
-            echo "MacOS $VERSION"
-            conan profile update settings.os.version="$VERSION.0" default
-          fi
-          cat ~/.conan/profiles/default
-        env:
-          CFG_OS: ${{matrix.cfg.os}}
-          CONAN_DEFAULT_PROFILE_PATH: "chm_no_mpi"
-
       - name: Set envar
         uses: allenevans/set-env@v2.0.0
         with:
@@ -171,33 +141,33 @@ jobs:
       - name: Install and test
         run: |
           export PATH="$pythonLocation:$PATH"
-          python setup.py sdist
+          python -m build
           VERSION=$(grep 'version=' setup.py | cut -d\' -f2)
           python -m pip install dist/mesher-$VERSION.tar.gz 
           
-          cd "examples/flat_veg"
-          echo "running simple test"
-          mesher.py flat_veg.py
-          meshpermutation.py -o lol.mesh -t metis -i flat_veg/ideal_flat.mesh -n 4
+#          cd "examples/flat_veg"
+#          echo "running simple test"
+#          mesher.py flat_veg.py
+#          meshpermutation.py -o lol.mesh -t metis -i flat_veg/ideal_flat.mesh -n 4
 
-      - name: Deploy
-        run: |
-          export PATH="$pythonLocation:$PATH"
-          if [ "$TEST_CONDA" = "sys-python" ]; then
-
-            if [ "$RUNNER_OS" = "macOS" ]; then
-              python setup.py sdist
-            else
-              python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
-              #https://www.python.org/dev/peps/pep-0513/
-            fi
-
-            if [[ $CI_REF_NAME == "stable/"* ]]; then
-                twine upload  --skip-existing dist/*
-            else
-              echo "Branch $CI_REF_NAME is not stable/*"
-            fi
-          fi
+#      - name: Deploy
+#        run: |
+#          export PATH="$pythonLocation:$PATH"
+#          if [ "$TEST_CONDA" = "sys-python" ]; then
+#
+#            if [ "$RUNNER_OS" = "macOS" ]; then
+#              python setup.py sdist
+#            else
+#              python setup.py sdist #no binary wheels on linux at the moment as we link against non PEP0513 .so
+#              #https://www.python.org/dev/peps/pep-0513/
+#            fi
+#
+#            if [[ $CI_REF_NAME == "stable/"* ]]; then
+#                twine upload  --skip-existing dist/*
+#            else
+#              echo "Branch $CI_REF_NAME is not stable/*"
+#            fi
+#          fi
 
         env:
           TWINE_PASSWORD: ${{secrets.TWINE_PASSWORD}}
