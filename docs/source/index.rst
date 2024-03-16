@@ -28,7 +28,7 @@ Key points
 *  Spatial heterogeneity is better preserved compared to existing mesh generators
 
 
-.. image:: images/mesher_veg.png
+.. image:: images/mesher_veg.jpg
 
 Indices and tables
 ==================

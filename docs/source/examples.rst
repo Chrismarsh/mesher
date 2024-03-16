@@ -192,20 +192,20 @@ complex terrain.
 
 .. literalinclude:: ../../examples/dem_smoothing/dem_smoothing.py
 
-.. |image0| image:: example-images/flat.png
-.. |image1| image:: example-images/flat_veg.png
-.. |image2| image:: example-images/gaussian_hill.png
-.. |image3| image:: example-images/ideal_ridge.png
-.. |image4| image:: example-images/ideal_ridge_low_tol.png
-.. |image5| image:: example-images/uniform.png
-.. |image6| image:: example-images/lloyd.png
-.. |image7| image:: example-images/flat_stream.png
-.. |image8| image:: example-images/stream_dem.png
-.. |image9| image:: example-images/granger.png
-.. |image10| image:: example-images/granger_low_veg_weight.png
-.. |image11| image:: example-images/granger_high_veg_weight.png
-.. |image12| image:: example-images/flow_accumulation.png
-.. |image13| image:: example-images/dem_no_smoothing.png
-.. |image14| image:: example-images/dem_smoothing_1.png
-.. |image15| image:: example-images/dem_smoothing_2.png
-.. |image16| image:: example-images/flow_accumulation_granger.png
+.. |image0| image:: example-images/flat.jpg
+.. |image1| image:: example-images/flat_veg.jpg
+.. |image2| image:: example-images/gaussian_hill.jpg
+.. |image3| image:: example-images/ideal_ridge.jpg
+.. |image4| image:: example-images/ideal_ridge_low_tol.jpg
+.. |image5| image:: example-images/uniform.jpg
+.. |image6| image:: example-images/lloyd.jpg
+.. |image7| image:: example-images/flat_stream.jpg
+.. |image8| image:: example-images/stream_dem.jpg
+.. |image9| image:: example-images/granger.jpg
+.. |image10| image:: example-images/granger_low_veg_weight.jpg
+.. |image11| image:: example-images/granger_high_veg_weight.jpg
+.. |image12| image:: example-images/flow_accumulation.jpg
+.. |image13| image:: example-images/dem_no_smoothing.jpg
+.. |image14| image:: example-images/dem_smoothing_1.jpg
+.. |image15| image:: example-images/dem_smoothing_2.jpg
+.. |image16| image:: example-images/flow_accumulation_granger.jpg

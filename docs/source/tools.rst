@@ -44,11 +44,11 @@ This tool adds a new field ``cell_global_id`` to the ``.mesh`` file. A consuming
 
 **Before optimization**
 
-.. image:: images/orig_order.png
+.. image:: images/orig_order.jpg
 
 **After optimization**
 
-.. image:: images/post_order.png
+.. image:: images/post_order.jpg
 
 
 

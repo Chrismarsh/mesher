@@ -18,11 +18,11 @@ As the tolerance is made smaller, less error is introduced, and the mesh better 
 
 Consider the following three meshes where each has a progressively larger tolerance to approximate a base 30 m SRTM DEM. 
 
-.. image:: images/mesher_tolerances.png
+.. image:: images/mesher_tolerances.jpg
 
 Therefore, with the tight tolerance of 5 m, a generally  uniform distribution of triangle size is created. From a hydrological model's computational standpoint, having a good mix of triangle sizes is best. This ensure heterogeneity where it is required (smaller triangles), e.g. along ridge lines, and larger triangles where it is less needed, e.g., valleys. In this case, the 5 m tolerance is likely a bit too tight, and will result in limited gains over a raster DEM. The 15 m RMSE tolerance produces a good mix of triangle sizes, where the ridge lines are well represented, but the valleys have few triangles. The 50 m preserves key aspects of the topography, such as the ridge lines, but there is a clear smoothing of the mountains
 
 
 As mesher is designed for use in hydrological landsurface models, using only the topographic information to create the mesh may be insufficient. Capturing important heterogeneities is key. Therefore, mesher uses a multi-objective approach where it will attempt to fulfill tolerances across multiple input rasters. Shown below is such a case where topography and vegetation height were used. Key aspects of the surface such as the tree line and stream (due to the riparian area vegetation) have smaller triangles to capture the spatial heterogeneity, where as on the gentle and mostly uniform slopes has larger triangles.
 
-.. image:: images/mesher_veg.png
+.. image:: images/mesher_veg.jpg

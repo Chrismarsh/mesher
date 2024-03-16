@@ -9,6 +9,8 @@ dist/*
 /build-*
 venv-build
 .Rhistory
+example-images-png
+images-png
 .spack*
 spack-build*
 cmake_install.cmake

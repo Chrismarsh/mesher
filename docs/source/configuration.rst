@@ -50,7 +50,7 @@ This is a constraint on the maximum size (m^2) of a triangle. Any triangle that 
 
 The maximum difference (vertical distance) between the triangle and the underlying raster as measured by the ``errormeteric``. This can optionally be specified as ``-1`` to skip the tolerance checks, which can be useful in producing uniformly sized triangles.
 
-.. image:: images/mesher_tolerances.png
+.. image:: images/mesher_tolerances.jpg
 
 .. confval:: min_area
 
@@ -138,10 +138,10 @@ Lloyd iterations
 Enables *n* Lloyd iterations. As per the `CGAL documentation <https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization>`_: the goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees. 100 iterations is a suggested amount. However, please note this does invalidate the numerical guarantees about the minimum amount of error introduced to the mesh.
 
 
-.. |no_lloyd| image:: images/no_lloyd.png
+.. |no_lloyd| image:: images/no_lloyd.jpg
    :width: 100%
    :align: middle
-.. |lloyd| image:: images/lloyd.png
+.. |lloyd| image:: images/lloyd.jpg
    :width: 100%
    :align: middle
 
@@ -295,17 +295,17 @@ Input DEM smoothing
 
 If the DEM quality is poor or if triangles close to the elevation raster cell size is required. If the ``min_area`` is approximately equal to the cell size of the raster and tolerance parameter ensures triangles of this size are being produced, then in complex terrain the stair stepping of the raster (due to non-continuous first derivative; i.e., slope) impacts the mesh quality as shown below.
 
-.. image:: images/dem_no_smoothing.png
+.. image:: images/dem_no_smoothing.jpg
 
 Repeated smoothing iterations can be done. Each smoothing iteration using cubic spline and resamples by ``iter * smoothing_scaling_factor``.
 
  This is the result of 1 smoothing iteration. 
 
-.. image:: images/dem_smoothing_2.png
+.. image:: images/dem_smoothing_2.jpg
 
 This is the result of 2 smoothing iterations. 
 
-.. image:: images/dem_smoothing_2.png
+.. image:: images/dem_smoothing_2.jpg
 
 .. confval:: do_smoothing 
 
@@ -482,7 +482,7 @@ Shape file constraints
 
 Shape files may be used to further constrain the mesh, for example to rivers or basin outlines. The line segments in the shape file are treated as barries that triangles cannot cross; thus triangle edges represent the shapefile edges exactly. It may be benificial to simplify these edges somewhat so-as to avoid the creation of many small triangles.
 
-.. image:: images/constraint_shpfile.png
+.. image:: images/constraint_shpfile.jpg
 
 This is further shown in :ref:`examples:flat_stream`.
 
