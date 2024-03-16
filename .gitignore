@@ -6,6 +6,7 @@ docs/build/*
 github/*
 dist/*
 .DS_Store
+examples/data
 /build-*
 venv-build
 .Rhistory

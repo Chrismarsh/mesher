@@ -21,7 +21,9 @@ Build requirements
 $ pip install mesher
 ```
 
+### Examples
 
+Extract `examples/data.zip` to `examples/data` run examples
 
 
 
