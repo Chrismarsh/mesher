@@ -6,7 +6,6 @@ docs/build/*
 github/*
 dist/*
 .DS_Store
-examples/data
 /build-*
 venv-build
 .Rhistory
@@ -22,11 +21,7 @@ Makefile
 *.mesh
 MANIFEST
 *mesher.egg*
-*.shp
-*.shx
-*.prj
 *.geojson
-*.dbf
 *.pyc
 *.neigh
 *.node
@@ -34,7 +29,6 @@ MANIFEST
 *.poly
 *.ipynb
 *.vtu
-*.tif
 *.xml
 *.ovr
 *.tfw

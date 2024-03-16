@@ -28,6 +28,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/Chrismarsh/mesher"
 
+[tool.scikit-build]
+sdist.exclude = ["examples", "docs", "_config.yml", "v2-testing"]
 
 [project.scripts]
 mesher = "mesher:main"
