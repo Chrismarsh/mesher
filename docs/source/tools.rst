@@ -1,7 +1,7 @@
 Tools
 =======
 
-mesh2vtu.py
+mesh2vtu
 ***********
 
 Combines and converts a ``.mesh`` file and a ``.param`` file into a corresponding ``.vtu`` file
@@ -9,10 +9,10 @@ Combines and converts a ``.mesh`` file and a ``.param`` file into a correspondin
 Usage:
 ::
 
-   mesh2vtu.py input.mesh input.param output.vtu
+   mesh2vtu input.mesh input.param output.vtu
 
 
-meshmerge.py
+meshmerge
 *************
 
 Combines multiple parameter files (``.param``) into one. All the files are validated to ensure each parameter has the same number of elements.
@@ -20,7 +20,7 @@ Combines multiple parameter files (``.param``) into one. All the files are valid
 Usage:
 ::
 
-   meshmerge.py [-h] [-o outfile] infile [infile ...]
+   meshmerge [-h] [-o outfile] infile [infile ...]
 
 .. confval:: infile
 
@@ -35,7 +35,7 @@ Path to the *n* input parameter files to merge into one
 Optional path to the output parameter file. If not given, defaults to a filename of concatenated input files.
 
 
-meshpermutation.py
+meshpermutation
 *******************
 Because of how the triangles are generated and subsequently written to file, triangles that are close in space may not be close in the file. Therefore, if the mesh is used in a numerical model, it may result in inefficient access. This tool computes the permutation of a mesh that minimizes the bandwidth of the connectivity matrix. 
 
@@ -57,7 +57,7 @@ This tool adds a new field ``cell_global_id`` to the ``.mesh`` file. A consuming
 Usage:
 ::
 
-   meshpermutation.py [-h] [-o outfile] [-t type] [-i infile]
+   meshpermutation [-h] [-o outfile] [-t type] [-i infile]
 
 .. confval:: outfile
 
@@ -78,7 +78,7 @@ File for output. Overwrite input file
 If ``metis`` type is selected, this is required. Number of partitions.
 
 
-meshstats.py
+meshstats
 *************
 
 Produces a csv file of detailed per-triangle information: the error ('rmse' is computed), triangle area (units^2), min and max inner angles (degrees).
@@ -96,7 +96,7 @@ Note that the triangles' RMSE is recomputed, so can be a bit slow on very large 
 Usage:
 ::
 
-   meshstats.py dir 
+   meshstats dir
 
 
 .. confval:: dir

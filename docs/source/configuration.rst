@@ -8,10 +8,10 @@ Mesher depends heavily upon GDAL to handle the geospatial data and the GDAL pyth
 
 Required
 =========
-Configuration files are stored in a python file and passed as an argument to ``mesher.py`` on the command line. For example:
+Configuration files are stored in a python file and passed as an argument to ``mesher`` on the command line. For example:
 ::
 
-   python mesher.py example_mesher_config.py
+   python mesher example_mesher_config.py
 
 
 Therefore this configuration file must be compliant python code, but as such can contain arbitrary python code.
@@ -78,7 +78,7 @@ The RMSE produces the best distribution of triangle sizes and does not penalized
 
    :type: string
 
-The ``mesher.py`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
+The ``mesher`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
 
 .. confval:: nworkers
 
