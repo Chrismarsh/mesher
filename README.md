@@ -13,14 +13,17 @@ Detailed documentation on how to install is given [here](https://mesher-hydro.re
     The conan backed build described in the document is deprecated and will be removed soon
 
 Build requirements
-  - Python >=3.7
-  - C++14 compliant gcc (>=gcc 7.3)
+  - Python >= 3.7
+  - C++14 compliant gcc (>= gcc 7.3)
   - gdal, cgal, boost, vtk, metis
 
 ```
 $ pip install mesher
 ```
 
-
+### Spack
+- Clone https://github.com/Chrismarsh/spack-repo
+- Add `spack-repo` to spack `repos.yaml` https://spack.readthedocs.io/en/latest/repositories.html
+- `spack install py-mesher`
 
 
