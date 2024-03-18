@@ -11,6 +11,8 @@ option(BUILD_CGAL "Build CGAL and patch to reproduce mesher paper"  OFF )
 
 set(CMAKE_BUILD_TYPE "Release")
 
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 # lovely CMake script to integrate git hashes
 # http://xit0.org/2013/04/cmake-use-git-branch-and-commit-details-in-project/
 # Get the current working branch
@@ -89,7 +91,7 @@ else()
 endif()
 
 
-find_package(GDAL 3.0 REQUIRED)
+find_package(GDAL 3.6 REQUIRED)
 list(APPEND EXTERNAL_LINK GDAL::GDAL)
 
 find_package(Boost
