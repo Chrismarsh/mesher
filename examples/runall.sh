@@ -3,7 +3,7 @@ set -e
 function run
 {
 	cd $1
-	mesher.py $1.py
+	mesher $1.py
 	cd ..
 }
 
