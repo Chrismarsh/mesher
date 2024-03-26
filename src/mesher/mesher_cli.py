@@ -462,6 +462,12 @@ def main():
 
     for key, data in constraints.items():  # over each constraint
         for feat in data['file']['features']:  # over the features present in each constraint
+
+            # round down to 5 decimal places. This helps ensure points that differ by round-off levels aren't treated
+            # as seperate points
+            # Since we are in projected units (metres??) this should almost certainly be fine...
+            # todo: check this is robust
+            feat['geometry']['coordinates'] = [[round(item, 5) for item in sublist] for sublist in feat['geometry']['coordinates']]
             interior_PLGS['features'].append(feat)
 
     with open(base_dir + 'interior_PLGS.geojson', 'w') as fp:
