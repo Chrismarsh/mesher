@@ -91,7 +91,7 @@ else()
 endif()
 
 
-find_package(GDAL 3.6 REQUIRED)
+find_package(GDAL 3.0 REQUIRED)
 list(APPEND EXTERNAL_LINK GDAL::GDAL)
 
 find_package(Boost
