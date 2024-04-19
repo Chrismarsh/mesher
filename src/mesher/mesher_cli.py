@@ -1037,7 +1037,12 @@ def read_config(configfile):
     elif not hasattr(X, 'MPI_nworkers') and MPI_exec_str:
         raise RuntimeError('If MPI_exec_str is provided, then MPI_nworkers must also be provided')
 
+    mpi_vendor = MPI.get_vendor()[0]
+    print(f'Detected MPI = {mpi_vendor}')
 
+    # If we are using OpenMPI we can use a blocking spawn, otherwise, we need to use mpirun
+    if MPI_exec_str is None and mpi_vendor != 'Open MPI':
+        MPI_exec_str = f'mpirun -n {MPI_nworkers} {sys.executable}'
 
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
@@ -1081,7 +1086,6 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
                                          'pickled_param_args.pickle', 'True'],
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
-
     os.remove('pickled_param_args.pickle')
 
     ret = []
