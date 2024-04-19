@@ -21,10 +21,11 @@ max_tolerance = 1    # 5m maxe RMSE between triangle and underlying elevation se
 min_area = 5**2     #triangle area below which we will no longer refine, regardless of max_tolerance
 
 use_weights = True
-reuse_mesh=True
+reuse_mesh=False
 
 
 MPI_nworkers=1
+nworkers_gdal=1
 
 
 parameter_files = {
@@ -41,4 +42,4 @@ parameter_files = {
 
 lloyd_itr=1
 simplify=True
-MPI_nworkers=1
+
