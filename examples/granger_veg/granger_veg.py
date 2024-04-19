@@ -27,7 +27,6 @@ reuse_mesh = False
 MPI_nworkers=1
 nworkers_gdal=1
 
-mesher_path = "/home/chm003/project-ords/code/mesher/build/build-bin/mesher"
 
 parameter_files = {
     'landcover': {'file': '../data/eosd.tif',
