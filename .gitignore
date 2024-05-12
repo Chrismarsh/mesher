@@ -4,6 +4,7 @@ cmake-build-debug/
 cmake-build-release/
 docs/build/*
 github/*
+venv-deploy/*
 dist/*
 .DS_Store
 /build-*
