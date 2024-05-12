@@ -1,0 +1,19 @@
+spack:
+  specs:
+    - "py-scikit-build-core +pyproject"
+    - "vtk+python@9.2:"
+    - "py-numpy"
+    - "py-matplotlib"
+    - "py-cloudpickle"
+    - "py-metis"
+    - "py-mpi4py"
+    - "py-natsort"
+    - "py-scipy"
+    - "cgal@5: +header_only"
+    - "metis"
+    - "boost@1.71.0: +program_options+filesystem"
+    - "gdal@3.5: +python"
+    - "py-pip"
+    - "py-twine"
+    - "py-build"
+  view: ./venv-mesher
