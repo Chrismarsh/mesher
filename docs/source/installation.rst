@@ -1,20 +1,44 @@
 Installation
 ============
 
-Installation of mesher is possible via ``pip``.  Installation into a conda environment probably works but is not tested.
-Mesher is only supported on Macos and Linux for Python 3.7+
+.. :: warning
+    Mesher is only supported on Macos and Linux
 
-Wheels are not prebuilt for mesher. Instead, mesher will need to be compiled as part of the pip install step. This thus requires a functional build environment.
+Installation of mesher is possible via ``pip``, ``conda``, or ``spack``. A ``conda`` build will be the easiest due to
+all the potentially complex dependencies of vtk and gal being handled automatically. See below on how to install with
+``pip`` which requires system library installs. In a HPC or development context, ``spack`` is prefered.
 
-Mesher is tested on Macos (brew) and Ubuntu (apt-get) although other configurations likely work as expected. Adjust the dependencies below as needed.
 
-It is easiest if Python 3.7, 3.8, 3.9 is used as one of the dependencies (vtk) has prebuilt wheels (see `here <https://pypi.org/project/vtk/9.1.0/#files:vtk>`_ for details on wheel availability).
+Wheels are not prebuilt for mesher. Instead, mesher will need to be compiled as part of the install step.
+This thus requires a functional build environment.
+
+It is easiest if a Python version that has vtk wheels is used -- see `here <https://pypi.org/project/vtk/9.1.0/#files:vtk>`_ for details on wheel availability.
 Consider using the `pyenv <https://github.com/pyenv/pyenv>`_ python version manager if this is not your system default Python version.
 
-Setup environment
-+++++++++++++++++++
+conda
+++++++
 
-Mesher can be built against system libraries or against conan libraries.
+::
+    # ensure conda-forge is added
+    conda config --add channels conda-forge
+    conda config --set channel_priority strict
+
+    conda install mesher
+
+spack
++++++++
+
+ ``py-mesher`` has not been added to spack's built in repos yet, so it needs to be added.
+
+- Clone https://github.com/Chrismarsh/spack-repo
+- Add `spack-repo` to spack `repos.yaml` https://spack.readthedocs.io/en/latest/repositories.html
+- `spack install py-mesher`
+
+
+pip
+++++
+
+Using pip, mesher must be built against system libraries.
 
 .. note::
    Depending on your python install, ``pip`` may be ``pip3``
@@ -68,78 +92,13 @@ Then install mesher with
 
     pip install mesher
 
-Conan
---------
-Install conan via
-
-::
-
-    pip install conan
-
-And then setup a new profile
-
-::
-
-    conan profile new default --detect
-    conan config install https://github.com/Chrismarsh/conan-config.git
-
-
-This configuration file setups use of revisions, two new remotes (bincrafters, CHM), and tweaks the ``settings.yml`` file to have ubuntu-18.04 and ubuntu-20.04 distros. Setting
-``os.distro = 'ubuntu-20.04'`` will enable the use of prebuilt library binaries.
-
-Then setup conan to use the new C++ ABI and C++ standard
-
-::
-
-  conan profile update settings.compiler.cppstd=14 default
-
-If using clang (e.g.,Macos), do
-
-::
-
-   conan profile update settings.compiler.libcxx=libc++ default  #with clang
-
-and if using gcc, do
-
-::
-
-   conan profile update settings.compiler.libcxx=libstdc++11 default  #with gcc
-
-then install mesher with
-
-::
-
-    USE_CONAN=TRUE pip install mesher
-
-
-conda
-++++++
-
-.. warning::
-    This is not tested! Mixing conan + conda seems to not be reliable so please use system libraries.
-
-The Anaconda python environment supports ``pip`` installs. This example shows installing Anaconda, however if you already have Anaconda installed, then only the instructions from ``conda create`` onward is required.
-
-::
-
-  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-  bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/conda
-  source $HOME/conda/bin/activate
-  conda init
-  conda update -y --all
-  conda create -y --name mesher python=3.8
-  conda activate mesher
-  conda install -c conda-forge p11-kit # reported as required as per https://github.com/Chrismarsh/mesher/issues/20
-  pip install mesher
-
-This approach will use the system installed gdal.
 
 
 
 Install of github branch
 ++++++++++++++++++++++++++
 You can optionally use pip to install the most recent github version or a github branch. However, the automatic
-setup of the build environment does not occur, so ensure ``scikit-build``, ``cmake``, ``conan``, and ``ninja`` are installed. Then,
+setup of the build environment does not occur, so ensure ``scikit-build-core`` is installed. Then,
 
 ::
 

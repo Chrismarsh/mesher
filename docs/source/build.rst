@@ -10,85 +10,24 @@ Building mesher from source has two parts
 1) compile the backend C++ binary and
 2) setup a python environment for the python frontend.
 
-
-Setup the build environment as described on the install page
+Building the dev environment via spack is the supported method.
 
 Clone repo
 ***********
 
-An out of source build is recommended. For example:
+An out of source build is recommended.
 
 ::
 
     cd ~/
     git clone https://github.com/Chrismarsh/mesher.
-    mkdir ~/build && cd ~/build
+    cd mesher
+    spack env create . py-mesher-spack.yaml
+    spack env activate .
+    spack install # builds dependencies
 
 
-Python packages
-********************
-
-::
-
-    setuptools
-    wheel
-    conan
-    scikit-build>=0.11.1
-    ninja
-    vtk
-    pygdal-chm=="`gdal-config --version`.*"
-    numpy
-    scipy
-    matplotlib
-    cloudpickle
-    metis
-
-(Optional) Conan dependencies
-*********************************
-Optionally mesher's dependencies can be build using `conan <https://www.conan.io/>`_ for dependency management.
-
-All of the mesher dependencies are built on Github-CI and uploaded to the bintray repository to serve prebuilt binaries. This means that if the mesher build is done with supported compilers and operating system (described later), the dependencies do not need to be built by the end user.
-
-.. warning::
-   The python gdal bindings uses a system-wide gdal rather than the conan gdal the mesher C++ backend links against. This will hopefully be resolved in the future. However, as no data passes between the C++ and Python, having different gdal versions poses no problem.
-
-.. warning::
-    Conan and conda don't seem to consistently work. Use at your own risk.
-
-
-Setup Conan as described on the installation page.
-
-Install the dependencies into your local conan cache (`~/.conan/data`)
-
-::
-
-    cd ~/build #if you have not already
-    conan install ~/mesher -if=. --build missing
-
-
-The `-if=.` will produce the ``FindXXX.cmake`` files required for the mesher build in the current directory, building missing as needed.
-
-
-Build
-***********
-
-You can set the install prefix to be anywhere, such as shown in the example below
-
-::
-
-    cmake ~/mesher -DCMAKE_INSTALL_PREFIX=/opt/mesher
-
-if you're using conan,
-
-::
-
-    cmake ~/mesher -DCMAKE_INSTALL_PREFIX=/opt/mesher -DUSE_CONAN=True
-
-then
-
-::
-
-    make install
+The backend mesher binary can be independently built by calling cmake in an out of source build.
 
 
 What to do if things aren't working
@@ -104,21 +43,8 @@ If there is an install error about ``gdal-config`` missing, please ensure that g
 
 Deployment
 ==========
-Notes for how to deploy to Pypi:
 
-::
-
-   pip install scikit-build
-   pip install twine
-   pip install wheel
-
-::
-
-   python setup.py sdist bdist_wheel
-   twine upload  dist/*
-
-
-Note that version number needs to be incremented for each Pypi upload
+Use the spack environment defined in ``publish.sh``
 
 
 

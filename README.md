@@ -8,22 +8,31 @@ Mesher is a novel multi-objective unstructured mesh generation software that all
 Detailed documentation is given [here](https://mesher-hydro.readthedocs.io).
 
 ### Install
-
-Detailed documentation on how to install is given [here](https://mesher-hydro.readthedocs.io/en/latest/installation.html).
-    The conan backed build described in the document is deprecated and will be removed soon
-
 Build requirements
   - Python >= 3.7
   - C++14 compliant gcc (>= gcc 7.3)
-  - gdal >=3.6, cgal, boost, vtk>=9, metis
+  - gdal >=3.8, cgal, boost, vtk>=9, metis
 
 ```
 $ pip install mesher
 ```
 
-### Spack
+or
+
+```
+$ conda install mesher
+```
+
+Detailed documentation on how to install is given [here](https://mesher-hydro.readthedocs.io/en/latest/installation.html).
+
+
+
+
+#### Spack
 - Clone https://github.com/Chrismarsh/spack-repo
 - Add `spack-repo` to spack `repos.yaml` https://spack.readthedocs.io/en/latest/repositories.html
 - `spack install py-mesher`
+
+
 
 
