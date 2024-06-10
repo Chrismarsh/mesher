@@ -1,6 +1,6 @@
 Algorithm
 ==========
-The paper describing mesher can be `found here <https://www.usask.ca/hydrology/papers/Marsh,_et_al_2018.pdf>`_ and is the best description for how the algorithm works. However, a brief summary is given here to help the user understand why certain things behave the way they do.
+The paper describing mesher can be `found here <https://research-groups.usask.ca/hydrology/documents/pubs/papers/marsh,_et_al_2018.pdf>`_ and is the best description for how the algorithm works. However, a brief summary is given here to help the user understand why certain things behave the way they do.
 
 The basic principal of mesher is to generate an unstructured triangular mesh of irregularly shaped and sized triangles. Specifically, as each triangle can be though of as an interpolant to an underlying surface (e.g., DEM), a triangle will therefore approximate the underlying surface to some degree of precision. The main idea of mesher is to generate meshes with fewer computational elements than a raster for use in a hydrological or landsurface model. Importantly, the heterogeneity in key aspects of the surface must be maintained while doing so.
 
