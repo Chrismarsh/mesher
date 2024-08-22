@@ -8,7 +8,7 @@ version = "2.1.5"
 authors = [
     {name="Chris Marsh"}
 ]
-description ="""Mesher is a novel multi-objective unstructured mesh generation software that allows mesh generation to be generated from an arbitrary number of hydrologically important features while maintaining a variable spatial resolution."""
+description ="""Mesher is a multi-objective unstructured mesh generation software."""
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
