@@ -33,3 +33,5 @@ MANIFEST
 *.xml
 *.ovr
 *.tfw
+/._venv-mesher/*
+/venv-mesher/*
