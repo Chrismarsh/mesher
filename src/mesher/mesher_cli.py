@@ -794,7 +794,7 @@ def find_gdal_prefix():
     # we need to make sure we pickup the right paths to all the gdal scripts
     gdal_prefix = ''
     try:
-        gdal_prefix = subprocess.run(["gdal-config", "--prefix"], stdout=subprocess.PIPE).stdout.decode()
+        gdal_prefix = subprocess.run(["gdal-config", "--prefix"], stdout=subprocess.PIPE, env=os.environ, check=True).stdout.decode()
         gdal_prefix = gdal_prefix.replace('\n', '')
         gdal_prefix += '/bin/'
     except:
