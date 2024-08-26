@@ -66,6 +66,11 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
     # Mask the source data array with our current feature
     src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
 
+    scale = raster.GetScale() or 1.0
+    offset = raster.GetOffset() or 0.0
+
+    src_array = src_array * scale + offset
+
     output = -9999.0
 
     if callable(aggMethod):

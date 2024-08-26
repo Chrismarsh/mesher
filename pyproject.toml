@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mesher"
-version = "2.1.6"
+version = "2.1.7"
 authors = [
     {name="Chris Marsh"}
 ]
