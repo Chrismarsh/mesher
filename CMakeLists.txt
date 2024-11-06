@@ -67,10 +67,10 @@ else()
     list(APPEND EXTERNAL_LINK CGAL::CGAL)
 endif()
 
-if(CGAL_FOUND)
-    message(STATUS "Found CGAL ")
-    message(STATUS "${CGAL_INCLUDE_DIRS}")
-    include(${CGAL_USE_FILE}) #as per https://www.cgal.org/releases.html release 4.2
+# https://www.cgal.org/2024/10/22/cgal601/
+if(${CGAL_MAJOR_VERSION} LESS 6)
+    # https://www.cgal.org/2013/04/11/cgal-42/
+    include(${CGAL_USE_FILE})
 endif()
 
 #ignore these two under Clion as CGAL will complain
