@@ -35,3 +35,4 @@ MANIFEST
 *.tfw
 /._venv-mesher/*
 /venv-mesher/*
+/spack-deploy/*
