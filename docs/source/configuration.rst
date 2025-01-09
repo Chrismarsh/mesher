@@ -78,7 +78,7 @@ The RMSE produces the best distribution of triangle sizes and does not penalized
 
    :type: string
 
-The ``mesher`` script needs to know where the backend mesher executable is located. Optionally use the MESHER_EXE environment variable.
+Set the path to the backend mesher executable. Optionally use the MESHER_EXE environment variable. This is almost certainly not something that needs to be set by the user and is for development purposes.
 
 .. confval:: nworkers
 
