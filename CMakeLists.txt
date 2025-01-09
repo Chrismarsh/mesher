@@ -114,22 +114,30 @@ file(WRITE "${CMAKE_BINARY_DIR}/build-bin/metis-config.py" "METIS_DLL=\'${metis_
 set(SOURCE_FILES src-cxx/mesher.cpp src-cxx/triangle.cpp src-cxx/raster.cpp)
 
 
-add_executable(mesher ${SOURCE_FILES})
-set_target_properties(mesher
+add_executable(
+         meshercxx
+         ${SOURCE_FILES}
+)
+set_target_properties(
+        meshercxx
         PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build-bin"
-        )
-target_compile_features(mesher PRIVATE cxx_std_14)
+)
+target_compile_features(
+        meshercxx
+        PRIVATE
+        cxx_std_14
+)
 target_include_directories(
-        mesher
+        meshercxx
         PRIVATE
         ${CMAKE_BINARY_DIR}/src-cxx # for clion generated files / out of source builds
 )
 target_link_libraries(
-        mesher
+        meshercxx
         m
         ${EXTERNAL_LINK}
 )
 
-install(TARGETS mesher RUNTIME)
+install(TARGETS meshercxx RUNTIME)
 install(FILES ${CMAKE_BINARY_DIR}/build-bin/metis-config.py DESTINATION bin)

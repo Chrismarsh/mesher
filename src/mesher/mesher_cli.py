@@ -891,7 +891,7 @@ def read_config(configfile):
     if hasattr(X, 'fill_holes'):
         fill_holes = X.fill_holes
 
-    mesher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bin', 'mesher')
+    mesher_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bin', 'meshercxx')
 
     # look for MESHER_EXE as an environment variable. Defining the mesher path in the config file takes precedenc
     # over this
