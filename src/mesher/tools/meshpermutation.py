@@ -46,6 +46,7 @@ MESH_PATCH = "0"
 
 def append_global_cell_id_to_mesh_file(args):
     """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
+    global MESH_MAJOR, MESH_MINOR, MESH_PATCH
 
     with open(args["infile"]) as f:
         mesh = json.load(f)
