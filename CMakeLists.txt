@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
+cmake_policy(SET CMP0144 NEW)
+cmake_policy(SET CMP0167 NEW)
+
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CMAKE_FIND_FRAMEWORK LAST) # under some circumstances, gdal can be in the frameworks dir that super breaks everything
 endif()
