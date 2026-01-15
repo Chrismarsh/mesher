@@ -92,6 +92,7 @@ int main(int argc, char *argv[])
     std::string version = "mesher " GIT_BRANCH "/" GIT_COMMIT_HASH ;
     std::string poly_file;
     std::string interior_plgs_file;
+    std::string points_file;
     double max_area = 0;
     double min_area = 1;
     bool is_geographic = false;
@@ -117,8 +118,10 @@ int main(int argc, char *argv[])
             ("is-geographic,g", po::value<bool>(&is_geographic),"Set to true if the input data are in geographic (lat/long) format.")
             ("poly-file,p", po::value<std::string>(&poly_file),
              "PLGS file to use to bound triangulation. Same format as Triangle.")
-             ("interior-plgs-file,i", po::value<std::string>(&interior_plgs_file),
+            ("interior-plgs-file,i", po::value<std::string>(&interior_plgs_file),
              "Interior PLGS file to use to bound triangulation, e.g., rivers")
+            ("points-file", po::value<std::string>(&points_file),
+             "Optional file of points to insert before refinement (two columns: x y)")
 
             ("raster,r", po::value<std::vector<std::string>>(), "If tolerance checking is used,"
                     "this provides a list of the rasters to provide the tolerance checking against. "
@@ -393,6 +396,30 @@ int main(int argc, char *argv[])
 
     }
 
+    if (!points_file.empty())
+    {
+        std::ifstream points_in(points_file);
+        if (!points_in)
+        {
+            throw std::invalid_argument("Unable to open points file " + points_file);
+        }
+
+        std::string pline;
+        while (std::getline(points_in, pline))
+        {
+            if (pline.empty() || pline[0] == '#')
+                continue;
+
+            std::istringstream pss(pline);
+            double x, y;
+            if (!(pss >> x >> y))
+            {
+                continue;
+            }
+            cdt.insert(Point(x, y));
+        }
+    }
+
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
@@ -486,4 +513,3 @@ int main(int argc, char *argv[])
     neighfile.close();
     return 0;
 }
-

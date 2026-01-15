@@ -1,0 +1,22 @@
+spack:
+  specs:
+    # setup.py
+    - "vtk+python@9.2:"
+    - py-numpy
+    - py-matplotlib
+    - py-cloudpickle
+    - py-metis
+    - py-mpi4py
+    - py-natsort
+    - py-scipy
+
+    # cmake build
+    - "cgal@6: +gmp"
+    - metis
+    - "boost@1.71.0: +program_options+filesystem"
+    - "gdal@3.5: +python"
+    - cmake
+
+  view:
+    default:
+      root: ./spack-view

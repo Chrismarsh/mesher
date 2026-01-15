@@ -22,6 +22,7 @@ import json
 import os
 import numpy as np
 from operator import itemgetter
+import math
 
 import sys
 import shutil
@@ -67,7 +68,7 @@ def main():
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
-        MPI_exec_str, MPI_nworkers = read_config(configfile)
+        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing = read_config(configfile)
 
 
     ########################################################
@@ -495,50 +496,64 @@ def main():
 
         f.write('0\n')
 
+    final_npz_path = None
+    if mpi_mesh and reuse_mesh:
+        raise RuntimeError('reuse_mesh=True is not supported with mpi_mesh=True')
+
     # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
-        start_time = time.perf_counter()
-        execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
-                  (mesher_path,
-                   base_dir + poly_file,
-                   max_tolerance,
-                   base_dir + base_name + '_projected.tif',
-                   max_area,
-                   min_area,
-                   errormetric,
-                   lloyd_itr,
-                   base_dir + 'interior_PLGS.geojson'
-                   )
+        print(f'mpi_mesh={mpi_mesh}')
+        if mpi_mesh:
+            print("MPI code path")
+            final_npz_path = run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax,
+                                             gdal_prefix, mesher_path, outputBufferfn, constraints, parameter_files,
+                                             initial_conditions, max_area, min_area, max_tolerance,
+                                             errormetric, lloyd_itr, use_weights, topo_weight,
+                                             weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
+                                             mpi_seam_point_spacing)
+        else:
+            start_time = time.perf_counter()
+            execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
+                      (mesher_path,
+                       base_dir + poly_file,
+                       max_tolerance,
+                       base_dir + base_name + '_projected.tif',
+                       max_area,
+                       min_area,
+                       errormetric,
+                       lloyd_itr,
+                       base_dir + 'interior_PLGS.geojson'
+                       )
 
-        if is_geographic:
-            execstr += ' --is-geographic true'
+            if is_geographic:
+                execstr += ' --is-geographic true'
 
-        if use_weights:
-            execstr += ' --weight %s' % topo_weight
-            execstr += ' --weight-threshold %s' % weight_threshold
+            if use_weights:
+                execstr += ' --weight %s' % topo_weight
+                execstr += ' --weight-threshold %s' % weight_threshold
 
-        for key, data in parameter_files.items():
-            if 'tolerance' in data:
-                if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data[
-                        'tolerance'])  # we need [0] on raster as it's been made iterable by this point
-                else:
-                    execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
-            if use_weights and 'weight' in data:
-                execstr += ' --weight %s' % data['weight']
+            for key, data in parameter_files.items():
+                if 'tolerance' in data:
+                    if data['method'] == 'mode':
+                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data[
+                            'tolerance'])  # we need [0] on raster as it's been made iterable by this point
+                    else:
+                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
+                if use_weights and 'weight' in data:
+                    execstr += ' --weight %s' % data['weight']
 
-        for key, data in initial_conditions.items():
-            if 'tolerance' in data:
-                if data['method'] == 'mode':
-                    execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
-                else:
-                    execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
-            if use_weights and 'weight' in data:
-                execstr += ' --weight %s' % data['weight']
+            for key, data in initial_conditions.items():
+                if 'tolerance' in data:
+                    if data['method'] == 'mode':
+                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
+                    else:
+                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
+                if use_weights and 'weight' in data:
+                    execstr += ' --weight %s' % data['weight']
 
-        print(execstr)
-        subprocess.check_call(execstr, shell=True)
-        print('Meshing took %s s' % str(round(time.perf_counter() - start_time, 2)))
+            print(execstr)
+            subprocess.check_call(execstr, shell=True)
+            print('Meshing took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
     # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
     # remove them
@@ -551,68 +566,13 @@ def main():
         del parameter_files[key]
 
     # holds our main mesh structure which we will write out to json to read into CHM
-    mesh = {'mesh': {}}
-    mesh['mesh']['vertex'] = []
-
-    read_header = False
-
-    invalid_nodes = []  # any nodes that are outside of the domain.
-    print('Reading nodes')
-    start_time = time.perf_counter()
-    with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
-        for line in f:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    num_nodes = int(header[0])
-                    read_header = True
-                    mesh['mesh']['nvertex'] = num_nodes
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    mx = float(items[1])
-                    my = float(items[2])
-
-                    mz = extract_point(src_ds, mx, my)
-
-                    if mz == dem.GetNoDataValue() or mz is None:
-                        invalid_nodes.append(int(items[0]) - 1)
-
-                    mesh['mesh']['vertex'].append([mx, my, mz])
-
-    print('Length of invalid nodes = ' + str(len(invalid_nodes)))
-    print('Reading nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    # read in the neighbour file, triangle topology
-    print('Reading in neighbour file')
-    start_time = time.perf_counter()
-    read_header = False
-    mesh['mesh']['neigh'] = []
-    with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    read_header = True  # skip header, nothing to do here
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1  # convert to zero indexing
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    mesh['mesh']['neigh'].append([v0, v1, v2])
-
-    read_header = False
-    print('Reading neigh file took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    print('Repairing invalid triangles if needed...')
-    start_time = time.perf_counter()
-
-    mesh['mesh']['elem'] = []
-    mesh['mesh']['is_geographic'] = is_geographic
-
-    # need to save the UTM coordinates so-as to be able to generate lat/long of points if needed later (e.g., CHM)
-    if not is_geographic:
-        mesh['mesh']['proj4'] = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()  # negative in southern hemisphere
+    if mpi_mesh:
+        if final_npz_path is None:
+            raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
+        data = np.load(final_npz_path)
+        mesh = build_mesh_from_arrays(data['verts'], data['tris'], src_ds, dem, srs, is_geographic, verbose)
+    else:
+        mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
 
     # holds parameters and initial conditions for CHM
     params = {}
@@ -625,67 +585,6 @@ def main():
 
     for key, data in initial_conditions.items():
         ics[key] = []
-
-    # loop through all the triangles and assign the parameter and ic values to the triangle
-    with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    nelem = int(header[0])
-                    mesh['mesh']['nelem'] = nelem
-                    read_header = True  # skip header
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1  # convert to zero indexing
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    # if the node we have is invalid (out side of domain) we can try to fix it by interpolating from
-                    # the surrounding nodes. this can happen when the outter domain constraint is effectively the
-                    # limit of the DEM and the node ends up *just* outside of the domain due to numerical
-                    # imprecision. estimate an invalid node's z coord from this triangles other nodes' z value
-                    if v0 in invalid_nodes:
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
-                        # print 'found v0'
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v0]  # remove from out invalid nodes list.
-
-                    if v1 in invalid_nodes:
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
-                        # print 'found v1'
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v1]  # remove from out invalid nodes list.
-
-                    if v2 in invalid_nodes:
-                        # print 'found v2'
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v2]  # remove from out invalid nodes list.
-                    mesh['mesh']['elem'].append([v0, v1, v2])
-    print('Repairing nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to ' \
-                  'reconstruct this triangle. '
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
 
     gt = src_ds.GetGeoTransform()
 
@@ -766,26 +665,28 @@ def main():
 
     print('Total time took %s s' % str(round(time.perf_counter() - start_time, 2)))
 
+    output_name = base_name + '_mpi' if mpi_mesh else base_name
+
     if output_write_vtu:
         print('Writing vtu file...')
-        write_vtu(base_dir + base_name + '.vtu', mesh, params, ics)
+        write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
 
     if output_write_shp:
         print('Writing shp file...')
-        write_shp(base_dir + base_name + '_USM.shp', mesh, params, ics)
+        write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
 
 
-    print('Saving mesh to file ' + base_name + '.mesh')
-    with open(user_output_dir + base_name + '.mesh', 'w') as outfile:
+    print('Saving mesh to file ' + output_name + '.mesh')
+    with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
         json.dump(mesh, outfile, indent=4)
 
     # pdb.set_trace()
-    print('Saving parameters to file ' + base_name + '.param')
-    with open(user_output_dir + base_name + '.param', 'w') as outfile:
+    print('Saving parameters to file ' + output_name + '.param')
+    with open(user_output_dir + output_name + '.param', 'w') as outfile:
         json.dump(params, outfile, indent=4)
 
-    print('Saving initial conditions  to file ' + base_name + '.ic')
-    with open(user_output_dir + base_name + '.ic', 'w') as outfile:
+    print('Saving initial conditions  to file ' + output_name + '.ic')
+    with open(user_output_dir + output_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
     print('Done')
 
@@ -1044,11 +945,19 @@ def read_config(configfile):
     if MPI_exec_str is None and mpi_vendor != 'Open MPI':
         MPI_exec_str = f'mpirun -n {MPI_nworkers} {sys.executable}'
 
+    mpi_mesh = False
+    if hasattr(X, 'mpi_mesh'):
+        mpi_mesh = X.mpi_mesh
+
+    mpi_seam_point_spacing = None
+    if hasattr(X, 'mpi_seam_point_spacing'):
+        mpi_seam_point_spacing = X.mpi_seam_point_spacing
+
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
-        wkt_out, MPI_exec_str, MPI_nworkers
+        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing
 
 
 
@@ -1219,6 +1128,436 @@ def extract_point(raster, mx, my):
         mz = float(np.mean(z))
 
     return mz
+
+
+def compute_tile_grid(nranks):
+    best_rows = 1
+    best_cols = nranks
+    best_diff = abs(best_cols - best_rows)
+    for rows in range(1, nranks + 1):
+        if nranks % rows != 0:
+            continue
+        cols = nranks // rows
+        diff = abs(cols - rows)
+        if diff < best_diff:
+            best_rows = rows
+            best_cols = cols
+            best_diff = diff
+    return best_rows, best_cols
+
+
+def expand_bbox(bbox, buffer_dist):
+    return [
+        bbox[0] - buffer_dist,
+        bbox[1] - buffer_dist,
+        bbox[2] + buffer_dist,
+        bbox[3] + buffer_dist
+    ]
+
+
+def bbox_intersection(a, b):
+    xmin = max(a[0], b[0])
+    ymin = max(a[1], b[1])
+    xmax = min(a[2], b[2])
+    ymax = min(a[3], b[3])
+    if xmin >= xmax or ymin >= ymax:
+        return None
+    return [xmin, ymin, xmax, ymax]
+
+
+def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
+    mesh = {'mesh': {}}
+    mesh['mesh']['vertex'] = []
+    mesh['mesh']['elem'] = []
+    mesh['mesh']['neigh'] = []
+    mesh['mesh']['nvertex'] = len(verts_xy)
+    mesh['mesh']['nelem'] = len(tris)
+    mesh['mesh']['is_geographic'] = is_geographic
+
+    if not is_geographic:
+        mesh['mesh']['proj4'] = srs.ExportToProj4()
+        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
+
+    invalid_nodes = []
+
+    for i, v in enumerate(verts_xy):
+        mx = float(v[0])
+        my = float(v[1])
+        mz = extract_point(src_ds, mx, my)
+        if mz == dem.GetNoDataValue() or mz is None:
+            invalid_nodes.append(i)
+        mesh['mesh']['vertex'].append([mx, my, mz])
+
+    for tri in tris:
+        v0, v1, v2 = int(tri[0]), int(tri[1]), int(tri[2])
+
+        if v0 in invalid_nodes:
+            z_v1 = mesh['mesh']['vertex'][v1][2]
+            z_v2 = mesh['mesh']['vertex'][v2][2]
+            tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
+            if len(tmp) != 0:
+                mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
+                if verbose:
+                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
+                invalid_nodes = [x for x in invalid_nodes if x != v0]
+
+        if v1 in invalid_nodes:
+            z_v0 = mesh['mesh']['vertex'][v0][2]
+            z_v2 = mesh['mesh']['vertex'][v2][2]
+            tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
+            if len(tmp) != 0:
+                mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
+                if verbose:
+                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
+                invalid_nodes = [x for x in invalid_nodes if x != v1]
+
+        if v2 in invalid_nodes:
+            z_v1 = mesh['mesh']['vertex'][v1][2]
+            z_v0 = mesh['mesh']['vertex'][v0][2]
+            tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
+            if len(tmp) != 0:
+                mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
+                if verbose:
+                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
+                invalid_nodes = [x for x in invalid_nodes if x != v2]
+
+        mesh['mesh']['elem'].append([v0, v1, v2])
+
+    if len(invalid_nodes) > 0:
+        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
+        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
+        errstr += 'reconstruct this triangle. '
+        errstr += 'Try reducing simplify_tol.'
+        raise RuntimeError(errstr)
+
+    return mesh
+
+
+def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose):
+    mesh = {'mesh': {}}
+    mesh['mesh']['vertex'] = []
+
+    read_header = False
+    invalid_nodes = []
+
+    print('Reading nodes')
+    start_time = time.perf_counter()
+    with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
+        for line in f:
+            if '#' not in line:
+                if not read_header:
+                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
+                    num_nodes = int(header[0])
+                    read_header = True
+                    mesh['mesh']['nvertex'] = num_nodes
+                else:
+                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
+                    mx = float(items[1])
+                    my = float(items[2])
+
+                    mz = extract_point(src_ds, mx, my)
+
+                    if mz == dem.GetNoDataValue() or mz is None:
+                        invalid_nodes.append(int(items[0]) - 1)
+
+                    mesh['mesh']['vertex'].append([mx, my, mz])
+
+    print('Length of invalid nodes = ' + str(len(invalid_nodes)))
+    print('Reading nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
+    print('Reading in neighbour file')
+    start_time = time.perf_counter()
+    read_header = False
+    mesh['mesh']['neigh'] = []
+    with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
+        for line in elem:
+            if '#' not in line:
+                if not read_header:
+                    read_header = True
+                else:
+                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
+                    v0 = int(items[1]) - 1
+                    v1 = int(items[2]) - 1
+                    v2 = int(items[3]) - 1
+
+                    mesh['mesh']['neigh'].append([v0, v1, v2])
+
+    read_header = False
+    print('Reading neigh file took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
+    print('Repairing invalid triangles if needed...')
+    start_time = time.perf_counter()
+
+    mesh['mesh']['elem'] = []
+    mesh['mesh']['is_geographic'] = is_geographic
+
+    if not is_geographic:
+        mesh['mesh']['proj4'] = srs.ExportToProj4()
+        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
+
+    with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
+        for line in elem:
+            if '#' not in line:
+                if not read_header:
+                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
+                    nelem = int(header[0])
+                    mesh['mesh']['nelem'] = nelem
+                    read_header = True
+                else:
+                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
+                    v0 = int(items[1]) - 1
+                    v1 = int(items[2]) - 1
+                    v2 = int(items[3]) - 1
+
+                    if v0 in invalid_nodes:
+                        z_v1 = mesh['mesh']['vertex'][v1][2]
+                        z_v2 = mesh['mesh']['vertex'][v2][2]
+                        tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
+                        if len(tmp) != 0:
+                            mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
+                            if verbose:
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
+                            invalid_nodes = [x for x in invalid_nodes if x != v0]
+
+                    if v1 in invalid_nodes:
+                        z_v0 = mesh['mesh']['vertex'][v0][2]
+                        z_v2 = mesh['mesh']['vertex'][v2][2]
+                        tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
+                        if len(tmp) != 0:
+                            mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
+                            if verbose:
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
+                            invalid_nodes = [x for x in invalid_nodes if x != v1]
+
+                    if v2 in invalid_nodes:
+                        z_v1 = mesh['mesh']['vertex'][v1][2]
+                        z_v0 = mesh['mesh']['vertex'][v0][2]
+                        tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
+                        if len(tmp) != 0:
+                            mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
+                            if verbose:
+                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
+                            invalid_nodes = [x for x in invalid_nodes if x != v2]
+                    mesh['mesh']['elem'].append([v0, v1, v2])
+
+    print('Repairing nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
+    if len(invalid_nodes) > 0:
+        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
+        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
+        errstr += 'reconstruct this triangle. '
+        errstr += 'Try reducing simplify_tol.'
+        raise RuntimeError(errstr)
+
+    return mesh
+
+
+def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers):
+    if len(tasks) == 0:
+        return
+
+    with open('pickled_mesh_merge_args.pickle', 'wb') as f:
+        cloudpickle.dump(tasks, f)
+
+    MPI_merge_path = os.path.join(os.path.dirname(mesher_utls.__file__),
+                                  'MPI_merge_tiles.py')
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} {MPI_merge_path} pickled_mesh_merge_args.pickle False"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[MPI_merge_path,
+                                         'pickled_mesh_merge_args.pickle', 'True'],
+                                   maxprocs=MPI_nworkers)
+        comm.Disconnect()
+
+    os.remove('pickled_mesh_merge_args.pickle')
+
+
+def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, mesher_path,
+                    outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
+                    max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
+                    weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
+                    mpi_seam_point_spacing=None):
+    band_width = 5 * math.sqrt(min_area)
+    rows, cols = compute_tile_grid(MPI_nworkers)
+
+    tile_width = (xmax - xmin) / cols
+    tile_height = (ymax - ymin) / rows
+
+    constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
+
+    tile_args = []
+    if mpi_seam_point_spacing is None:
+        mpi_seam_point_spacing = 5.0 * math.sqrt(min_area)
+    for rank in range(MPI_nworkers):
+        row = rank // cols
+        col = rank % cols
+
+        tile_xmin = xmin + col * tile_width
+        tile_xmax = tile_xmin + tile_width
+        tile_ymax = ymax - row * tile_height
+        tile_ymin = tile_ymax - tile_height
+
+        tile_bbox = [tile_xmin, tile_ymin, tile_xmax, tile_ymax]
+        tile_prefix = f"{base_name}_mpi_tile_{rank}"
+
+        tile_args.append({
+            'tile_id': rank,
+            'tile_bbox': tile_bbox,
+            'band_width': band_width,
+            'base_dir': base_dir,
+            'base_name': base_name,
+            'tile_prefix': tile_prefix,
+            'gdal_prefix': gdal_prefix,
+            'mesher_path': mesher_path,
+            'constraints': constraint_files,
+            'parameter_files': parameter_files,
+            'initial_conditions': initial_conditions,
+            'max_area': max_area,
+            'min_area': min_area,
+            'max_tolerance': max_tolerance,
+            'errormetric': errormetric,
+            'lloyd_itr': lloyd_itr,
+            'use_weights': use_weights,
+            'topo_weight': topo_weight,
+            'weight_threshold': weight_threshold,
+            'is_geographic': is_geographic,
+            'dem_path': base_dir + base_name + '_projected.tif',
+            'outer_polygon_shp': outer_polygon_shp
+        })
+
+    with open('pickled_mesh_tile_args.pickle', 'wb') as f:
+        cloudpickle.dump(tile_args, f)
+
+    MPI_mesh_path = os.path.join(os.path.dirname(mesher_utls.__file__),
+                                 'MPI_mesh_tiles.py')
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} {MPI_mesh_path} pickled_mesh_tile_args.pickle False"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[MPI_mesh_path,
+                                         'pickled_mesh_tile_args.pickle', 'True'],
+                                   maxprocs=MPI_nworkers)
+        comm.Disconnect()
+
+    os.remove('pickled_mesh_tile_args.pickle')
+
+    tile_grid = []
+    for row in range(rows):
+        row_tiles = []
+        for col in range(cols):
+            tile_id = row * cols + col
+            tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
+            row_tiles.append({
+                'npz': base_dir + tile_prefix + '.npz',
+                'meta': base_dir + tile_prefix + '.json'
+            })
+        tile_grid.append(row_tiles)
+
+    stage = 0
+    while rows > 1 or cols > 1:
+        if cols > 1:
+            tasks = []
+            new_grid = []
+            for row in range(rows):
+                new_row = []
+                col = 0
+                while col < cols:
+                    if col + 1 < cols:
+                        left = tile_grid[row][col]
+                        right = tile_grid[row][col + 1]
+                        out_prefix = f"{base_name}_mpi_stage{stage}_r{row}_c{col // 2}"
+                        tasks.append({
+                            'tile_a': left,
+                            'tile_b': right,
+                            'out_prefix': base_dir + out_prefix,
+                            'gdal_prefix': gdal_prefix,
+                            'mesher_path': mesher_path,
+                            'constraints': constraint_files,
+                            'parameter_files': parameter_files,
+                            'initial_conditions': initial_conditions,
+                            'max_area': max_area,
+                            'min_area': min_area,
+                            'max_tolerance': max_tolerance,
+                            'errormetric': errormetric,
+                            'lloyd_itr': lloyd_itr,
+                            'use_weights': use_weights,
+                            'topo_weight': topo_weight,
+                            'weight_threshold': weight_threshold,
+                            'is_geographic': is_geographic,
+                            'dem_path': base_dir + base_name + '_projected.tif',
+                            'seam_point_spacing': mpi_seam_point_spacing
+                        })
+                        new_row.append({
+                            'npz': base_dir + out_prefix + '.npz',
+                            'meta': base_dir + out_prefix + '.json'
+                        })
+                        col += 2
+                    else:
+                        new_row.append(tile_grid[row][col])
+                        col += 1
+                new_grid.append(new_row)
+
+            run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers)
+            tile_grid = new_grid
+            cols = len(tile_grid[0])
+            stage += 1
+
+        if rows > 1:
+            tasks = []
+            new_grid = []
+            row = 0
+            new_row_idx = 0
+            while row < rows:
+                if row + 1 < rows:
+                    merged_row = []
+                    for col in range(cols):
+                        top = tile_grid[row][col]
+                        bottom = tile_grid[row + 1][col]
+                        out_prefix = f"{base_name}_mpi_stage{stage}_r{new_row_idx}_c{col}"
+                        tasks.append({
+                            'tile_a': top,
+                            'tile_b': bottom,
+                            'out_prefix': base_dir + out_prefix,
+                            'gdal_prefix': gdal_prefix,
+                            'mesher_path': mesher_path,
+                            'constraints': constraint_files,
+                            'parameter_files': parameter_files,
+                            'initial_conditions': initial_conditions,
+                            'max_area': max_area,
+                            'min_area': min_area,
+                            'max_tolerance': max_tolerance,
+                            'errormetric': errormetric,
+                            'lloyd_itr': lloyd_itr,
+                            'use_weights': use_weights,
+                            'topo_weight': topo_weight,
+                            'weight_threshold': weight_threshold,
+                            'is_geographic': is_geographic,
+                            'dem_path': base_dir + base_name + '_projected.tif',
+                            'seam_point_spacing': mpi_seam_point_spacing
+                        })
+                        merged_row.append({
+                            'npz': base_dir + out_prefix + '.npz',
+                            'meta': base_dir + out_prefix + '.json'
+                        })
+                    new_grid.append(merged_row)
+                    row += 2
+                    new_row_idx += 1
+                else:
+                    new_grid.append(tile_grid[row])
+                    row += 1
+                    new_row_idx += 1
+
+            run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers)
+            tile_grid = new_grid
+            rows = len(tile_grid)
+            stage += 1
+
+    return tile_grid[0][0]['npz']
 
 
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):

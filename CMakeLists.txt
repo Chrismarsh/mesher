@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(mesher)
 
 cmake_policy(SET CMP0144 NEW)
+cmake_policy(SET CMP0167 NEW)
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(CMAKE_FIND_FRAMEWORK LAST) # under some circumstances, gdal can be in the frameworks dir that super breaks everything
@@ -67,12 +68,6 @@ if(BUILD_CGAL)
 else()
     find_package(CGAL REQUIRED )
     list(APPEND EXTERNAL_LINK CGAL::CGAL)
-endif()
-
-if(CGAL_FOUND)
-    message(STATUS "Found CGAL ")
-    message(STATUS "${CGAL_INCLUDE_DIRS}")
-    include(${CGAL_USE_FILE}) #as per https://www.cgal.org/releases.html release 4.2
 endif()
 
 #ignore these two under Clion as CGAL will complain
