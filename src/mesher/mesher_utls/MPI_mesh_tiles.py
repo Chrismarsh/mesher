@@ -220,19 +220,6 @@ def mesh_tile(args):
         "features": []
     }
 
-    core_coords = [
-        [tile_bbox[0], tile_bbox[1]],
-        [tile_bbox[2], tile_bbox[1]],
-        [tile_bbox[2], tile_bbox[3]],
-        [tile_bbox[0], tile_bbox[3]],
-        [tile_bbox[0], tile_bbox[1]]
-    ]
-    interior_PLGS['features'].append({
-        "type": "Feature",
-        "properties": {"name": "core_bbox"},
-        "geometry": {"type": "LineString", "coordinates": core_coords}
-    })
-
     for cpath in args['constraints']:
         outname = base_dir + tile_prefix + '_constraint_' + os.path.splitext(os.path.basename(cpath))[0]
         exec_str = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (
