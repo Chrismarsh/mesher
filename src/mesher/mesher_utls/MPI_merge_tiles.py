@@ -55,6 +55,33 @@ def write_polygon_shp(path, geom, srs_wkt):
     ds = None
 
 
+def load_polygon_geom(shp_path):
+    ds = ogr.Open(shp_path)
+    if ds is None:
+        raise RuntimeError(f'Unable to open polygon shapefile: {shp_path}')
+    layer = ds.GetLayer(0)
+    geom_union = None
+    for feat in layer:
+        geom = feat.GetGeometryRef()
+        if geom is None:
+            continue
+        geom = geom.Clone()
+        geom = geom.MakeValid()
+        if geom_union is None:
+            geom_union = geom
+        else:
+            geom_union = geom_union.Union(geom)
+    ds = None
+    if geom_union is None:
+        raise RuntimeError(f'No geometry found in polygon shapefile: {shp_path}')
+    geom_union = geom_union.MakeValid()
+    geom_union = geom_union.Buffer(0)
+    geom_union = extract_polygons(geom_union)
+    if not geom_union:
+        raise RuntimeError(f'Polygon shapefile produced no valid polygons: {shp_path}')
+    return geom_union[0]
+
+
 def extract_polygons(geom):
     if geom is None:
         return []
@@ -449,7 +476,7 @@ def merge_tiles(args):
         raise RuntimeError('Seam strip clipped outside raster bounds')
 
     # remove any triangles from either tile that are in the seam strip or outside ownership
-    # ownership is centroid-based to avoid dropping triangles that straddle core bounds
+    # ownership is centroid-based; only enforce outside-core pruning within the seam zone
     inside_a = centroid_mask_in_bbox(verts_a, tris_a, bbox_a)
     inside_b = centroid_mask_in_bbox(verts_b, tris_b, bbox_b)
 
@@ -457,9 +484,12 @@ def merge_tiles(args):
     seam_select_a = triangle_intersects_polygon(verts_a, tris_a, seam_strip)
     seam_select_b = triangle_intersects_polygon(verts_b, tris_b, seam_strip)
 
-    # removal mask includes seam strip and non-owned triangles
-    mask_a = seam_select_a | (~inside_a)
-    mask_b = seam_select_b | (~inside_b)
+    outside_a = (~inside_a) & centroid_mask_in_bbox(verts_a, tris_a, seam_bbox)
+    outside_b = (~inside_b) & centroid_mask_in_bbox(verts_b, tris_b, seam_bbox)
+
+    # removal mask includes seam strip and non-owned triangles near the seam
+    mask_a = seam_select_a | outside_a
+    mask_b = seam_select_b | outside_b
     if not np.any(mask_a):
         mask_a = band_a
     if not np.any(mask_b):
@@ -529,7 +559,18 @@ def merge_tiles(args):
     seam_poly = extract_polygons(seam_poly)
     seam_poly = seam_poly[0] if seam_poly else None
     if seam_poly is None:
-        raise RuntimeError('Seam polygon invalid after bounds clipping')
+        raise RuntimeError('Seam polygon invalid after raster bounds clipping')
+
+    outer_polygon_shp = args.get('outer_polygon_shp', None)
+    if outer_polygon_shp:
+        outer_poly = load_polygon_geom(outer_polygon_shp)
+        seam_poly = seam_poly.Intersection(outer_poly)
+        seam_poly = seam_poly.MakeValid()
+        seam_poly = seam_poly.Buffer(0)
+        seam_poly = extract_polygons(seam_poly)
+        seam_poly = seam_poly[0] if seam_poly else None
+        if seam_poly is None:
+            raise RuntimeError('Seam polygon invalid after outer polygon clipping')
 
     # Seam selection matches removal mask to keep fill and removal aligned.
     seam_select_a = mask_a
