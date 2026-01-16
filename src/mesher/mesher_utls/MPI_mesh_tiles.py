@@ -7,6 +7,10 @@ import numpy as np
 from mpi4py import MPI
 from osgeo import ogr, gdal, osr
 
+gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
+osr.UseExceptions()
+
 
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
@@ -307,3 +311,6 @@ def main(pickle_file: str, disconnect: bool):
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
+gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
+osr.UseExceptions()

@@ -7,6 +7,8 @@ import math
 import sys
 import csv
 gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
+osr.UseExceptions()
 
 
 def main():
@@ -289,7 +291,7 @@ def rasterize_elem(raster, feature):
     )
 
     # Create a temporary vector layer in memory
-    mem_drv = ogr.GetDriverByName('Memory')
+    mem_drv = ogr.GetDriverByName('MEM')
     mem_ds = mem_drv.CreateDataSource('out')
     # mem_drv = ogr.GetDriverByName('ESRI Shapefile')
     # mem_ds = mem_drv.CreateDataSource('rastertri.shp')

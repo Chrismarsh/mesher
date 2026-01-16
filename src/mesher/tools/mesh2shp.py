@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 
-from osgeo import ogr, osr
+from osgeo import gdal, ogr, osr
+
+gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
+osr.UseExceptions()
 import json
 import os
 import argparse

@@ -7,6 +7,8 @@ import uuid
 from osgeo import gdal
 import subprocess
 
+gdal.UseExceptions()  # Enable exception support
+
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
@@ -113,3 +115,4 @@ def main(pickle_file: str,
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
+gdal.UseExceptions()  # Enable exception support
