@@ -68,7 +68,8 @@ def main():
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
-        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing = read_config(configfile)
+        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
+            mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol = read_config(configfile)
 
 
     ########################################################
@@ -510,7 +511,8 @@ def main():
                                              initial_conditions, max_area, min_area, max_tolerance,
                                              errormetric, lloyd_itr, use_weights, topo_weight,
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                                             mpi_seam_point_spacing)
+                                             mpi_seam_point_spacing, mpi_merge_snap_tol, mpi_seam_lloyd,
+                                             mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol)
         else:
             start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
@@ -953,11 +955,32 @@ def read_config(configfile):
     if hasattr(X, 'mpi_seam_point_spacing'):
         mpi_seam_point_spacing = X.mpi_seam_point_spacing
 
+    mpi_merge_snap_tol = None
+    if hasattr(X, 'mpi_merge_snap_tol'):
+        mpi_merge_snap_tol = X.mpi_merge_snap_tol
+
+    mpi_seam_lloyd = None
+    if hasattr(X, 'mpi_seam_lloyd'):
+        mpi_seam_lloyd = X.mpi_seam_lloyd
+
+    mpi_seam_point_cap = None
+    if hasattr(X, 'mpi_seam_point_cap'):
+        mpi_seam_point_cap = X.mpi_seam_point_cap
+
+    mpi_seam_constraints = True
+    if hasattr(X, 'mpi_seam_constraints'):
+        mpi_seam_constraints = X.mpi_seam_constraints
+
+    mpi_seam_simplify_tol = None
+    if hasattr(X, 'mpi_seam_simplify_tol'):
+        mpi_seam_simplify_tol = X.mpi_seam_simplify_tol
+
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
-        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing
+        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
+        mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol
 
 
 
@@ -1379,7 +1402,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
                     max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                    mpi_seam_point_spacing=None):
+                    mpi_seam_point_spacing=None, mpi_merge_snap_tol=None, mpi_seam_lloyd=None,
+                    mpi_seam_point_cap=None, mpi_seam_constraints=True, mpi_seam_simplify_tol=None):
     band_width = 5 * math.sqrt(min_area)
     rows, cols = compute_tile_grid(MPI_nworkers)
 
@@ -1490,7 +1514,12 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'weight_threshold': weight_threshold,
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
-                            'seam_point_spacing': mpi_seam_point_spacing
+                            'seam_point_spacing': mpi_seam_point_spacing,
+                            'merge_snap_tol': mpi_merge_snap_tol,
+                            'seam_lloyd': mpi_seam_lloyd,
+                            'seam_point_cap': mpi_seam_point_cap,
+                            'seam_constraints': mpi_seam_constraints,
+                            'seam_simplify_tol': mpi_seam_simplify_tol
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1538,7 +1567,12 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'weight_threshold': weight_threshold,
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
-                            'seam_point_spacing': mpi_seam_point_spacing
+                            'seam_point_spacing': mpi_seam_point_spacing,
+                            'merge_snap_tol': mpi_merge_snap_tol,
+                            'seam_lloyd': mpi_seam_lloyd,
+                            'seam_point_cap': mpi_seam_point_cap,
+                            'seam_constraints': mpi_seam_constraints,
+                            'seam_simplify_tol': mpi_seam_simplify_tol
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
