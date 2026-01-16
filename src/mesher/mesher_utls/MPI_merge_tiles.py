@@ -140,6 +140,30 @@ def polygon_exterior_coords(geom):
     return coords
 
 
+def densify_ring_coords(coords, max_len):
+    if len(coords) < 2 or max_len <= 0:
+        return coords
+
+    densified = [coords[0]]
+    for i in range(1, len(coords)):
+        x0, y0 = densified[-1]
+        x1, y1 = coords[i]
+        dx = x1 - x0
+        dy = y1 - y0
+        seg_len = math.hypot(dx, dy)
+        if seg_len <= max_len or seg_len == 0:
+            densified.append([x1, y1])
+            continue
+        steps = int(math.ceil(seg_len / max_len))
+        for k in range(1, steps + 1):
+            t = float(k) / float(steps)
+            densified.append([x0 + t * dx, y0 + t * dy])
+
+    if densified[0] != densified[-1]:
+        densified.append(densified[0])
+    return densified
+
+
 def bbox_to_polygon(bbox):
     ring = ogr.Geometry(ogr.wkbLinearRing)
     ring.AddPoint(bbox[0], bbox[1])
@@ -332,12 +356,12 @@ def shared_core_edge(bbox_a, bbox_b, eps=1e-6):
     return None
 
 
-def triangle_intersects_polygon(verts, tris, poly):
+def triangle_intersects_geometry(verts, tris, geom):
     mask = np.zeros(len(tris), dtype=bool)
     if len(tris) == 0:
         return mask
 
-    poly_env = poly.GetEnvelope()
+    poly_env = geom.GetEnvelope()
     env = (poly_env[0], poly_env[1], poly_env[2], poly_env[3])
 
     for i, tri in enumerate(tris):
@@ -361,10 +385,14 @@ def triangle_intersects_polygon(verts, tris, poly):
         poly_tri = ogr.Geometry(ogr.wkbPolygon)
         poly_tri.AddGeometry(ring)
 
-        if poly_tri.Intersects(poly):
+        if poly_tri.Intersects(geom):
             mask[i] = True
 
     return mask
+
+
+def triangle_intersects_polygon(verts, tris, poly):
+    return triangle_intersects_geometry(verts, tris, poly)
 
 
 def thin_points(points, spacing):
@@ -553,6 +581,35 @@ def merge_tiles(args):
     else:
         seam_poly = seam_strip
 
+    outer_polygon_shp = args.get('outer_polygon_shp', None)
+    outer_poly = None
+    if outer_polygon_shp:
+        outer_poly = load_polygon_geom(outer_polygon_shp)
+
+    if seam_spacing is not None:
+        buf_dist = min(float(seam_spacing) * 0.25, band_width * 0.5)
+        if buf_dist > 0:
+            buffered = seam_poly.Buffer(buf_dist)
+            buffered = buffered.MakeValid()
+            buffered = buffered.Intersection(raster_poly)
+            if outer_poly is not None:
+                buffered = buffered.Intersection(outer_poly)
+            buffered = buffered.MakeValid()
+            buffered = buffered.Buffer(0)
+            buffered = extract_polygons(buffered)
+            buffered = buffered[0] if buffered else None
+            if buffered is None:
+                raise RuntimeError('Buffered seam polygon invalid after clip')
+            # Expand removal to match the buffered seam area to avoid overlaps.
+            mask_a = mask_a | triangle_intersects_polygon(verts_a, tris_a, buffered)
+            mask_b = mask_b | triangle_intersects_polygon(verts_b, tris_b, buffered)
+            seam_geom = triangles_to_union_polygon(verts_a, tris_a, mask_a)
+            seam_geom = seam_geom.Union(triangles_to_union_polygon(verts_b, tris_b, mask_b))
+            seam_poly = extract_polygons(seam_geom)
+            seam_poly = seam_poly[0] if seam_poly else None
+            if seam_poly is None:
+                raise RuntimeError('Seam polygon invalid after buffer expansion')
+
     seam_poly = seam_poly.Intersection(raster_poly)
     seam_poly = seam_poly.MakeValid()
     seam_poly = seam_poly.Buffer(0)
@@ -561,9 +618,7 @@ def merge_tiles(args):
     if seam_poly is None:
         raise RuntimeError('Seam polygon invalid after raster bounds clipping')
 
-    outer_polygon_shp = args.get('outer_polygon_shp', None)
-    if outer_polygon_shp:
-        outer_poly = load_polygon_geom(outer_polygon_shp)
+    if outer_poly is not None:
         seam_poly = seam_poly.Intersection(outer_poly)
         seam_poly = seam_poly.MakeValid()
         seam_poly = seam_poly.Buffer(0)
@@ -572,9 +627,15 @@ def merge_tiles(args):
         if seam_poly is None:
             raise RuntimeError('Seam polygon invalid after outer polygon clipping')
 
-    # Seam selection matches removal mask to keep fill and removal aligned.
-    seam_select_a = mask_a
-    seam_select_b = mask_b
+    # Align removal to the final seam polygon to avoid holes.
+    seam_select_a = triangle_intersects_polygon(verts_a, tris_a, seam_poly)
+    seam_select_b = triangle_intersects_polygon(verts_b, tris_b, seam_poly)
+    mask_a = mask_a & seam_select_a
+    mask_b = mask_b & seam_select_b
+    if not np.any(mask_a):
+        mask_a = seam_select_a
+    if not np.any(mask_b):
+        mask_b = seam_select_b
 
     seam_shp = args['out_prefix'] + '_seam.shp'
     write_polygon_shp(seam_shp, seam_poly, srs_wkt)
@@ -622,26 +683,16 @@ def merge_tiles(args):
         coords = clean_ring_coords(coords, float(seam_simplify_tol))
         if len(coords) < 4:
             raise RuntimeError('Seam polygon simplified to too few points')
+    if seam_spacing is not None:
+        boundary_spacing = min(float(seam_spacing) * 0.5, band_width)
+        coords = densify_ring_coords(coords, boundary_spacing)
     poly_file = args['out_prefix'] + '_seam.poly'
     write_poly_from_coords(poly_file, coords)
 
     seam_points = []
-    for tri in tris_a[mask_a]:
-        for idx in tri:
-            seam_points.append(verts_a[idx])
-    for tri in tris_b[mask_b]:
-        for idx in tri:
-            seam_points.append(verts_b[idx])
-
-    if len(seam_points) == 0:
-        raise RuntimeError('No seam points available for merge')
-
-    seam_points = np.asarray(seam_points)
-    if seam_spacing is not None:
-        before = len(seam_points)
-        seam_points = thin_points(seam_points, seam_spacing)
-        after = len(seam_points)
-        print(f'Seam thinning spacing={seam_spacing} kept {after}/{before} points')
+    for x, y in coords:
+        seam_points.append([x, y, 0.0])
+    seam_points = np.asarray(seam_points, dtype=float)
 
     in_bounds = (
         (seam_points[:, 0] >= raster_bounds[0]) &
