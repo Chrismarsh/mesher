@@ -614,43 +614,6 @@ def merge_tiles(args):
     seam_shp = args['out_prefix'] + '_seam.shp'
     write_polygon_shp(seam_shp, seam_poly, srs_wkt)
 
-    if args.get('debug_seam', False):
-        driver = ogr.GetDriverByName('ESRI Shapefile')
-        debug_rm_a = args['out_prefix'] + '_removed_a.shp'
-        if os.path.exists(debug_rm_a):
-            driver.DeleteDataSource(debug_rm_a)
-        ds_a = driver.CreateDataSource(debug_rm_a)
-        layer_a = ds_a.CreateLayer('removed_a', osr_from_wkt(srs_wkt), ogr.wkbPolygon)
-
-        debug_rm_b = args['out_prefix'] + '_removed_b.shp'
-        if os.path.exists(debug_rm_b):
-            driver.DeleteDataSource(debug_rm_b)
-        ds_b = driver.CreateDataSource(debug_rm_b)
-        layer_b = ds_b.CreateLayer('removed_b', osr_from_wkt(srs_wkt), ogr.wkbPolygon)
-
-        def add_tri(layer, v0, v1, v2):
-            ring = ogr.Geometry(ogr.wkbLinearRing)
-            ring.AddPoint(v0[0], v0[1])
-            ring.AddPoint(v1[0], v1[1])
-            ring.AddPoint(v2[0], v2[1])
-            ring.AddPoint(v0[0], v0[1])
-            poly = ogr.Geometry(ogr.wkbPolygon)
-            poly.AddGeometry(ring)
-            feat = ogr.Feature(layer.GetLayerDefn())
-            feat.SetGeometry(poly)
-            layer.CreateFeature(feat)
-
-        for tri in tris_a[mask_a]:
-            v0, v1, v2 = verts_a[tri[0]], verts_a[tri[1]], verts_a[tri[2]]
-            add_tri(layer_a, v0, v1, v2)
-
-        for tri in tris_b[mask_b]:
-            v0, v1, v2 = verts_b[tri[0]], verts_b[tri[1]], verts_b[tri[2]]
-            add_tri(layer_b, v0, v1, v2)
-
-        ds_a = None
-        ds_b = None
-
     coords = polygon_exterior_coords(seam_poly)
     seam_simplify_tol = args.get('seam_simplify_tol', None)
     if seam_simplify_tol is not None:
@@ -848,8 +811,7 @@ if __name__ == '__main__':
             'is_geographic': False,
             'dem_path': os.environ.get('MESHER_DEM', ''),
             'seam_point_spacing': None,
-            'merge_snap_tol': None,
-            'debug_seam': True
+            'merge_snap_tol': None
         }
         if not args['dem_path']:
             raise SystemExit('MESHER_DEM env var is required for --single')
