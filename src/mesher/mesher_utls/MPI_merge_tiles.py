@@ -164,6 +164,22 @@ def densify_ring_coords(coords, max_len):
     return densified
 
 
+def median_edge_length(verts, tris, mask):
+    if len(tris) == 0 or not np.any(mask):
+        return None
+    lengths = []
+    for tri in tris[mask]:
+        v0 = verts[tri[0]]
+        v1 = verts[tri[1]]
+        v2 = verts[tri[2]]
+        lengths.append(math.hypot(v1[0] - v0[0], v1[1] - v0[1]))
+        lengths.append(math.hypot(v2[0] - v1[0], v2[1] - v1[1]))
+        lengths.append(math.hypot(v0[0] - v2[0], v0[1] - v2[1]))
+    if not lengths:
+        return None
+    return float(np.median(lengths))
+
+
 def bbox_to_polygon(bbox):
     ring = ogr.Geometry(ogr.wkbLinearRing)
     ring.AddPoint(bbox[0], bbox[1])
@@ -684,7 +700,16 @@ def merge_tiles(args):
         if len(coords) < 4:
             raise RuntimeError('Seam polygon simplified to too few points')
     if seam_spacing is not None:
-        boundary_spacing = min(float(seam_spacing) * 0.5, band_width)
+        seam_boundary = seam_poly.GetBoundary()
+        boundary_a = triangle_intersects_geometry(verts_a, tris_a, seam_boundary)
+        boundary_b = triangle_intersects_geometry(verts_b, tris_b, seam_boundary)
+        edge_a = median_edge_length(verts_a, tris_a, boundary_a)
+        edge_b = median_edge_length(verts_b, tris_b, boundary_b)
+        edge_lengths = [v for v in (edge_a, edge_b) if v is not None]
+        if edge_lengths:
+            boundary_spacing = float(np.median(edge_lengths))
+        else:
+            boundary_spacing = min(float(seam_spacing) * 0.5, band_width)
         coords = densify_ring_coords(coords, boundary_spacing)
     poly_file = args['out_prefix'] + '_seam.poly'
     write_poly_from_coords(poly_file, coords)
