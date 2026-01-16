@@ -74,12 +74,10 @@ def load_polygon_geom(shp_path):
     ds = None
     if geom_union is None:
         raise RuntimeError(f'No geometry found in polygon shapefile: {shp_path}')
-    geom_union = geom_union.MakeValid()
-    geom_union = geom_union.Buffer(0)
-    geom_union = extract_polygons(geom_union)
-    if not geom_union:
+    geom_union = normalize_polygon(geom_union)
+    if geom_union is None:
         raise RuntimeError(f'Polygon shapefile produced no valid polygons: {shp_path}')
-    return geom_union[0]
+    return geom_union
 
 
 def extract_polygons(geom):
@@ -97,6 +95,17 @@ def extract_polygons(geom):
             polys.extend(extract_polygons(g))
         return polys
     return []
+
+
+def normalize_polygon(geom):
+    if geom is None:
+        return None
+    geom = geom.MakeValid()
+    geom = geom.Buffer(0)
+    polys = extract_polygons(geom)
+    if not polys:
+        return None
+    return polys[0]
 
 
 def clean_ring_coords(coords, tol):
@@ -316,21 +325,6 @@ def centroid_mask_in_bbox(verts, tris, bbox):
     )
 
 
-def centroid_mask_outside_bbox(verts, tris, bbox):
-    return ~centroid_mask_in_bbox(verts, tris, bbox)
-
-
-def tri_inside_bbox(verts, tris, bbox):
-    v = verts[tris][:, :, :2]
-    inside = (
-        (v[:, :, 0] >= bbox[0]) &
-        (v[:, :, 0] <= bbox[2]) &
-        (v[:, :, 1] >= bbox[1]) &
-        (v[:, :, 1] <= bbox[3])
-    )
-    return np.all(inside, axis=1)
-
-
 def dedupe_points(points, tol):
     if len(points) == 0:
         return points
@@ -409,24 +403,6 @@ def triangle_intersects_geometry(verts, tris, geom):
 
 def triangle_intersects_polygon(verts, tris, poly):
     return triangle_intersects_geometry(verts, tris, poly)
-
-
-def thin_points(points, spacing):
-    if spacing <= 0:
-        return points
-
-    grid = {}
-    kept = []
-    inv = 1.0 / spacing
-    for p in points:
-        key = (math.floor(p[0] * inv), math.floor(p[1] * inv))
-        if key in grid:
-            continue
-        grid[key] = True
-        kept.append(p)
-    if len(kept) == 0:
-        return points
-    return np.asarray(kept)
 
 
 def add_vertex(verts_out, index_map, spatial_map, coord, tol=1e-6):
@@ -511,11 +487,7 @@ def merge_tiles(args):
     raster_poly = ogr.Geometry(ogr.wkbPolygon)
     raster_poly.AddGeometry(raster_ring)
 
-    seam_strip = seam_strip.Intersection(raster_poly)
-    seam_strip = seam_strip.MakeValid()
-    seam_strip = seam_strip.Buffer(0)
-    seam_strip = extract_polygons(seam_strip)
-    seam_strip = seam_strip[0] if seam_strip else None
+    seam_strip = normalize_polygon(seam_strip.Intersection(raster_poly))
     if seam_strip is None:
         raise RuntimeError('Seam strip clipped outside raster bounds')
 
@@ -606,14 +578,9 @@ def merge_tiles(args):
         buf_dist = min(float(seam_spacing) * 0.25, band_width * 0.5)
         if buf_dist > 0:
             buffered = seam_poly.Buffer(buf_dist)
-            buffered = buffered.MakeValid()
-            buffered = buffered.Intersection(raster_poly)
-            if outer_poly is not None:
-                buffered = buffered.Intersection(outer_poly)
-            buffered = buffered.MakeValid()
-            buffered = buffered.Buffer(0)
-            buffered = extract_polygons(buffered)
-            buffered = buffered[0] if buffered else None
+            buffered = normalize_polygon(buffered.Intersection(raster_poly))
+            if buffered is not None and outer_poly is not None:
+                buffered = normalize_polygon(buffered.Intersection(outer_poly))
             if buffered is None:
                 raise RuntimeError('Buffered seam polygon invalid after clip')
             # Expand removal to match the buffered seam area to avoid overlaps.
@@ -621,25 +588,16 @@ def merge_tiles(args):
             mask_b = mask_b | triangle_intersects_polygon(verts_b, tris_b, buffered)
             seam_geom = triangles_to_union_polygon(verts_a, tris_a, mask_a)
             seam_geom = seam_geom.Union(triangles_to_union_polygon(verts_b, tris_b, mask_b))
-            seam_poly = extract_polygons(seam_geom)
-            seam_poly = seam_poly[0] if seam_poly else None
+            seam_poly = normalize_polygon(seam_geom)
             if seam_poly is None:
                 raise RuntimeError('Seam polygon invalid after buffer expansion')
 
-    seam_poly = seam_poly.Intersection(raster_poly)
-    seam_poly = seam_poly.MakeValid()
-    seam_poly = seam_poly.Buffer(0)
-    seam_poly = extract_polygons(seam_poly)
-    seam_poly = seam_poly[0] if seam_poly else None
+    seam_poly = normalize_polygon(seam_poly.Intersection(raster_poly))
     if seam_poly is None:
         raise RuntimeError('Seam polygon invalid after raster bounds clipping')
 
     if outer_poly is not None:
-        seam_poly = seam_poly.Intersection(outer_poly)
-        seam_poly = seam_poly.MakeValid()
-        seam_poly = seam_poly.Buffer(0)
-        seam_poly = extract_polygons(seam_poly)
-        seam_poly = seam_poly[0] if seam_poly else None
+        seam_poly = normalize_polygon(seam_poly.Intersection(outer_poly))
         if seam_poly is None:
             raise RuntimeError('Seam polygon invalid after outer polygon clipping')
 
