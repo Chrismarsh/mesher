@@ -984,7 +984,7 @@ def read_config(configfile):
     if hasattr(X, 'mpi_seam_constraints'):
         mpi_seam_constraints = X.mpi_seam_constraints
 
-    mpi_seam_simplify_tol = None
+    mpi_seam_simplify_tol = 0.5
     if hasattr(X, 'mpi_seam_simplify_tol'):
         mpi_seam_simplify_tol = X.mpi_seam_simplify_tol
 
