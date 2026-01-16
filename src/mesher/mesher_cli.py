@@ -69,7 +69,8 @@ def main():
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
-            mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol = read_config(configfile)
+            mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
+            mpi_global_lloyd, mpi_lloyd_boundary_tol = read_config(configfile)
 
 
     ########################################################
@@ -572,7 +573,19 @@ def main():
         if final_npz_path is None:
             raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
         data = np.load(final_npz_path)
-        mesh = build_mesh_from_arrays(data['verts'], data['tris'], src_ds, dem, srs, is_geographic, verbose)
+        verts = data['verts']
+        tris = data['tris']
+        if mpi_global_lloyd > 0:
+            verts_path = base_dir + base_name + '_mpi_lloyd_verts.npy'
+            tris_path = base_dir + base_name + '_mpi_lloyd_tris.npy'
+            out_verts_path = base_dir + base_name + '_mpi_lloyd_verts_out.npy'
+            np.save(verts_path, verts)
+            np.save(tris_path, tris)
+            run_mpi_lloyd(verts_path, tris_path, out_verts_path, outputBufferfn,
+                          mpi_lloyd_boundary_tol, mpi_global_lloyd,
+                          MPI_exec_str, MPI_nworkers)
+            verts = np.load(out_verts_path)
+        mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose)
     else:
         mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
 
@@ -975,12 +988,21 @@ def read_config(configfile):
     if hasattr(X, 'mpi_seam_simplify_tol'):
         mpi_seam_simplify_tol = X.mpi_seam_simplify_tol
 
+    mpi_global_lloyd = 0
+    if hasattr(X, 'mpi_global_lloyd'):
+        mpi_global_lloyd = X.mpi_global_lloyd
+
+    mpi_lloyd_boundary_tol = 0.0
+    if hasattr(X, 'mpi_lloyd_boundary_tol'):
+        mpi_lloyd_boundary_tol = X.mpi_lloyd_boundary_tol
+
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
-        mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol
+        mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
+        mpi_global_lloyd, mpi_lloyd_boundary_tol
 
 
 
@@ -1396,6 +1418,35 @@ def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers):
         comm.Disconnect()
 
     os.remove('pickled_mesh_merge_args.pickle')
+
+
+def run_mpi_lloyd(verts_path, tris_path, out_verts_path, outer_polygon_shp,
+                  boundary_tol, iterations, MPI_exec_str, MPI_nworkers):
+    args = {
+        'verts_path': verts_path,
+        'tris_path': tris_path,
+        'out_verts_path': out_verts_path,
+        'outer_polygon_shp': outer_polygon_shp,
+        'boundary_tol': boundary_tol,
+        'iterations': iterations
+    }
+    with open('pickled_lloyd_args.pickle', 'wb') as f:
+        cloudpickle.dump(args, f)
+
+    MPI_lloyd_path = os.path.join(os.path.dirname(mesher_utls.__file__),
+                                  'MPI_do_lloyd.py')
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} {MPI_lloyd_path} pickled_lloyd_args.pickle False"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[MPI_lloyd_path,
+                                         'pickled_lloyd_args.pickle', 'True'],
+                                   maxprocs=MPI_nworkers)
+        comm.Disconnect()
+
+    os.remove('pickled_lloyd_args.pickle')
 
 
 def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, mesher_path,
