@@ -995,6 +995,13 @@ def read_config(configfile):
     mpi_lloyd_boundary_tol = 0.0
     if hasattr(X, 'mpi_lloyd_boundary_tol'):
         mpi_lloyd_boundary_tol = X.mpi_lloyd_boundary_tol
+    elif mpi_global_lloyd > 0:
+        min_area_val = locals().get('min_area', None)
+        if min_area_val is None:
+            min_area_val = getattr(X, 'min_area', None)
+        if min_area_val is None:
+            min_area_val = locals().get('max_area', 1.0)
+        mpi_lloyd_boundary_tol = max(1e-6, math.sqrt(min_area_val))
 
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
