@@ -79,8 +79,11 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
             output = raster.GetNoDataValue()
     else:
         if aggMethod == 'mode':
-            vals, counts = np.unique( src_array[~np.isnan(src_array)], return_counts=True)
-            output = float(vals[np.argmax(counts)])
+            vals, counts = np.unique(src_array[~np.isnan(src_array)], return_counts=True)
+            if len(vals) == 0:
+                output = raster.GetNoDataValue()
+            else:
+                output = float(vals[np.argmax(counts)])
 
         elif aggMethod == 'mean':
             output = float(np.nanmean(src_array))
