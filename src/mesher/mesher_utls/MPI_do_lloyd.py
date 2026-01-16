@@ -3,7 +3,10 @@ import math
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
-from osgeo import ogr
+from osgeo import gdal, ogr
+
+gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
 
 
 def str2bool(s: str) -> bool:

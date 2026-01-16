@@ -6,6 +6,10 @@ import numpy as np
 from osgeo import gdal, ogr, osr
 import importlib
 
+gdal.UseExceptions()  # Enable exception support
+ogr.UseExceptions()
+osr.UseExceptions()
+
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
@@ -143,7 +147,7 @@ def do_parameterize(gt, is_geographic, mesh,
     v2 = mesh['mesh']['elem'][elem][2]
 
     # Create a temporary vector layer in memory
-    mem_drv = ogr.GetDriverByName('Memory')
+    mem_drv = ogr.GetDriverByName('MEM')
     mem_ds = mem_drv.CreateDataSource('out')
     mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
 
