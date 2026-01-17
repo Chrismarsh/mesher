@@ -1,5 +1,11 @@
 import os
 import sys
+try:
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+ensure_mesher_on_path()
 import cloudpickle
 from mpi4py import MPI
 import numpy as np

@@ -1,16 +1,23 @@
 import os
 import sys
+try:
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+ensure_mesher_on_path()
 import json
 import math
 import cloudpickle
 import subprocess
 import numpy as np
 from mpi4py import MPI
-from osgeo import ogr, gdal, osr
+from osgeo import ogr, gdal
+from mesher.mesher_utls.ogr_utils import load_polygon_geom, normalize_polygon, \
+    linestring_features_from_geom, extract_polygons
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
-osr.UseExceptions()
 
 
 def str2bool(s: str) -> bool:
@@ -38,78 +45,6 @@ def bbox_intersection(a, b):
     return [xmin, ymin, xmax, ymax]
 
 
-def osr_from_wkt(wkt):
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(wkt)
-    return srs
-
-
-def write_polygon_shp(path, geom, srs_wkt):
-    driver = ogr.GetDriverByName('ESRI Shapefile')
-    if os.path.exists(path):
-        driver.DeleteDataSource(path)
-
-    ds = driver.CreateDataSource(path)
-    srs = osr_from_wkt(srs_wkt)
-    layer = ds.CreateLayer(path, srs, ogr.wkbPolygon)
-    feature_defn = layer.GetLayerDefn()
-    feature = ogr.Feature(feature_defn)
-    feature.SetGeometry(geom)
-    layer.CreateFeature(feature)
-    ds = None
-
-
-def load_polygon_geom(shp_path):
-    ds = ogr.Open(shp_path)
-    if ds is None:
-        raise RuntimeError(f'Unable to open polygon shapefile: {shp_path}')
-    layer = ds.GetLayer(0)
-    geom_union = None
-    for feat in layer:
-        geom = feat.GetGeometryRef()
-        if geom is None:
-            continue
-        geom = geom.Clone()
-        geom = geom.MakeValid()
-        if geom_union is None:
-            geom_union = geom
-        else:
-            geom_union = geom_union.Union(geom)
-    ds = None
-    if geom_union is None:
-        raise RuntimeError(f'No geometry found in polygon shapefile: {shp_path}')
-    geom_union = normalize_polygon(geom_union)
-    if geom_union is None:
-        raise RuntimeError(f'Polygon shapefile produced no valid polygons: {shp_path}')
-    return geom_union
-
-
-def extract_polygons(geom):
-    if geom is None:
-        return []
-
-    gtype = geom.GetGeometryType()
-    if gtype in (ogr.wkbPolygon, ogr.wkbPolygon25D):
-        return [geom.Clone()]
-    if gtype in (ogr.wkbMultiPolygon, ogr.wkbMultiPolygon25D,
-                 ogr.wkbGeometryCollection, ogr.wkbGeometryCollection25D):
-        polys = []
-        for i in range(geom.GetGeometryCount()):
-            g = geom.GetGeometryRef(i)
-            polys.extend(extract_polygons(g))
-        return polys
-    return []
-
-
-def normalize_polygon(geom):
-    if geom is None:
-        return None
-    geom = geom.MakeValid()
-    geom = geom.Buffer(0)
-    polys = extract_polygons(geom)
-    if not polys:
-        return None
-    return polys[0]
 
 
 def clean_ring_coords(coords, tol):
@@ -515,8 +450,6 @@ def merge_tiles(args):
     if not np.any(mask_b):
         mask_b = band_b
 
-    srs_wkt = dem_ds.GetProjection()
-
     interior_PLGS = {
         "type": "FeatureCollection",
         "name": "interior_PLGS",
@@ -534,27 +467,6 @@ def merge_tiles(args):
             "properties": {"name": "core_shared_edge"},
             "geometry": {"type": "LineString", "coordinates": coords}
         })
-
-    if args.get('seam_constraints', True):
-        for cpath in args['constraints']:
-            outname = args['out_prefix'] + '_constraint_' + os.path.splitext(os.path.basename(cpath))[0]
-            exec_str = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (
-                args['gdal_prefix'], seam_shp, outname + '.shp', cpath)
-            subprocess.check_call(exec_str, shell=True)
-
-            exec_str = '%sogr2ogr -f GeoJSON -nlt LINESTRING -explodecollections %s %s' % (
-                args['gdal_prefix'], outname + '.geojson', outname + '.shp')
-            subprocess.check_call(exec_str, shell=True)
-
-            with open(outname + '.geojson') as f:
-                gj = json.load(f)
-                for feat in gj.get('features', []):
-                    if feat.get('geometry') is not None:
-                        interior_PLGS['features'].append(feat)
-
-    interior_plgs_file = args['out_prefix'] + '_interior_PLGS.geojson'
-    with open(interior_plgs_file, 'w') as fp:
-        json.dump(interior_PLGS, fp)
 
     snap_tol = args.get('merge_snap_tol', None)
     seam_spacing = args.get('seam_point_spacing', None)
@@ -615,8 +527,25 @@ def merge_tiles(args):
     if not np.any(mask_b):
         mask_b = seam_select_b
 
-    seam_shp = args['out_prefix'] + '_seam.shp'
-    write_polygon_shp(seam_shp, seam_poly, srs_wkt)
+    if args.get('seam_constraints', True):
+        for cpath in args['constraints']:
+            ds = ogr.Open(cpath)
+            if ds is None:
+                raise RuntimeError(f'Unable to open constraint {cpath}')
+            layer = ds.GetLayer(0)
+            for feat in layer:
+                geom = feat.GetGeometryRef()
+                if geom is None:
+                    continue
+                clipped = geom.Intersection(seam_poly)
+                if clipped is None:
+                    continue
+                interior_PLGS['features'].extend(linestring_features_from_geom(clipped))
+            ds = None
+
+    interior_plgs_file = args['out_prefix'] + '_interior_PLGS.geojson'
+    with open(interior_plgs_file, 'w') as fp:
+        json.dump(interior_PLGS, fp)
 
     coords = polygon_exterior_coords(seam_poly)
     seam_simplify_tol = args.get('seam_simplify_tol', None)
@@ -824,6 +753,3 @@ if __name__ == '__main__':
         merge_tiles(args)
     else:
         main(*sys.argv[1:])
-gdal.UseExceptions()  # Enable exception support
-ogr.UseExceptions()
-osr.UseExceptions()
