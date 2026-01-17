@@ -1,15 +1,22 @@
 import os
 import sys
+try:
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+except ModuleNotFoundError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+ensure_mesher_on_path()
 import json
 import cloudpickle
 import subprocess
 import numpy as np
 from mpi4py import MPI
-from osgeo import ogr, gdal, osr
+from osgeo import ogr, gdal
+from mesher.mesher_utls.ogr_utils import bbox_to_polygon_geom, load_polygon_geom, normalize_polygon, \
+    linestring_features_from_geom
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
-osr.UseExceptions()
 
 
 def str2bool(s: str) -> bool:
@@ -18,72 +25,17 @@ def str2bool(s: str) -> bool:
     return False
 
 
-def write_bbox_shp(path, bbox, srs_wkt):
-    driver = ogr.GetDriverByName('ESRI Shapefile')
-    if os.path.exists(path):
-        driver.DeleteDataSource(path)
-
-    ds = driver.CreateDataSource(path)
-    srs = osr_from_wkt(srs_wkt)
-    layer = ds.CreateLayer(path, srs, ogr.wkbPolygon)
-    feature_defn = layer.GetLayerDefn()
-
-    ring = ogr.Geometry(ogr.wkbLinearRing)
-    ring.AddPoint(bbox[0], bbox[1])
-    ring.AddPoint(bbox[2], bbox[1])
-    ring.AddPoint(bbox[2], bbox[3])
-    ring.AddPoint(bbox[0], bbox[3])
-    ring.AddPoint(bbox[0], bbox[1])
-
-    poly = ogr.Geometry(ogr.wkbPolygon)
-    poly.AddGeometry(ring)
-
-    feature = ogr.Feature(feature_defn)
-    feature.SetGeometry(poly)
-    layer.CreateFeature(feature)
-
-    ds = None
-
-
-def osr_from_wkt(wkt):
-    srs = osr.SpatialReference()
-    srs.ImportFromWkt(wkt)
-    return srs
-
-
-def longest_linestring_coords(plgs):
-    idx = -1
-    cmax = -1
+def longest_linestring_coords_from_geom(geom):
+    lines = linestring_features_from_geom(geom)
     coords_out = None
-
-    for i, features in enumerate(plgs['features']):
-        geom = features.get('geometry')
-        if geom is None:
-            continue
-
-        coords = []
-        if geom['type'] == 'LineString':
-            coords = geom['coordinates']
-        elif geom['type'] == 'MultiLineString':
-            len_ml = -1
-            idx_ml = -1
-            for j, lines in enumerate(geom['coordinates']):
-                l = len(lines)
-                if l > len_ml:
-                    len_ml = l
-                    idx_ml = j
-            coords = geom['coordinates'][idx_ml]
-        else:
-            continue
-
+    cmax = -1
+    for feat in lines:
+        coords = feat["geometry"]["coordinates"]
         if len(coords) > cmax:
             cmax = len(coords)
-            idx = i
             coords_out = coords
-
-    if idx == -1 or coords_out is None:
+    if coords_out is None:
         raise RuntimeError('Unable to find a valid linestring for the tile boundary')
-
     return coords_out
 
 
@@ -192,28 +144,12 @@ def mesh_tile(args):
 
     srs_wkt = dem_ds.GetProjection()
 
-    tile_bbox_shp = base_dir + tile_prefix + '_bbox.shp'
-    write_bbox_shp(tile_bbox_shp, band_bbox, srs_wkt)
-
-    tile_domain_shp = base_dir + tile_prefix + '_domain.shp'
-    exec_str = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (
-        args['gdal_prefix'], tile_bbox_shp, tile_domain_shp, args['outer_polygon_shp'])
-    subprocess.check_call(exec_str, shell=True)
-
-    tile_line_shp = base_dir + tile_prefix + '_line.shp'
-    exec_str = '%sogr2ogr -overwrite %s %s -nlt LINESTRING' % (
-        args['gdal_prefix'], tile_line_shp, tile_domain_shp)
-    subprocess.check_call(exec_str, shell=True)
-
-    tile_geojson = base_dir + tile_prefix + '_boundary.geojson'
-    exec_str = '%sogr2ogr -f GeoJSON %s %s' % (
-        args['gdal_prefix'], tile_geojson, tile_line_shp)
-    subprocess.check_call(exec_str, shell=True)
-
-    with open(tile_geojson) as f:
-        plgs = json.load(f)
-
-    coords = longest_linestring_coords(plgs)
+    bbox_poly = bbox_to_polygon_geom(band_bbox)
+    outer_poly = load_polygon_geom(args['outer_polygon_shp'])
+    tile_poly = normalize_polygon(outer_poly.Intersection(bbox_poly))
+    if tile_poly is None:
+        raise RuntimeError('Tile polygon invalid after bbox clip')
+    coords = longest_linestring_coords_from_geom(tile_poly.Boundary())
 
     poly_file = base_dir + tile_prefix + '.poly'
     write_poly_from_coords(poly_file, coords)
@@ -225,20 +161,19 @@ def mesh_tile(args):
     }
 
     for cpath in args['constraints']:
-        outname = base_dir + tile_prefix + '_constraint_' + os.path.splitext(os.path.basename(cpath))[0]
-        exec_str = '%sogr2ogr -f "ESRI Shapefile" -clipsrc %s %s %s' % (
-            args['gdal_prefix'], tile_bbox_shp, outname + '.shp', cpath)
-        subprocess.check_call(exec_str, shell=True)
-
-        exec_str = '%sogr2ogr -f GeoJSON -nlt LINESTRING -explodecollections %s %s' % (
-            args['gdal_prefix'], outname + '.geojson', outname + '.shp')
-        subprocess.check_call(exec_str, shell=True)
-
-        with open(outname + '.geojson') as f:
-            gj = json.load(f)
-            for feat in gj.get('features', []):
-                if feat.get('geometry') is not None:
-                    interior_PLGS['features'].append(feat)
+        ds = ogr.Open(cpath)
+        if ds is None:
+            raise RuntimeError(f'Unable to open constraint {cpath}')
+        layer = ds.GetLayer(0)
+        for feat in layer:
+            geom = feat.GetGeometryRef()
+            if geom is None:
+                continue
+            clipped = geom.Intersection(bbox_poly)
+            if clipped is None:
+                continue
+            interior_PLGS['features'].extend(linestring_features_from_geom(clipped))
+        ds = None
 
     interior_plgs_file = base_dir + tile_prefix + '_interior_PLGS.geojson'
     with open(interior_plgs_file, 'w') as fp:
@@ -311,6 +246,3 @@ def main(pickle_file: str, disconnect: bool):
 
 if __name__ == '__main__':
     main(*sys.argv[1:])
-gdal.UseExceptions()  # Enable exception support
-ogr.UseExceptions()
-osr.UseExceptions()
