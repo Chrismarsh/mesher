@@ -179,6 +179,12 @@ def mesh_tile(args):
     with open(interior_plgs_file, 'w') as fp:
         json.dump(interior_PLGS, fp)
 
+    if args.get('dump_poly_only', False):
+        print(f'Dumping tile poly only (no mesher run): {poly_file}')
+        return
+    if args.get('dump_poly_files', False):
+        print(f'Dumping tile poly files (mesher will still run): {poly_file}')
+
     execstr = build_mesher_exec_str(args, poly_file, interior_plgs_file)
     subprocess.check_call(execstr, shell=True)
 
