@@ -517,6 +517,19 @@ def merge_tiles(args):
         if seam_poly is None:
             raise RuntimeError('Seam polygon invalid after outer polygon clipping')
 
+    # Guard against skinny seam polygons which can cause the mesher to hang.
+    seam_env = seam_poly.GetEnvelope()
+    seam_w = seam_env[1] - seam_env[0]
+    seam_h = seam_env[3] - seam_env[2]
+    if seam_w <= 0 or seam_h <= 0:
+        raise RuntimeError('Seam polygon has non-positive bounds')
+    seam_aspect = max(seam_w / seam_h, seam_h / seam_w)
+    aspect_limit = float(args.get('seam_aspect_limit', 10.0))
+    if seam_aspect > aspect_limit:
+        raise RuntimeError(
+            f'Seam polygon aspect ratio {seam_aspect:.2f} exceeds limit {aspect_limit:.2f}. '
+            f'Seam bounds={seam_env}.')
+
     # Align removal to the final seam polygon to avoid holes.
     seam_select_a = triangle_intersects_polygon(verts_a, tris_a, seam_poly)
     seam_select_b = triangle_intersects_polygon(verts_b, tris_b, seam_poly)
@@ -608,6 +621,12 @@ def merge_tiles(args):
     with open(points_file, 'w') as f:
         for v in seam_points:
             f.write(f'{v[0]} {v[1]}\n')
+
+    if args.get('dump_poly_only', False):
+        print(f'Dumping seam poly only (no mesher run): {poly_file}')
+        return
+    if args.get('dump_poly_files', False):
+        print(f'Dumping seam poly files (mesher will still run): {poly_file}')
 
     seam_lloyd = args.get('seam_lloyd', None)
     if seam_lloyd is not None:
