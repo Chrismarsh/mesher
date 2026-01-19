@@ -35,8 +35,64 @@ def longest_linestring_coords_from_geom(geom):
             cmax = len(coords)
             coords_out = coords
     if coords_out is None:
-        raise RuntimeError('Unable to find a valid linestring for the tile boundary')
+        coords_out = polygon_exterior_coords_from_geom(geom)
+    if coords_out is None:
+        gtype = geom.GetGeometryType() if geom is not None else None
+        gname = ogr.GeometryTypeToName(gtype) if gtype is not None else 'None'
+        raise RuntimeError(
+            f'Unable to find a valid linestring for the tile boundary '
+            f'(geom_type={gname})'
+        )
     return coords_out
+
+
+def polygon_exterior_coords_from_geom(geom):
+    if geom is None:
+        return None
+    if geom.IsEmpty():
+        return None
+    gtype = geom.GetGeometryType()
+    if gtype in (ogr.wkbPolygon, ogr.wkbPolygon25D):
+        ring = geom.GetGeometryRef(0)
+        if ring is not None and ring.GetPointCount() > 0:
+            return ring.GetPoints()
+        env = geom.GetEnvelope()
+        if env[0] < env[1] and env[2] < env[3]:
+            return [
+                (env[0], env[2]),
+                (env[1], env[2]),
+                (env[1], env[3]),
+                (env[0], env[3]),
+                (env[0], env[2]),
+            ]
+    if gtype in (ogr.wkbMultiPolygon, ogr.wkbMultiPolygon25D):
+        best = None
+        best_area = -1.0
+        for i in range(geom.GetGeometryCount()):
+            poly = geom.GetGeometryRef(i)
+            if poly is None:
+                continue
+            area = poly.GetArea()
+            if area > best_area:
+                best_area = area
+                best = poly
+        if best is not None:
+            ring = best.GetGeometryRef(0)
+            if ring is not None and ring.GetPointCount() > 0:
+                return ring.GetPoints()
+            env = best.GetEnvelope()
+            if env[0] < env[1] and env[2] < env[3]:
+                return [
+                    (env[0], env[2]),
+                    (env[1], env[2]),
+                    (env[1], env[3]),
+                    (env[0], env[3]),
+                    (env[0], env[2]),
+                ]
+    if gtype == ogr.wkbLinearRing:
+        if geom.GetPointCount() > 0:
+            return geom.GetPoints()
+    return None
 
 
 def write_poly_from_coords(poly_path, coords):
@@ -80,6 +136,8 @@ def build_mesher_exec_str(args, poly_file, interior_plgs):
     if args['use_weights']:
         execstr += ' --weight %s' % args['topo_weight']
         execstr += ' --weight-threshold %s' % args['weight_threshold']
+    if args.get('mesher_debug', False):
+        execstr += ' --debug true'
 
     for key, data in args['parameter_files'].items():
         if 'tolerance' in data:
@@ -149,7 +207,23 @@ def mesh_tile(args):
     tile_poly = normalize_polygon(outer_poly.Intersection(bbox_poly))
     if tile_poly is None:
         raise RuntimeError('Tile polygon invalid after bbox clip')
-    coords = longest_linestring_coords_from_geom(tile_poly.Boundary())
+    if tile_poly.IsEmpty():
+        verts = np.zeros((0, 3), dtype=float)
+        tris = np.zeros((0, 3), dtype=int)
+        band_mask = np.zeros((0,), dtype=bool)
+        npz_path = base_dir + tile_prefix + '.npz'
+        np.savez(npz_path, verts=verts, tris=tris, band_tri_mask=band_mask)
+        meta_path = base_dir + tile_prefix + '.json'
+        with open(meta_path, 'w') as f:
+            json.dump({
+                'tile_bbox': tile_bbox,
+                'core_bbox': tile_bbox,
+                'band_width': band_width,
+                'empty_tile': True
+            }, f)
+        print(f'Tile polygon empty after bbox clip; wrote empty tile {tile_prefix}')
+        return
+    coords = longest_linestring_coords_from_geom(tile_poly)
 
     poly_file = base_dir + tile_prefix + '.poly'
     write_poly_from_coords(poly_file, coords)

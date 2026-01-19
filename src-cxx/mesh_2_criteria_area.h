@@ -43,6 +43,8 @@
         const bool is_geographic;
         const bool use_weights;
         const double weight_threshold;
+        const bool skip_angle_below_min_area;
+        const bool debug;
 
         OGRCoordinateTransformation* prj_trans;
     public:
@@ -56,8 +58,10 @@
                               const bool is_geographic = false,
                               const bool use_weights = false,
                               const double weight_threshold = 0,
+                              const bool skip_angle_below_min_area = false,
+                              const bool debug = false,
                               const Geom_traits &traits = Geom_traits())
-        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),weight_threshold(weight_threshold)
+        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),weight_threshold(weight_threshold),skip_angle_below_min_area(skip_angle_below_min_area),debug(debug)
 
         {
             this->max_area = max_area;
@@ -186,6 +190,8 @@
             const bool is_geographic;
             const bool use_weights;
             const double weight_threshold;
+            const bool skip_angle_below_min_area;
+            const bool debug;
             OGRCoordinateTransformation* prj_trans;
             const Geom_traits &traits;
 
@@ -203,11 +209,13 @@
                    const bool is_geographic=false,
                    const bool use_weights=false,
                    const double weight_threshold=0,
+                   const bool skip_angle_below_min_area=false,
+                   const bool debug=false,
                    OGRCoordinateTransformation* prj_trans=nullptr,
                    const Geom_traits &traits = Geom_traits() )
                     : B(aspect_bound), max_area(area_bound), min_area(min_area),
                       r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),
-                      use_weights(use_weights),weight_threshold(weight_threshold),traits(traits)
+                      use_weights(use_weights),weight_threshold(weight_threshold),skip_angle_below_min_area(skip_angle_below_min_area),debug(debug),traits(traits)
             {
                 this->prj_trans = prj_trans;
                 if(!prj_trans && is_geographic)
@@ -247,6 +255,16 @@
                 t.make_rasterized(_v0, _v1, _v2, r);
                 if(t.is_nan)
                     return 0; //bail
+                if(!t.rasterized_triangle || !t.rasterized_triangle->getDs())
+                {
+                    // std::cout << "max_diff: invalid rasterized triangle, bailing" << std::endl;
+                    return 0;
+                }
+                if(!t.rasterized_triangle || !t.rasterized_triangle->getDs())
+                {
+                    std::cout << "rmse_tolerance: invalid rasterized triangle, bailing" << std::endl;
+                    return 0;
+                }
 
                 auto pxpy = t.rasterized_triangle->xy_to_pxpy(t.v0[0],t.v0[1]);
                 t.v0[0] = pxpy.first;
@@ -356,6 +374,11 @@
 
                 if(t.is_nan)
                     return true; //bail
+                if(!t.rasterized_triangle || !t.rasterized_triangle->getDs())
+                {
+                    std::cout << "categoryraster_isok: invalid rasterized triangle, bailing" << std::endl;
+                    return true;
+                }
 
                 if( t.v0[2] != t.v1[2] ||
                     t.v0[2] != t.v2[2] ||
@@ -416,6 +439,11 @@
                 t.make_rasterized(v0, v1, v2, r);
                 if(t.is_nan)
                     return 0; //bail
+                if(!t.rasterized_triangle || !t.rasterized_triangle->getDs())
+                {
+                    std::cout << "mean_tolerance: invalid rasterized triangle, bailing" << std::endl;
+                    return 0;
+                }
 
                 // Initialize triangle mean elevation (m)
                 double triangle_z_mean = 0;
@@ -589,10 +617,27 @@
             CGAL::Mesh_2::Face_badness operator()(const Quality q) const
             {
                 if (q.area() > max_area)
+                {
+                    if (debug)
+                        std::cout << "Is_bad area reject: area=" << q.area()
+                                  << " max_area=" << max_area << std::endl;
                     return CGAL::Mesh_2::IMPERATIVELY_BAD; //IMPERATIVELY_BAD
+                }
+
+                // For seam merges, allow small triangles to pass even if angles are poor to avoid endless refinement.
+                if (skip_angle_below_min_area && q.area() <= min_area)
+                    return CGAL::Mesh_2::NOT_BAD;
 
                 if (q.sine() < this->B)
+                {
+                    double min_angle_rad = std::asin(std::max(-1.0, std::min(1.0, q.sine())));
+                    double min_angle_deg = min_angle_rad * 180.0 / std::acos(-1.0);
+                    if (debug)
+                        std::cout << "Is_bad angle reject: sine=" << q.sine()
+                                  << " min_angle_deg=" << min_angle_deg
+                                  << " bound_sine=" << this->B << std::endl;
                     return CGAL::Mesh_2::BAD;
+                }
 
                 if (q.area() <= min_area )
                     return CGAL::Mesh_2::NOT_BAD;
@@ -602,7 +647,12 @@
                     //first == current tol
                     //second == max tol
                     if(itr.first >= itr.second) //do we violate the max tol
+                    {
+                        if (debug)
+                            std::cout << "Is_bad tolerance reject: tol=" << itr.first
+                                      << " max_tol=" << itr.second << std::endl;
                         return CGAL::Mesh_2::BAD;
+                    }
                 }
 
                 for(auto& itr : q._category_tol)
@@ -610,7 +660,12 @@
                     //first == current tol
                     //second == max tol
                     if(itr.first <= itr.second)  // is our max land cover below the required threshold to keep this triangle?
+                    {
+                        if (debug)
+                            std::cout << "Is_bad category reject: frac=" << itr.first
+                                      << " min_frac=" << itr.second << std::endl;
                         return CGAL::Mesh_2::BAD;
+                    }
                 }
 
                 return CGAL::Mesh_2::NOT_BAD;
@@ -632,6 +687,12 @@
                 const Point_2 &pa = fh->vertex(0)->point();
                 const Point_2 &pb = fh->vertex(1)->point();
                 const Point_2 &pc = fh->vertex(2)->point();
+                if (debug)
+                    std::cout << "Is_bad triangle: ("
+                              << CGAL::to_double(pa.x()) << "," << CGAL::to_double(pa.y()) << ") ("
+                              << CGAL::to_double(pb.x()) << "," << CGAL::to_double(pb.y()) << ") ("
+                              << CGAL::to_double(pc.x()) << "," << CGAL::to_double(pc.y()) << ")"
+                              << std::endl;
 
                 double a = CGAL::to_double(squared_distance(pb, pc));
                 double b = CGAL::to_double(squared_distance(pc, pa));
@@ -836,6 +897,6 @@
 
         Is_bad is_bad_object() const
         {
-            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, prj_trans, this->traits);
+            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, skip_angle_below_min_area, debug, prj_trans, this->traits);
         }
     };

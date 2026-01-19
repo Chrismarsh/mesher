@@ -8,6 +8,8 @@ except ModuleNotFoundError:
 ensure_mesher_on_path()
 import json
 import math
+import shutil
+import time
 import cloudpickle
 import subprocess
 import numpy as np
@@ -86,6 +88,36 @@ def polygon_exterior_coords(geom):
         x, y, _ = ring.GetPoint(i)
         coords.append([x, y])
     return coords
+
+
+def write_polygon_geojson(path, coords):
+    if len(coords) < 4:
+        raise RuntimeError('Cannot write seam GeoJSON with fewer than 4 points')
+    if coords[0] != coords[-1]:
+        coords = coords + [coords[0]]
+    gj = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [coords]}
+        }]
+    }
+    with open(path, 'w') as f:
+        json.dump(gj, f)
+
+
+def write_points_geojson(path, points):
+    features = []
+    for x, y in points:
+        features.append({
+            "type": "Feature",
+            "properties": {},
+            "geometry": {"type": "Point", "coordinates": [float(x), float(y)]}
+        })
+    gj = {"type": "FeatureCollection", "features": features}
+    with open(path, 'w') as f:
+        json.dump(gj, f)
 
 
 def densify_ring_coords(coords, max_len):
@@ -208,6 +240,11 @@ def build_mesher_exec_str(args, poly_file, interior_plgs, points_file):
     if args['use_weights']:
         execstr += ' --weight %s' % args['topo_weight']
         execstr += ' --weight-threshold %s' % args['weight_threshold']
+    if args.get('mesher_debug', False):
+        execstr += ' --debug true'
+
+    if args.get('skip_angle_below_min_area', False):
+        execstr += ' --skip-angle-below-min-area true'
 
     for key, data in args['parameter_files'].items():
         if 'tolerance' in data:
@@ -372,13 +409,48 @@ def add_vertex(verts_out, index_map, spatial_map, coord, tol=1e-6):
 
 
 def merge_tiles(args):
+    t0 = time.perf_counter()
+
+    def log_step(msg):
+        dt = time.perf_counter() - t0
+        print(f'[{dt:.2f}s] {msg}', flush=True)
+
     tile_a = args['tile_a']
     tile_b = args['tile_b']
 
+    log_step('Loading tile metadata/npz')
     with open(tile_a['meta']) as f:
         meta_a = json.load(f)
     with open(tile_b['meta']) as f:
         meta_b = json.load(f)
+
+    if meta_a.get('empty_tile') or meta_b.get('empty_tile'):
+        out_prefix = args['out_prefix']
+        out_npz = out_prefix + '.npz'
+        out_meta = out_prefix + '.json'
+        if meta_a.get('empty_tile') and meta_b.get('empty_tile'):
+            verts = np.zeros((0, 3), dtype=float)
+            tris = np.zeros((0, 3), dtype=int)
+            band_mask = np.zeros((0,), dtype=bool)
+            np.savez(out_npz, verts=verts, tris=tris, band_tri_mask=band_mask)
+            with open(out_meta, 'w') as f:
+                json.dump({
+                    'tile_bbox': meta_a.get('tile_bbox', meta_b.get('tile_bbox')),
+                    'core_bbox': meta_a.get('core_bbox', meta_b.get('core_bbox')),
+                    'band_width': meta_a.get('band_width', meta_b.get('band_width')),
+                    'empty_tile': True
+                }, f)
+            print(f'Merge skipped: both tiles empty for {out_prefix}')
+            return
+        if meta_a.get('empty_tile'):
+            shutil.copyfile(tile_b['npz'], out_npz)
+            shutil.copyfile(tile_b['meta'], out_meta)
+            print(f'Merge skipped: tile_a empty for {out_prefix}')
+            return
+        shutil.copyfile(tile_a['npz'], out_npz)
+        shutil.copyfile(tile_a['meta'], out_meta)
+        print(f'Merge skipped: tile_b empty for {out_prefix}')
+        return
 
     data_a = np.load(tile_a['npz'])
     data_b = np.load(tile_b['npz'])
@@ -390,6 +462,7 @@ def merge_tiles(args):
     tris_b = data_b['tris']
     band_b = data_b['band_tri_mask']
 
+    log_step('Computing seam bbox/strip')
     band_width = meta_a['band_width']
     bbox_a = meta_a.get('core_bbox', meta_a['tile_bbox'])
     bbox_b = meta_b.get('core_bbox', meta_b['tile_bbox'])
@@ -408,6 +481,7 @@ def merge_tiles(args):
     else:
         seam_strip = bbox_to_polygon(seam_bbox)
 
+    log_step('Clipping seam to raster bounds')
     dem_ds = gdal.Open(args['dem_path'])
     if dem_ds is None:
         raise RuntimeError('Unable to open DEM for merge')
@@ -430,6 +504,7 @@ def merge_tiles(args):
     if seam_strip is None:
         raise RuntimeError('Seam strip clipped outside raster bounds')
 
+    log_step('Selecting seam/ownership masks')
     # remove any triangles from either tile that are in the seam strip or outside ownership
     # ownership is centroid-based; only enforce outside-core pruning within the seam zone
     inside_a = centroid_mask_in_bbox(verts_a, tris_a, bbox_a)
@@ -477,9 +552,13 @@ def merge_tiles(args):
             snap_tol = max(1e-6, seam_spacing * 0.01)
 
     # Build an irregular seam polygon from the triangles we will remove.
+    log_step('Building seam polygon from removed triangles')
     if np.any(mask_a) or np.any(mask_b):
+        log_step('Union triangles from tile A')
         seam_geom = triangles_to_union_polygon(verts_a, tris_a, mask_a)
+        log_step('Union triangles from tile B')
         seam_geom = seam_geom.Union(triangles_to_union_polygon(verts_b, tris_b, mask_b))
+        log_step('Extracting seam polygon')
         seam_poly = extract_polygons(seam_geom)
         seam_poly = seam_poly[0] if seam_poly else None
     else:
@@ -491,6 +570,7 @@ def merge_tiles(args):
         outer_poly = load_polygon_geom(outer_polygon_shp)
 
     if seam_spacing is not None:
+        log_step('Buffering seam for removal expansion')
         buf_dist = min(float(seam_spacing) * 0.25, band_width * 0.5)
         if buf_dist > 0:
             buffered = seam_poly.Buffer(buf_dist)
@@ -508,11 +588,13 @@ def merge_tiles(args):
             if seam_poly is None:
                 raise RuntimeError('Seam polygon invalid after buffer expansion')
 
+    log_step('Clipping seam to raster bounds (final)')
     seam_poly = normalize_polygon(seam_poly.Intersection(raster_poly))
     if seam_poly is None:
         raise RuntimeError('Seam polygon invalid after raster bounds clipping')
 
     if outer_poly is not None:
+        log_step('Clipping seam to outer polygon')
         seam_poly = normalize_polygon(seam_poly.Intersection(outer_poly))
         if seam_poly is None:
             raise RuntimeError('Seam polygon invalid after outer polygon clipping')
@@ -525,11 +607,13 @@ def merge_tiles(args):
         raise RuntimeError('Seam polygon has non-positive bounds')
     seam_aspect = max(seam_w / seam_h, seam_h / seam_w)
     aspect_limit = float(args.get('seam_aspect_limit', 10.0))
-    if seam_aspect > aspect_limit:
+    min_edge_limit = 1.25 * band_width
+    if seam_aspect > aspect_limit and min(seam_w, seam_h) <= min_edge_limit:
         raise RuntimeError(
             f'Seam polygon aspect ratio {seam_aspect:.2f} exceeds limit {aspect_limit:.2f}. '
             f'Seam bounds={seam_env}.')
 
+    log_step('Aligning removal masks to final seam polygon')
     # Align removal to the final seam polygon to avoid holes.
     seam_select_a = triangle_intersects_polygon(verts_a, tris_a, seam_poly)
     seam_select_b = triangle_intersects_polygon(verts_b, tris_b, seam_poly)
@@ -541,6 +625,7 @@ def merge_tiles(args):
         mask_b = seam_select_b
 
     if args.get('seam_constraints', True):
+        log_step('Clipping constraints to seam')
         for cpath in args['constraints']:
             ds = ogr.Open(cpath)
             if ds is None:
@@ -557,9 +642,11 @@ def merge_tiles(args):
             ds = None
 
     interior_plgs_file = args['out_prefix'] + '_interior_PLGS.geojson'
+    log_step('Writing interior PLGS geojson')
     with open(interior_plgs_file, 'w') as fp:
         json.dump(interior_PLGS, fp)
 
+    log_step('Building seam poly points')
     coords = polygon_exterior_coords(seam_poly)
     seam_simplify_tol = args.get('seam_simplify_tol', None)
     if seam_simplify_tol is not None:
@@ -567,6 +654,7 @@ def merge_tiles(args):
         if len(coords) < 4:
             raise RuntimeError('Seam polygon simplified to too few points')
     if seam_spacing is not None:
+        log_step('Densifying seam boundary')
         seam_boundary = seam_poly.GetBoundary()
         boundary_a = triangle_intersects_geometry(verts_a, tris_a, seam_boundary)
         boundary_b = triangle_intersects_geometry(verts_b, tris_b, seam_boundary)
@@ -580,6 +668,9 @@ def merge_tiles(args):
         coords = densify_ring_coords(coords, boundary_spacing)
     poly_file = args['out_prefix'] + '_seam.poly'
     write_poly_from_coords(poly_file, coords)
+    if args.get('dump_poly_files', False) or args.get('dump_poly_only', False):
+        seam_geojson = args['out_prefix'] + '_seam.geojson'
+        write_polygon_geojson(seam_geojson, coords)
 
     seam_points = []
     for x, y in coords:
@@ -615,12 +706,16 @@ def merge_tiles(args):
         seam_points = seam_points[idx]
         print(f'Seam point cap {point_cap} applied, kept {len(seam_points)} points')
 
+    log_step('Dedupe seam points')
     seam_points = dedupe_points(seam_points, snap_tol)
 
     points_file = args['out_prefix'] + '_points.txt'
     with open(points_file, 'w') as f:
         for v in seam_points:
             f.write(f'{v[0]} {v[1]}\n')
+    if args.get('dump_poly_files', False) or args.get('dump_poly_only', False):
+        points_geojson = args['out_prefix'] + '_points.geojson'
+        write_points_geojson(points_geojson, seam_points[:, :2])
 
     if args.get('dump_poly_only', False):
         print(f'Dumping seam poly only (no mesher run): {poly_file}')
@@ -634,6 +729,7 @@ def merge_tiles(args):
         args['lloyd_itr'] = int(seam_lloyd)
 
     execstr = build_mesher_exec_str(args, poly_file, interior_plgs_file, points_file)
+    print(f'Running mesher: {execstr}', flush=True)
     subprocess.check_call(execstr, shell=True)
 
     node_file = poly_file.replace('.poly', '.1.node')
@@ -736,12 +832,14 @@ def main(pickle_file: str, disconnect: bool):
 if __name__ == '__main__':
     if len(sys.argv) >= 2 and sys.argv[1] == '--single':
         if len(sys.argv) < 5:
-            raise SystemExit('usage: MPI_merge_tiles.py --single tile_a_npz tile_b_npz out_prefix [meta_a] [meta_b]')
+            raise SystemExit('usage: MPI_merge_tiles.py --single tile_a_npz tile_b_npz out_prefix [meta_a] [meta_b] [--dump-only]')
         tile_a_npz = sys.argv[2]
         tile_b_npz = sys.argv[3]
         out_prefix = sys.argv[4]
-        tile_a_meta = sys.argv[5] if len(sys.argv) > 5 else tile_a_npz.replace('.npz', '.json')
-        tile_b_meta = sys.argv[6] if len(sys.argv) > 6 else tile_b_npz.replace('.npz', '.json')
+        dump_only = '--dump-only' in sys.argv
+        args_in = [a for a in sys.argv if a != '--dump-only']
+        tile_a_meta = args_in[5] if len(args_in) > 5 else tile_a_npz.replace('.npz', '.json')
+        tile_b_meta = args_in[6] if len(args_in) > 6 else tile_b_npz.replace('.npz', '.json')
 
         args = {
             'tile_a': {'npz': tile_a_npz, 'meta': tile_a_meta},
@@ -763,7 +861,9 @@ if __name__ == '__main__':
             'is_geographic': False,
             'dem_path': os.environ.get('MESHER_DEM', ''),
             'seam_point_spacing': None,
-            'merge_snap_tol': None
+            'merge_snap_tol': None,
+            'dump_poly_only': dump_only,
+            'dump_poly_files': dump_only
         }
         if not args['dem_path']:
             raise SystemExit('MESHER_DEM env var is required for --single')

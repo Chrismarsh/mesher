@@ -70,7 +70,7 @@ def iter_linestrings(geom):
     gtype = geom.GetGeometryType()
     if gtype in (ogr.wkbPolygon, ogr.wkbPolygon25D):
         return iter_linestrings(geom.Boundary())
-    if gtype in (ogr.wkbLineString, ogr.wkbLineString25D):
+    if gtype in (ogr.wkbLineString, ogr.wkbLineString25D, ogr.wkbLinearRing):
         return [geom.Clone()]
     if gtype in (ogr.wkbMultiLineString, ogr.wkbMultiLineString25D,
                  ogr.wkbGeometryCollection, ogr.wkbGeometryCollection25D,
