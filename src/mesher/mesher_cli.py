@@ -71,7 +71,7 @@ def main():
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
             mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
             mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, \
-            mpi_dump_poly_files = read_config(configfile)
+            mpi_dump_poly_files, mpi_seam_skip_angle_below_min_area, mesher_debug = read_config(configfile)
 
 
     ########################################################
@@ -515,7 +515,8 @@ def main():
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                                              mpi_seam_point_spacing, mpi_merge_snap_tol, mpi_seam_lloyd,
                                              mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol,
-                                             mpi_dump_poly_only, mpi_dump_poly_files)
+                                             mpi_dump_poly_only, mpi_dump_poly_files,
+                                             mpi_seam_skip_angle_below_min_area, mesher_debug)
         else:
             start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
@@ -536,6 +537,8 @@ def main():
             if use_weights:
                 execstr += ' --weight %s' % topo_weight
                 execstr += ' --weight-threshold %s' % weight_threshold
+            if mesher_debug:
+                execstr += ' --debug true'
 
             for key, data in parameter_files.items():
                 if 'tolerance' in data:
@@ -828,10 +831,13 @@ def read_config(configfile):
                 "Warning: mesher binary path defined in env var and in configuration file. Using the mesher path from "
                 "the configuration file")
 
-            # enable verbose output for debugging
+    # enable verbose output for debugging
     verbose = False
     if hasattr(X, 'verbose'):
         verbose = X.verbose
+    mesher_debug = False
+    if hasattr(X, 'mesher_debug'):
+        mesher_debug = X.mesher_debug
     user_output_dir = cwd + os.path.sep
     # output to the specific directory, instead of the root dir of the calling python script
     if hasattr(X, 'user_output_dir'):
@@ -1013,13 +1019,18 @@ def read_config(configfile):
     if hasattr(X, 'mpi_dump_poly_files'):
         mpi_dump_poly_files = X.mpi_dump_poly_files
 
+    mpi_seam_skip_angle_below_min_area = False
+    if hasattr(X, 'mpi_seam_skip_angle_below_min_area'):
+        mpi_seam_skip_angle_below_min_area = X.mpi_seam_skip_angle_below_min_area
+
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
         mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, mpi_dump_poly_files
+        mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, mpi_dump_poly_files, \
+        mpi_seam_skip_angle_below_min_area, mesher_debug
 
 
 
@@ -1492,14 +1503,15 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                     mpi_seam_point_spacing=None, mpi_merge_snap_tol=None, mpi_seam_lloyd=None,
                     mpi_seam_point_cap=None, mpi_seam_constraints=True, mpi_seam_simplify_tol=None,
-                    mpi_dump_poly_only=False, mpi_dump_poly_files=False):
+                    mpi_dump_poly_only=False, mpi_dump_poly_files=False,
+                    mpi_seam_skip_angle_below_min_area=False, mesher_debug=False):
     band_width = 5 * math.sqrt(min_area)
     rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
 
     tile_width = (xmax - xmin) / cols
     tile_height = (ymax - ymin) / rows
     min_edge = min(tile_width, tile_height)
-    min_edge_threshold = max(20.0 * math.sqrt(min_area), 4.0 * band_width)
+    min_edge_threshold = 1.25 * band_width
     # min_edge_threshold=1
     aspect_ratio = max(tile_width / tile_height, tile_height / tile_width)
     aspect_threshold = 30.0
@@ -1553,7 +1565,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     if sw <= 0 or sh <= 0:
                         raise RuntimeError(f'Invalid seam bbox between tiles r{r}c{c} and r{r}c{c+1}')
                     s_aspect = max(sw / sh, sh / sw)
-                    if s_aspect > aspect_threshold or min(sw, sh) <= min_edge_threshold:
+                    if s_aspect > aspect_threshold and min(sw, sh) <= min_edge_threshold:
                         raise RuntimeError(
                             f'Seam bbox between tiles r{r}c{c} and r{r}c{c+1} is too skinny '
                             f'(aspect={s_aspect:.2f}, w={sw:.3f}, h={sh:.3f}). '
@@ -1568,7 +1580,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     if sw <= 0 or sh <= 0:
                         raise RuntimeError(f'Invalid seam bbox between tiles r{r}c{c} and r{r+1}c{c}')
                     s_aspect = max(sw / sh, sh / sw)
-                    if s_aspect > aspect_threshold or min(sw, sh) <= min_edge_threshold:
+                    if s_aspect > aspect_threshold and min(sw, sh) <= min_edge_threshold:
                         raise RuntimeError(
                             f'Seam bbox between tiles r{r}c{c} and r{r+1}c{c} is too skinny '
                             f'(aspect={s_aspect:.2f}, w={sw:.3f}, h={sh:.3f}). '
@@ -1616,7 +1628,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'dem_path': base_dir + base_name + '_projected.tif',
             'outer_polygon_shp': outer_polygon_shp,
             'dump_poly_only': mpi_dump_poly_only,
-            'dump_poly_files': mpi_dump_poly_files
+            'dump_poly_files': mpi_dump_poly_files,
+            'mesher_debug': mesher_debug
         })
 
     with open('pickled_mesh_tile_args.pickle', 'wb') as f:
@@ -1690,7 +1703,9 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'seam_simplify_tol': mpi_seam_simplify_tol,
                             'dump_poly_only': mpi_dump_poly_only,
                             'dump_poly_files': mpi_dump_poly_files,
-                            'seam_aspect_limit': 10.0
+                            'seam_aspect_limit': 10.0,
+                            'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
+                            'mesher_debug': mesher_debug
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1747,7 +1762,9 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'seam_simplify_tol': mpi_seam_simplify_tol,
                             'dump_poly_only': mpi_dump_poly_only,
                             'dump_poly_files': mpi_dump_poly_files,
-                            'seam_aspect_limit': 10.0
+                            'seam_aspect_limit': 10.0,
+                            'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
+                            'mesher_debug': mesher_debug
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
