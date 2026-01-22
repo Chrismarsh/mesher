@@ -47,6 +47,15 @@ def bbox_intersection(a, b):
     return [xmin, ymin, xmax, ymax]
 
 
+def bbox_union(a, b):
+    return [
+        min(a[0], b[0]),
+        min(a[1], b[1]),
+        max(a[2], b[2]),
+        max(a[3], b[3]),
+    ]
+
+
 
 
 def clean_ring_coords(coords, tol):
@@ -454,6 +463,50 @@ def merge_tiles(args):
 
     data_a = np.load(tile_a['npz'])
     data_b = np.load(tile_b['npz'])
+
+    if args.get('use_shared_edges', False):
+        log_step('Merging tiles without seam (shared-edge constraints)')
+        verts_a = data_a['verts']
+        tris_a = data_a['tris']
+        verts_b = data_b['verts']
+        tris_b = data_b['tris']
+        snap_tol = args.get('merge_snap_tol', 1e-6) or 1e-6
+
+        verts_out = []
+        index_map = {}
+        spatial_map = {}
+        tris_out = []
+
+        for tri in tris_a:
+            idxs = []
+            for idx in tri:
+                idxs.append(add_vertex(verts_out, index_map, spatial_map, verts_a[idx], snap_tol))
+            tris_out.append(idxs)
+
+        for tri in tris_b:
+            idxs = []
+            for idx in tri:
+                idxs.append(add_vertex(verts_out, index_map, spatial_map, verts_b[idx], snap_tol))
+            tris_out.append(idxs)
+
+        verts_out = np.asarray(verts_out, dtype=float)
+        tris_out = np.asarray(tris_out, dtype=int)
+        band_mask = np.zeros(len(tris_out), dtype=bool)
+
+        out_prefix = args['out_prefix']
+        npz_path = out_prefix + '.npz'
+        np.savez(npz_path, verts=verts_out, tris=tris_out, band_tri_mask=band_mask)
+
+        meta_path = out_prefix + '.json'
+        bbox_a = meta_a.get('tile_bbox', meta_a.get('core_bbox'))
+        bbox_b = meta_b.get('tile_bbox', meta_b.get('core_bbox'))
+        with open(meta_path, 'w') as f:
+            json.dump({
+                'tile_bbox': bbox_union(bbox_a, bbox_b),
+                'core_bbox': bbox_union(bbox_a, bbox_b),
+                'band_width': 0.0
+            }, f)
+        return
 
     verts_a = data_a['verts']
     tris_a = data_a['tris']

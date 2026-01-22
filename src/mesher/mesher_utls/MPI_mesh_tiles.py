@@ -10,6 +10,7 @@ import json
 import cloudpickle
 import subprocess
 import numpy as np
+import math
 from mpi4py import MPI
 from osgeo import ogr, gdal
 from mesher.mesher_utls.ogr_utils import bbox_to_polygon_geom, load_polygon_geom, normalize_polygon, \
@@ -93,6 +94,78 @@ def polygon_exterior_coords_from_geom(geom):
         if geom.GetPointCount() > 0:
             return geom.GetPoints()
     return None
+
+
+def shared_edges_for_tile(tile_bbox, row, col, rows, cols):
+    xmin, ymin, xmax, ymax = tile_bbox
+    edges = []
+    if col > 0:
+        edges.append(("v", xmin, ymin, ymax))
+    if col < cols - 1:
+        edges.append(("v", xmax, ymin, ymax))
+    if row > 0:
+        edges.append(("h", ymax, xmin, xmax))
+    if row < rows - 1:
+        edges.append(("h", ymin, xmin, xmax))
+    return edges
+
+
+def densify_segment(p0, p1, spacing):
+    if spacing <= 0:
+        return [p0, p1]
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return [p0]
+    n = max(1, int(math.floor(length / spacing)))
+    step = length / n
+    ux = dx / length
+    uy = dy / length
+    pts = []
+    for i in range(n + 1):
+        pts.append([p0[0] + ux * step * i, p0[1] + uy * step * i])
+    return pts
+
+
+def densify_coords_on_shared_edges(coords, shared_edges, spacing, tol=1e-6):
+    if not shared_edges or spacing is None:
+        return coords
+    if len(coords) < 2:
+        return coords
+    ring = coords[:-1] if coords[0] == coords[-1] else coords
+    out = []
+    n = len(ring)
+    for i in range(n):
+        p0 = ring[i]
+        p1 = ring[(i + 1) % n]
+        densified = None
+        for orient, const, v0, v1 in shared_edges:
+            if orient == "v":
+                if abs(p0[0] - p1[0]) <= tol and abs(p0[0] - const) <= tol:
+                    seg_min = min(p0[1], p1[1])
+                    seg_max = max(p0[1], p1[1])
+                    if seg_max >= v0 - tol and seg_min <= v1 + tol:
+                        densified = densify_segment(p0, p1, spacing)
+                        break
+            else:
+                if abs(p0[1] - p1[1]) <= tol and abs(p0[1] - const) <= tol:
+                    seg_min = min(p0[0], p1[0])
+                    seg_max = max(p0[0], p1[0])
+                    if seg_max >= v0 - tol and seg_min <= v1 + tol:
+                        densified = densify_segment(p0, p1, spacing)
+                        break
+        if densified is None:
+            densified = [p0, p1]
+        if not out:
+            out.extend(densified)
+        else:
+            for pt in densified:
+                if pt != out[-1]:
+                    out.append(pt)
+    if out[0] != out[-1]:
+        out.append(out[0])
+    return out
 
 
 def write_poly_from_coords(poly_path, coords):
@@ -188,6 +261,10 @@ def mesh_tile(args):
     base_dir = args['base_dir']
     tile_bbox = args['tile_bbox']
     band_width = args['band_width']
+    row = args.get('tile_row')
+    col = args.get('tile_col')
+    rows = args.get('tile_rows')
+    cols = args.get('tile_cols')
 
     band_bbox = [
         tile_bbox[0] - band_width,
@@ -224,6 +301,10 @@ def mesh_tile(args):
         print(f'Tile polygon empty after bbox clip; wrote empty tile {tile_prefix}')
         return
     coords = longest_linestring_coords_from_geom(tile_poly)
+    if args.get('use_shared_edges', False):
+        shared_edges = shared_edges_for_tile(tile_bbox, row, col, rows, cols)
+        spacing = args.get('shared_edge_spacing', None)
+        coords = densify_coords_on_shared_edges(coords, shared_edges, spacing)
 
     poly_file = base_dir + tile_prefix + '.poly'
     write_poly_from_coords(poly_file, coords)
