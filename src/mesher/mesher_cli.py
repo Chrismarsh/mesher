@@ -71,7 +71,8 @@ def main():
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
             mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
             mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, \
-            mpi_dump_poly_files, mpi_seam_skip_angle_below_min_area, mesher_debug = read_config(configfile)
+            mpi_dump_poly_files, mpi_seam_skip_angle_below_min_area, mesher_debug, \
+            mpi_shared_edge_constraints, mpi_shared_edge_spacing = read_config(configfile)
 
 
     ########################################################
@@ -516,7 +517,8 @@ def main():
                                              mpi_seam_point_spacing, mpi_merge_snap_tol, mpi_seam_lloyd,
                                              mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol,
                                              mpi_dump_poly_only, mpi_dump_poly_files,
-                                             mpi_seam_skip_angle_below_min_area, mesher_debug)
+                                             mpi_seam_skip_angle_below_min_area, mesher_debug,
+                                             mpi_shared_edge_constraints, mpi_shared_edge_spacing)
         else:
             start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
@@ -1023,6 +1025,14 @@ def read_config(configfile):
     if hasattr(X, 'mpi_seam_skip_angle_below_min_area'):
         mpi_seam_skip_angle_below_min_area = X.mpi_seam_skip_angle_below_min_area
 
+    mpi_shared_edge_constraints = False
+    if hasattr(X, 'mpi_shared_edge_constraints'):
+        mpi_shared_edge_constraints = X.mpi_shared_edge_constraints
+
+    mpi_shared_edge_spacing = None
+    if hasattr(X, 'mpi_shared_edge_spacing'):
+        mpi_shared_edge_spacing = X.mpi_shared_edge_spacing
+
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
@@ -1030,7 +1040,7 @@ def read_config(configfile):
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
         mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
         mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, mpi_dump_poly_files, \
-        mpi_seam_skip_angle_below_min_area, mesher_debug
+        mpi_seam_skip_angle_below_min_area, mesher_debug, mpi_shared_edge_constraints, mpi_shared_edge_spacing
 
 
 
@@ -1504,8 +1514,11 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     mpi_seam_point_spacing=None, mpi_merge_snap_tol=None, mpi_seam_lloyd=None,
                     mpi_seam_point_cap=None, mpi_seam_constraints=True, mpi_seam_simplify_tol=None,
                     mpi_dump_poly_only=False, mpi_dump_poly_files=False,
-                    mpi_seam_skip_angle_below_min_area=False, mesher_debug=False):
+                    mpi_seam_skip_angle_below_min_area=False, mesher_debug=False,
+                    mpi_shared_edge_constraints=False, mpi_shared_edge_spacing=None):
     band_width = 5 * math.sqrt(min_area)
+    if mpi_shared_edge_constraints:
+        band_width = 0.0
     rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
 
     tile_width = (xmax - xmin) / cols
@@ -1592,6 +1605,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     tile_args = []
     if mpi_seam_point_spacing is None:
         mpi_seam_point_spacing = 5.0 * math.sqrt(min_area)
+    if mpi_shared_edge_constraints and mpi_shared_edge_spacing is None:
+        mpi_shared_edge_spacing = max(1e-6, math.sqrt(min_area))
     for rank in range(tile_count):
         row = rank // cols
         col = rank % cols
@@ -1606,6 +1621,10 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
 
         tile_args.append({
             'tile_id': rank,
+            'tile_row': row,
+            'tile_col': col,
+            'tile_rows': rows,
+            'tile_cols': cols,
             'tile_bbox': tile_bbox,
             'band_width': band_width,
             'base_dir': base_dir,
@@ -1629,7 +1648,9 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'outer_polygon_shp': outer_polygon_shp,
             'dump_poly_only': mpi_dump_poly_only,
             'dump_poly_files': mpi_dump_poly_files,
-            'mesher_debug': mesher_debug
+            'mesher_debug': mesher_debug,
+            'use_shared_edges': mpi_shared_edge_constraints,
+            'shared_edge_spacing': mpi_shared_edge_spacing
         })
 
     with open('pickled_mesh_tile_args.pickle', 'wb') as f:
@@ -1705,7 +1726,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'dump_poly_files': mpi_dump_poly_files,
                             'seam_aspect_limit': 10.0,
                             'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
-                            'mesher_debug': mesher_debug
+                            'mesher_debug': mesher_debug,
+                            'use_shared_edges': mpi_shared_edge_constraints
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1764,7 +1786,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'dump_poly_files': mpi_dump_poly_files,
                             'seam_aspect_limit': 10.0,
                             'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
-                            'mesher_debug': mesher_debug
+                            'mesher_debug': mesher_debug,
+                            'use_shared_edges': mpi_shared_edge_constraints
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
