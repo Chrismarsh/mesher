@@ -38,6 +38,30 @@ def compute_tile_grid(nranks):
     return best_rows, best_cols
 
 
+def shared_edge_lines(xmin, ymin, xmax, ymax, rows, cols):
+    lines = []
+    width = (xmax - xmin) / cols
+    height = (ymax - ymin) / rows
+    for c in range(1, cols):
+        x = xmin + c * width
+        lines.append(("v", x))
+    for r in range(1, rows):
+        y = ymax - r * height
+        lines.append(("h", y))
+    return lines
+
+
+def is_near_shared_edge(x, y, lines, tol):
+    for orient, v in lines:
+        if orient == "v":
+            if abs(x - v) <= tol:
+                return True
+        else:
+            if abs(y - v) <= tol:
+                return True
+    return False
+
+
 def vertex_owner(x, y, xmin, ymin, xmax, ymax, rows, cols):
     width = (xmax - xmin) / cols
     height = (ymax - ymin) / rows
@@ -126,7 +150,10 @@ def do_lloyd(args):
     xmax = comm.allreduce(local_max[0], op=MPI.MAX)
     ymax = comm.allreduce(local_max[1], op=MPI.MAX)
 
-    rows, cols = compute_tile_grid(size)
+    rows = args.get('tile_rows', None)
+    cols = args.get('tile_cols', None)
+    if rows is None or cols is None:
+        rows, cols = compute_tile_grid(size)
 
     t_start = (rank * ntris) // size
     t_end = ((rank + 1) * ntris) // size
@@ -134,6 +161,11 @@ def do_lloyd(args):
     boundary_geom = None
     if outer_polygon_shp and boundary_tol > 0.0:
         boundary_geom = load_polygon_geom(outer_polygon_shp).GetBoundary()
+    shared_edge_constraints = args.get('shared_edge_constraints', False)
+    shared_edge_tol = args.get('shared_edge_tol', boundary_tol)
+    shared_lines = None
+    if shared_edge_constraints and shared_edge_tol > 0.0:
+        shared_lines = shared_edge_lines(xmin, ymin, xmax, ymax, rows, cols)
 
     if rank == 0:
         init_output_memmap(out_verts_path, verts)
@@ -181,6 +213,8 @@ def do_lloyd(args):
                 pt.AddPoint(v[0], v[1])
                 if pt.Distance(boundary_geom) <= boundary_tol:
                     continue
+            if shared_lines is not None and is_near_shared_edge(v[0], v[1], shared_lines, shared_edge_tol):
+                continue
             out[vid, 0] = data[0] / data[2]
             out[vid, 1] = data[1] / data[2]
             out[vid, 2] = v[2]
