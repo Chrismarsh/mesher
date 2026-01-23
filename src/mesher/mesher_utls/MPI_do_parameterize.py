@@ -260,10 +260,49 @@ def do_parameterize(gt, is_geographic, mesh,
 
 def main(pickle_file: str,
          disconnect: bool,
-         configfile: str):
+         configfile: str,
+         *extra_args):
     # if called from SLURM, etc, these cli are coming in as strings
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
+
+    prepare_only = '--prepare-only' in extra_args
+
+    if prepare_only:
+        with open(pickle_file, 'rb') as f:
+            prep = cloudpickle.load(f)
+
+        verts = np.load(prep['verts_path'], mmap_mode='r')
+        elems = np.load(prep['elems_path'], mmap_mode='r')
+        ntris = len(elems)
+        my_tris = np.array_split(np.arange(ntris), MPI.COMM_WORLD.size)
+        tri_idx = my_tris[MPI.COMM_WORLD.rank]
+
+        subset_mesh = {'mesh': {}}
+        subset_mesh['mesh']['vertex'] = verts
+        subset_mesh['mesh']['nvertex'] = len(verts)
+        subset_mesh['mesh']['elem'] = elems[tri_idx]
+        subset_mesh['mesh']['nelem'] = len(tri_idx)
+
+        param_args = [
+            prep['gt'],
+            prep['is_geographic'],
+            subset_mesh,
+            prep['parameter_files'],
+            prep['initial_conditions'],
+            prep['RasterXSize'],
+            prep['RasterYSize'],
+            prep['srs_proj4'],
+        ]
+
+        out_pickle = f'pickled_param_args_{MPI.COMM_WORLD.rank}.pickle'
+        with open(out_pickle, 'wb') as f:
+            cloudpickle.dump(param_args, f)
+
+        if disconnect:
+            comm = MPI.Comm.Get_parent()
+            comm.Disconnect()
+        return
 
     # load our correct mesh subset file
     pickle_file = pickle_file.replace('RANK', str(MPI.COMM_WORLD.rank))
