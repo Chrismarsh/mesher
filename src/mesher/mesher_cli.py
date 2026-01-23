@@ -588,9 +588,14 @@ def main():
             out_verts_path = base_dir + base_name + '_mpi_lloyd_verts_out.npy'
             np.save(verts_path, verts)
             np.save(tris_path, tris)
+            lloyd_rows, lloyd_cols = compute_tile_grid_allow_unused(MPI_nworkers)
             run_mpi_lloyd(verts_path, tris_path, out_verts_path, outputBufferfn,
                           mpi_lloyd_boundary_tol, mpi_global_lloyd,
-                          MPI_exec_str, MPI_nworkers)
+                          MPI_exec_str, MPI_nworkers,
+                          shared_edge_constraints=mpi_shared_edge_constraints,
+                          shared_edge_tol=mpi_lloyd_boundary_tol,
+                          tile_rows=lloyd_rows,
+                          tile_cols=lloyd_cols)
             verts = np.load(out_verts_path)
         mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose)
     else:
@@ -1455,9 +1460,15 @@ def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geogra
     return mesh
 
 
-def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers):
+def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None):
     if len(tasks) == 0:
         return
+    if stage_label is not None:
+        remaining = total_merges - len(tasks) if total_merges is not None else None
+        if remaining is not None:
+            print(f'MPI merge {stage_label}: {len(tasks)} merges (remaining after stage: {remaining})')
+        else:
+            print(f'MPI merge {stage_label}: {len(tasks)} merges')
 
     with open('pickled_mesh_merge_args.pickle', 'wb') as f:
         cloudpickle.dump(tasks, f)
@@ -1479,14 +1490,20 @@ def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers):
 
 
 def run_mpi_lloyd(verts_path, tris_path, out_verts_path, outer_polygon_shp,
-                  boundary_tol, iterations, MPI_exec_str, MPI_nworkers):
+                  boundary_tol, iterations, MPI_exec_str, MPI_nworkers,
+                  shared_edge_constraints=False, shared_edge_tol=None,
+                  tile_rows=None, tile_cols=None):
     args = {
         'verts_path': verts_path,
         'tris_path': tris_path,
         'out_verts_path': out_verts_path,
         'outer_polygon_shp': outer_polygon_shp,
         'boundary_tol': boundary_tol,
-        'iterations': iterations
+        'iterations': iterations,
+        'shared_edge_constraints': shared_edge_constraints,
+        'shared_edge_tol': shared_edge_tol,
+        'tile_rows': tile_rows,
+        'tile_cols': tile_cols
     }
     with open('pickled_lloyd_args.pickle', 'wb') as f:
         cloudpickle.dump(args, f)
@@ -1684,6 +1701,18 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
         tile_grid.append(row_tiles)
 
     stage = 0
+    total_merges = 0
+    tmp_rows = rows
+    tmp_cols = cols
+    while tmp_rows > 1 or tmp_cols > 1:
+        if tmp_cols > 1:
+            total_merges += tmp_rows * (tmp_cols // 2)
+            tmp_cols = (tmp_cols + 1) // 2
+        if tmp_rows > 1:
+            total_merges += (tmp_rows // 2) * tmp_cols
+            tmp_rows = (tmp_rows + 1) // 2
+
+    completed_merges = 0
     while rows > 1 or cols > 1:
         if cols > 1:
             tasks = []
@@ -1739,7 +1768,12 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                         col += 1
                 new_grid.append(new_row)
 
-            run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers)
+            run_mpi_merge_stage(
+                tasks, MPI_exec_str, MPI_nworkers,
+                stage_label=f'stage{stage} cols',
+                total_merges=total_merges - completed_merges
+            )
+            completed_merges += len(tasks)
             tile_grid = new_grid
             cols = len(tile_grid[0])
             stage += 1
@@ -1801,7 +1835,12 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     row += 1
                     new_row_idx += 1
 
-            run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers)
+            run_mpi_merge_stage(
+                tasks, MPI_exec_str, MPI_nworkers,
+                stage_label=f'stage{stage} rows',
+                total_merges=total_merges - completed_merges
+            )
+            completed_merges += len(tasks)
             tile_grid = new_grid
             rows = len(tile_grid)
             stage += 1
