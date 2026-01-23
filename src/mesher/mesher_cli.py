@@ -627,29 +627,40 @@ def main():
     print('Computing parameters and initial conditions')
     start_time = time.perf_counter()
 
-    my_tris = np.array_split([x for x in range(mesh['mesh']['nelem'])], MPI_nworkers)
-
-    for cz in range(MPI_nworkers):
-        subset_mesh = {'mesh': {}}
-        subset_mesh['mesh']['vertex'] = mesh['mesh']['vertex']
-        subset_mesh['mesh']['nvertex'] = mesh['mesh']['nvertex']
-        # we don't need neigh for param estimation
-        # subset_mesh['mesh']['neigh'] = mesh['mesh']['neigh']
-
-        # because we have the full vertex set, we don't have to futz around remapping the elem vertex ids
-        subset_mesh['mesh']['elem'] = itemgetter(*my_tris[cz])(mesh['mesh']['elem'])
-
-        # we need to pass the local number tri count through to the MPI process
-        subset_mesh['mesh']['nelem'] = len(my_tris[cz])
-
-        param_args = [gt, is_geographic, subset_mesh, parameter_files, initial_conditions,
-                        src_ds.RasterXSize, src_ds.RasterYSize, srs_out.ExportToProj4()]
-
-        with open(f'pickled_param_args_{cz}.pickle', 'wb') as f:
-            cloudpickle.dump(param_args, f)
-
     MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher_utls.__file__),
                                                       'MPI_do_parameterize.py'))
+    verts_path = base_dir + base_name + '_mpi_param_verts.npy'
+    elems_path = base_dir + base_name + '_mpi_param_elems.npy'
+    np.save(verts_path, np.asarray(mesh['mesh']['vertex'], dtype=float))
+    np.save(elems_path, np.asarray(mesh['mesh']['elem'], dtype=int))
+
+    prepare_args = {
+        'gt': gt,
+        'is_geographic': is_geographic,
+        'parameter_files': parameter_files,
+        'initial_conditions': initial_conditions,
+        'RasterXSize': src_ds.RasterXSize,
+        'RasterYSize': src_ds.RasterYSize,
+        'srs_proj4': srs_out.ExportToProj4(),
+        'verts_path': verts_path,
+        'elems_path': elems_path
+    }
+    with open('pickled_param_prepare_args.pickle', 'wb') as f:
+        cloudpickle.dump(prepare_args, f)
+
+    if MPI_exec_str is not None:
+        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_prepare_args.pickle False {configfile} --prepare-only"""
+        print(exec_str)
+        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+    else:
+        comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                   args=[MPI_do_parameterize_path,
+                                         'pickled_param_prepare_args.pickle', 'True', configfile, '--prepare-only'],
+                                   maxprocs=MPI_nworkers)
+        comm.Disconnect()
+
+    os.remove('pickled_param_prepare_args.pickle')
+
     if MPI_exec_str is not None:
         exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""
         print(exec_str)
