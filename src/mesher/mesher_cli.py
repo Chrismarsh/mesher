@@ -672,6 +672,12 @@ def main():
                                    maxprocs=MPI_nworkers)
         comm.Disconnect()
 
+    for tmp_path in (verts_path, elems_path):
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
 
     files = natsorted(glob.glob('pickled_param_args_rets_*.pickle'))
     # print(files)
