@@ -68,10 +68,8 @@ def main():
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
-        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
-            mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
-            mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, \
-            mpi_dump_poly_files, mpi_seam_skip_angle_below_min_area, mesher_debug, \
+        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
+            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, \
             mpi_shared_edge_constraints, mpi_shared_edge_spacing = read_config(configfile)
 
 
@@ -514,10 +512,8 @@ def main():
                                              initial_conditions, max_area, min_area, max_tolerance,
                                              errormetric, lloyd_itr, use_weights, topo_weight,
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                                             mpi_seam_point_spacing, mpi_merge_snap_tol, mpi_seam_lloyd,
-                                             mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol,
-                                             mpi_dump_poly_only, mpi_dump_poly_files,
-                                             mpi_seam_skip_angle_below_min_area, mesher_debug,
+                                             mpi_merge_snap_tol,
+                                             mesher_debug,
                                              mpi_shared_edge_constraints, mpi_shared_edge_spacing)
         else:
             start_time = time.perf_counter()
@@ -996,29 +992,9 @@ def read_config(configfile):
     if hasattr(X, 'mpi_mesh'):
         mpi_mesh = X.mpi_mesh
 
-    mpi_seam_point_spacing = None
-    if hasattr(X, 'mpi_seam_point_spacing'):
-        mpi_seam_point_spacing = X.mpi_seam_point_spacing
-
     mpi_merge_snap_tol = None
     if hasattr(X, 'mpi_merge_snap_tol'):
         mpi_merge_snap_tol = X.mpi_merge_snap_tol
-
-    mpi_seam_lloyd = None
-    if hasattr(X, 'mpi_seam_lloyd'):
-        mpi_seam_lloyd = X.mpi_seam_lloyd
-
-    mpi_seam_point_cap = None
-    if hasattr(X, 'mpi_seam_point_cap'):
-        mpi_seam_point_cap = X.mpi_seam_point_cap
-
-    mpi_seam_constraints = True
-    if hasattr(X, 'mpi_seam_constraints'):
-        mpi_seam_constraints = X.mpi_seam_constraints
-
-    mpi_seam_simplify_tol = 0.5
-    if hasattr(X, 'mpi_seam_simplify_tol'):
-        mpi_seam_simplify_tol = X.mpi_seam_simplify_tol
 
     mpi_global_lloyd = 0
     if hasattr(X, 'mpi_global_lloyd'):
@@ -1035,17 +1011,9 @@ def read_config(configfile):
             min_area_val = locals().get('max_area', 1.0)
         mpi_lloyd_boundary_tol = max(1e-6, math.sqrt(min_area_val))
 
-    mpi_dump_poly_only = False
-    if hasattr(X, 'mpi_dump_poly_only'):
-        mpi_dump_poly_only = X.mpi_dump_poly_only
-
-    mpi_dump_poly_files = False
-    if hasattr(X, 'mpi_dump_poly_files'):
-        mpi_dump_poly_files = X.mpi_dump_poly_files
-
-    mpi_seam_skip_angle_below_min_area = False
-    if hasattr(X, 'mpi_seam_skip_angle_below_min_area'):
-        mpi_seam_skip_angle_below_min_area = X.mpi_seam_skip_angle_below_min_area
+    mpi_merge_snap_tol = None
+    if hasattr(X, 'mpi_merge_snap_tol'):
+        mpi_merge_snap_tol = X.mpi_merge_snap_tol
 
     mpi_shared_edge_constraints = False
     if hasattr(X, 'mpi_shared_edge_constraints'):
@@ -1059,10 +1027,8 @@ def read_config(configfile):
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
-        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_seam_point_spacing, mpi_merge_snap_tol, \
-        mpi_seam_lloyd, mpi_seam_point_cap, mpi_seam_constraints, mpi_seam_simplify_tol, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mpi_dump_poly_only, mpi_dump_poly_files, \
-        mpi_seam_skip_angle_below_min_area, mesher_debug, mpi_shared_edge_constraints, mpi_shared_edge_spacing
+        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
+        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, mpi_shared_edge_constraints, mpi_shared_edge_spacing
 
 
 
@@ -1545,14 +1511,10 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
                     max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                    mpi_seam_point_spacing=None, mpi_merge_snap_tol=None, mpi_seam_lloyd=None,
-                    mpi_seam_point_cap=None, mpi_seam_constraints=True, mpi_seam_simplify_tol=None,
-                    mpi_dump_poly_only=False, mpi_dump_poly_files=False,
-                    mpi_seam_skip_angle_below_min_area=False, mesher_debug=False,
+                    mpi_merge_snap_tol=None, mesher_debug=False,
                     mpi_shared_edge_constraints=False, mpi_shared_edge_spacing=None):
     band_width = 5 * math.sqrt(min_area)
-    if mpi_shared_edge_constraints:
-        band_width = 0.0
+    band_width = 0.0
     rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
 
     tile_width = (xmax - xmin) / cols
@@ -1583,62 +1545,11 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     if tile_count < MPI_nworkers:
         print(f'Warning: using {tile_count} tiles for {MPI_nworkers} MPI ranks to keep the grid square.')
 
-    # Preflight seam bboxes to avoid launching MPI jobs that will hang in the mesher.
-    tile_bboxes = []
-    for r in range(rows):
-        for c in range(cols):
-            tile_xmin = xmin + c * tile_width
-            tile_xmax = tile_xmin + tile_width
-            tile_ymax = ymax - r * tile_height
-            tile_ymin = tile_ymax - tile_height
-            tile_bboxes.append((r, c, [tile_xmin, tile_ymin, tile_xmax, tile_ymax]))
-
-    def seam_bbox(a, b):
-        return bbox_intersection(
-            expand_bbox(a, band_width),
-            expand_bbox(b, band_width)
-        )
-
-    for r in range(rows):
-        for c in range(cols):
-            idx = r * cols + c
-            _, _, bbox_a = tile_bboxes[idx]
-            if c + 1 < cols:
-                _, _, bbox_b = tile_bboxes[idx + 1]
-                sbox = seam_bbox(bbox_a, bbox_b)
-                if sbox is not None:
-                    sw = sbox[2] - sbox[0]
-                    sh = sbox[3] - sbox[1]
-                    if sw <= 0 or sh <= 0:
-                        raise RuntimeError(f'Invalid seam bbox between tiles r{r}c{c} and r{r}c{c+1}')
-                    s_aspect = max(sw / sh, sh / sw)
-                    if s_aspect > aspect_threshold and min(sw, sh) <= min_edge_threshold:
-                        raise RuntimeError(
-                            f'Seam bbox between tiles r{r}c{c} and r{r}c{c+1} is too skinny '
-                            f'(aspect={s_aspect:.2f}, w={sw:.3f}, h={sh:.3f}). '
-                            'Reduce MPI_nworkers or choose a more square grid.'
-                        )
-            if r + 1 < rows:
-                _, _, bbox_b = tile_bboxes[idx + cols]
-                sbox = seam_bbox(bbox_a, bbox_b)
-                if sbox is not None:
-                    sw = sbox[2] - sbox[0]
-                    sh = sbox[3] - sbox[1]
-                    if sw <= 0 or sh <= 0:
-                        raise RuntimeError(f'Invalid seam bbox between tiles r{r}c{c} and r{r+1}c{c}')
-                    s_aspect = max(sw / sh, sh / sw)
-                    if s_aspect > aspect_threshold and min(sw, sh) <= min_edge_threshold:
-                        raise RuntimeError(
-                            f'Seam bbox between tiles r{r}c{c} and r{r+1}c{c} is too skinny '
-                            f'(aspect={s_aspect:.2f}, w={sw:.3f}, h={sh:.3f}). '
-                            'Reduce MPI_nworkers or choose a more square grid.'
-                        )
+    # Seam preflight removed (shared-edge merge has no seam polygons).
 
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
 
     tile_args = []
-    if mpi_seam_point_spacing is None:
-        mpi_seam_point_spacing = 5.0 * math.sqrt(min_area)
     if mpi_shared_edge_constraints and mpi_shared_edge_spacing is None:
         mpi_shared_edge_spacing = max(1e-6, math.sqrt(min_area))
     for rank in range(tile_count):
@@ -1680,8 +1591,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'is_geographic': is_geographic,
             'dem_path': base_dir + base_name + '_projected.tif',
             'outer_polygon_shp': outer_polygon_shp,
-            'dump_poly_only': mpi_dump_poly_only,
-            'dump_poly_files': mpi_dump_poly_files,
             'mesher_debug': mesher_debug,
             'use_shared_edges': mpi_shared_edge_constraints,
             'shared_edge_spacing': mpi_shared_edge_spacing
@@ -1762,16 +1671,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
                             'outer_polygon_shp': outer_polygon_shp,
-                            'seam_point_spacing': mpi_seam_point_spacing,
                             'merge_snap_tol': mpi_merge_snap_tol,
-                            'seam_lloyd': mpi_seam_lloyd,
-                            'seam_point_cap': mpi_seam_point_cap,
-                            'seam_constraints': mpi_seam_constraints,
-                            'seam_simplify_tol': mpi_seam_simplify_tol,
-                            'dump_poly_only': mpi_dump_poly_only,
-                            'dump_poly_files': mpi_dump_poly_files,
-                            'seam_aspect_limit': 10.0,
-                            'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
                             'mesher_debug': mesher_debug,
                             'use_shared_edges': mpi_shared_edge_constraints
                         })
@@ -1827,16 +1727,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
                             'outer_polygon_shp': outer_polygon_shp,
-                            'seam_point_spacing': mpi_seam_point_spacing,
                             'merge_snap_tol': mpi_merge_snap_tol,
-                            'seam_lloyd': mpi_seam_lloyd,
-                            'seam_point_cap': mpi_seam_point_cap,
-                            'seam_constraints': mpi_seam_constraints,
-                            'seam_simplify_tol': mpi_seam_simplify_tol,
-                            'dump_poly_only': mpi_dump_poly_only,
-                            'dump_poly_files': mpi_dump_poly_files,
-                            'seam_aspect_limit': 10.0,
-                            'skip_angle_below_min_area': mpi_seam_skip_angle_below_min_area,
                             'mesher_debug': mesher_debug,
                             'use_shared_edges': mpi_shared_edge_constraints
                         })
