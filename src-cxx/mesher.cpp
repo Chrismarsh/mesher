@@ -99,7 +99,6 @@ int main(int argc, char *argv[])
     size_t lloyd_itr = 0;
     std::string error_metric = "rmse"; //default of RMSE
     double weight_threshold=0;// if weights are used, threshold of weighted sum that must be surpassed for triangle to be accepeted as good
-    bool skip_angle_below_min_area = false;
     bool debug = false;
 
     bool use_weights = false; // use the weighted generic method. If any weights are passed in (weights.size() > 0) then this will be set true and the weight methods will be used.
@@ -141,8 +140,6 @@ int main(int argc, char *argv[])
                                                          "mean_tol compares the mean triangle vertex value to the mean raster value. "
                                                         "max_tol mimics the ArcGIS TIN tolerance, and is the maximum difference between the triangle and any single raster cell.")
             ("weight-threshold,h", po::value<double>(&weight_threshold),"If weights are used, threshold of weighted sum that must be surpassed for triangle to be accepted as good.")
-            ("skip-angle-below-min-area", po::value<bool>(&skip_angle_below_min_area),
-             "If true, skip angle checks when triangle area is below min-area.")
             ("debug", po::value<bool>(&debug),
              "Enable verbose Is_bad diagnostics (triangle rejection reasons).");
     po::variables_map vm;
@@ -429,7 +426,7 @@ int main(int argc, char *argv[])
 
     std::cout << "Number of input PLGS vertices: " << cdt.number_of_vertices() << std::endl;
     std::cout << "Meshing the triangulation..." << std::endl;
-    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic,use_weights,weight_threshold,skip_angle_below_min_area,debug));
+    CGAL::refine_Delaunay_mesh_2(cdt, Criteria(0.125 /*internal angle*/,max_area,min_area,rasters,category_rasters,error_metric,is_geographic,use_weights,weight_threshold,debug));
 
     //run lloyd optimizations if required.
     //if run, 100 is a good pick

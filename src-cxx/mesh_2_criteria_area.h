@@ -43,7 +43,6 @@
         const bool is_geographic;
         const bool use_weights;
         const double weight_threshold;
-        const bool skip_angle_below_min_area;
         const bool debug;
 
         OGRCoordinateTransformation* prj_trans;
@@ -58,10 +57,9 @@
                               const bool is_geographic = false,
                               const bool use_weights = false,
                               const double weight_threshold = 0,
-                              const bool skip_angle_below_min_area = false,
                               const bool debug = false,
                               const Geom_traits &traits = Geom_traits())
-        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),weight_threshold(weight_threshold),skip_angle_below_min_area(skip_angle_below_min_area),debug(debug)
+        : r(rasters),category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),use_weights(use_weights),weight_threshold(weight_threshold),debug(debug)
 
         {
             this->max_area = max_area;
@@ -190,7 +188,6 @@
             const bool is_geographic;
             const bool use_weights;
             const double weight_threshold;
-            const bool skip_angle_below_min_area;
             const bool debug;
             OGRCoordinateTransformation* prj_trans;
             const Geom_traits &traits;
@@ -209,13 +206,12 @@
                    const bool is_geographic=false,
                    const bool use_weights=false,
                    const double weight_threshold=0,
-                   const bool skip_angle_below_min_area=false,
                    const bool debug=false,
                    OGRCoordinateTransformation* prj_trans=nullptr,
                    const Geom_traits &traits = Geom_traits() )
                     : B(aspect_bound), max_area(area_bound), min_area(min_area),
                       r(r), category_rasters(category_rasters),error_metric(error_metric),is_geographic(is_geographic),
-                      use_weights(use_weights),weight_threshold(weight_threshold),skip_angle_below_min_area(skip_angle_below_min_area),debug(debug),traits(traits)
+                      use_weights(use_weights),weight_threshold(weight_threshold),debug(debug),traits(traits)
             {
                 this->prj_trans = prj_trans;
                 if(!prj_trans && is_geographic)
@@ -624,10 +620,6 @@
                     return CGAL::Mesh_2::IMPERATIVELY_BAD; //IMPERATIVELY_BAD
                 }
 
-                // For seam merges, allow small triangles to pass even if angles are poor to avoid endless refinement.
-                if (skip_angle_below_min_area && q.area() <= min_area)
-                    return CGAL::Mesh_2::NOT_BAD;
-
                 if (q.sine() < this->B)
                 {
                     double min_angle_rad = std::asin(std::max(-1.0, std::min(1.0, q.sine())));
@@ -897,6 +889,6 @@
 
         Is_bad is_bad_object() const
         {
-            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, skip_angle_below_min_area, debug, prj_trans, this->traits);
+            return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, debug, prj_trans, this->traits);
         }
     };

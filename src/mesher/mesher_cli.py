@@ -1522,21 +1522,11 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     min_edge = min(tile_width, tile_height)
     min_edge_threshold = 1.25 * band_width
     # min_edge_threshold=1
-    aspect_ratio = max(tile_width / tile_height, tile_height / tile_width)
-    aspect_threshold = 30.0
     if min_edge <= min_edge_threshold:
         msg = (
             f'MPI_nworkers={MPI_nworkers} yields tiles {rows}x{cols} '
             f'with min edge {min_edge:.3f} <= threshold {min_edge_threshold:.3f}. '
-            'This likely creates skinny tiles and unstable seam polygons. '
-            'Reduce MPI_nworkers or choose a more square grid.'
-        )
-        raise RuntimeError(msg)
-    if aspect_ratio > aspect_threshold:
-        msg = (
-            f'MPI_nworkers={MPI_nworkers} yields tiles {rows}x{cols} '
-            f'with aspect ratio {aspect_ratio:.2f} > {aspect_threshold:.2f}. '
-            'This likely creates skinny tiles and unstable seam polygons. '
+            'This likely creates skinny tiles and unstable shared-edge merges. '
             'Reduce MPI_nworkers or choose a more square grid.'
         )
         raise RuntimeError(msg)
@@ -1545,7 +1535,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     if tile_count < MPI_nworkers:
         print(f'Warning: using {tile_count} tiles for {MPI_nworkers} MPI ranks to keep the grid square.')
 
-    # Seam preflight removed (shared-edge merge has no seam polygons).
 
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
 
