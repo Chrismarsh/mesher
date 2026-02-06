@@ -13,13 +13,32 @@ Wheels are not prebuilt for mesher. Instead, mesher will need to be compiled as 
 This thus requires a functional build environment.
 
 
-spack
-+++++++
+Install spack
++++++++++++++++
+Install `spack <https://spack-tutorial.readthedocs.io/en/latest/tutorial_basics.html>`__
 
- ``py-mesher`` has not been added to spack's built in repos yet, so please add it's spack repo.
+Use the git repository and use the develop branch, as significant bug fixes to packages CHM uses have been made in
+this branch.
 
-- ``spack repo add https://github.com/Chrismarsh/spack-repo.git``
-- ``spack install py-mesher``
+Configure Spack
++++++++++++++++++++
+It is critical to ensure spack is correctly
+configured, as described in the `Spack Getting Started <https://spack.readthedocs.io/en/latest/getting_started.html>`__
+guide.
+
+If you need to build a compiler via spack to use and the spack libraries, this is the time to do it.
+Otherwise, ensure
+the `external compiler is found by
+spack <https://spack.readthedocs.io/en/latest/getting_started.html#spack-compiler-find>`__ and correctly configured.
+
+If you use a system MPI or intel-oneapi-(mkl|tbb) (i.e., a not-spack built version), this is when it should be configured
+`as a spack external <https://spack.readthedocs.io/en/latest/packages_yaml.html#external-packages>`__ package.
+
+
+::
+
+    spack repo add https://github.com/Chrismarsh/spack-repo.git
+    spack install py-mesher
 
 
 conda
