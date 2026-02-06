@@ -65,6 +65,8 @@ html_theme_options = {
         "image_light": "_static/images/mesher_logo.png",
         "image_dark": "_static/images/mesher_logo.png",
     },
+    'collapse_navigation': False,
+    'sticky_navigation': True,
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
@@ -74,11 +76,6 @@ html_static_path = ['_static']
 html_css_files = [
     "fix-notebook-darkmode.css",
 ]
-
-html_theme_options = {
-    'collapse_navigation': False,
-    'sticky_navigation': True,
-}
 
 
 # Extensions to theme docs
