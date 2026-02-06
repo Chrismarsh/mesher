@@ -1,0 +1,14 @@
+/* Force correct background + foreground colours for HTML output blocks in RTD dark mode */
+/* Applies to Jupyter cell output, HTML widgets, and images */
+
+html[data-theme="dark"] .bd-content div.cell_output .text_html:not(:has(table.dataframe)),
+html[data-theme="dark"] .bd-content div.cell_output .widget-subarea,
+html[data-theme="dark"] .bd-content div.cell_output img {
+    background-color: #191a1b !important;  /* Dark Reader default dark background */
+    color: #ece8e2 !important;             /* Dark Reader default text colour */
+}
+
+/* Optional: if there are nested elements inheriting incorrectly */
+html[data-theme="dark"] .bd-content div.cell_output .text_html * {
+    color: #ece8e2 !important;
+}
