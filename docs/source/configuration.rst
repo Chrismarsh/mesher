@@ -553,7 +553,7 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: int
     :default: 0
 
-    Run N distributed Lloyd iterations on the stitched mesh after MPI merge.
+    Run N distributed Lloyd iterations on the stitched mesh after MPI merge. Doesn't work well so leave disabled.
 
 .. confval:: mpi_lloyd_boundary_tol
 
@@ -562,25 +562,12 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
 
     Boundary lock distance for distributed Lloyd (vertices within this distance to the domain boundary remain fixed).
 
-.. confval:: mpi_shared_edge_constraints
-
-    :type: bool
-    :default: False
-
-    Use shared-edge constraints instead of seam re-meshing. Each tile meshes only its
-    core bbox and enforces shared tile borders as constrained edges with matching
-    boundary points. This avoids expensive seam union/meshing but requires sufficient
-    boundary point density to keep triangles from crossing the shared edge.
-    When enabled, global MPI Lloyd will also lock vertices along shared tile borders
-    (using `mpi_lloyd_boundary_tol` as the lock distance) to prevent seam gaps.
-
 .. confval:: mpi_shared_edge_spacing
 
     :type: double
     :default: sqrt(min_area)
 
-    Target spacing used to densify shared tile boundary edges when
-    `mpi_shared_edge_constraints` is enabled.
+    Target spacing used to densify shared tile boundary edges.
 
 .. confval:: use_exactextract
 
@@ -602,7 +589,6 @@ preflight checks that will fail fast before launching MPI work:
 
 If you hit these guards, reduce `MPI_nworkers` or choose a more square grid (Mesher may leave some ranks idle
 to preserve square tiles).
-
 
 
 
