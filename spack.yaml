@@ -1,7 +1,7 @@
 spack:
   specs:
     # setup.py
-    - "vtk+python@9.2:"
+    - "vtk@9.2: +python"
     - py-numpy
     - py-matplotlib
     - py-cloudpickle
@@ -9,6 +9,7 @@ spack:
     - py-mpi4py
     - py-natsort
     - py-scipy
+    - "exactextract +python +tbb"
 
     # cmake build
     - "cgal@6: +gmp"
