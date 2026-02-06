@@ -70,7 +70,7 @@ def main():
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
             mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
-            mpi_shared_edge_constraints, mpi_shared_edge_spacing = read_config(configfile)
+            mpi_shared_edge_spacing = read_config(configfile)
 
 
     ########################################################
@@ -513,7 +513,7 @@ def main():
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                                              mpi_merge_snap_tol,
                                              mesher_debug,
-                                             mpi_shared_edge_constraints, mpi_shared_edge_spacing)
+                                             mpi_shared_edge_spacing)
         else:
             start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
@@ -587,7 +587,7 @@ def main():
             run_mpi_lloyd(verts_path, tris_path, out_verts_path, outputBufferfn,
                           mpi_lloyd_boundary_tol, mpi_global_lloyd,
                           MPI_exec_str, MPI_nworkers,
-                          shared_edge_constraints=mpi_shared_edge_constraints,
+                          shared_edge_constraints=True,
                           shared_edge_tol=mpi_lloyd_boundary_tol,
                           tile_rows=lloyd_rows,
                           tile_cols=lloyd_cols)
@@ -1023,10 +1023,6 @@ def read_config(configfile):
     if hasattr(X, 'mpi_merge_snap_tol'):
         mpi_merge_snap_tol = X.mpi_merge_snap_tol
 
-    mpi_shared_edge_constraints = False
-    if hasattr(X, 'mpi_shared_edge_constraints'):
-        mpi_shared_edge_constraints = X.mpi_shared_edge_constraints
-
     mpi_shared_edge_spacing = None
     if hasattr(X, 'mpi_shared_edge_spacing'):
         mpi_shared_edge_spacing = X.mpi_shared_edge_spacing
@@ -1037,7 +1033,7 @@ def read_config(configfile):
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
         mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
-        mpi_shared_edge_constraints, mpi_shared_edge_spacing
+        mpi_shared_edge_spacing
 
 
 
@@ -1521,7 +1517,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                     mpi_merge_snap_tol=None, mesher_debug=False,
-                    mpi_shared_edge_constraints=False, mpi_shared_edge_spacing=None):
+                    mpi_shared_edge_spacing=None):
     band_width = 5 * math.sqrt(min_area)
     band_width = 0.0
     rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
@@ -1548,7 +1544,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
 
     tile_args = []
-    if mpi_shared_edge_constraints and mpi_shared_edge_spacing is None:
+    if mpi_shared_edge_spacing is None:
         mpi_shared_edge_spacing = max(1e-6, math.sqrt(min_area))
     for rank in range(tile_count):
         row = rank // cols
@@ -1590,7 +1586,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'dem_path': base_dir + base_name + '_projected.tif',
             'outer_polygon_shp': outer_polygon_shp,
             'mesher_debug': mesher_debug,
-            'use_shared_edges': mpi_shared_edge_constraints,
+            'use_shared_edges': True,
             'shared_edge_spacing': mpi_shared_edge_spacing
         })
 
@@ -1671,7 +1667,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': mpi_shared_edge_constraints
+                            'use_shared_edges': True
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1727,7 +1723,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': mpi_shared_edge_constraints
+                            'use_shared_edges': True
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
