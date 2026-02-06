@@ -69,7 +69,7 @@ def main():
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, \
+            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
             mpi_shared_edge_constraints, mpi_shared_edge_spacing = read_config(configfile)
 
 
@@ -506,7 +506,6 @@ def main():
     if not reuse_mesh:
         print(f'mpi_mesh={mpi_mesh}')
         if mpi_mesh:
-            print("MPI code path")
             final_npz_path = run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax,
                                              gdal_prefix, mesher_path, outputBufferfn, constraints, parameter_files,
                                              initial_conditions, max_area, min_area, max_tolerance,
@@ -621,6 +620,8 @@ def main():
         csize = 1
 
     print('Computing parameters and initial conditions')
+
+    # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
     start_time = time.perf_counter()
 
     MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher_utls.__file__),
@@ -639,7 +640,8 @@ def main():
         'RasterYSize': src_ds.RasterYSize,
         'srs_proj4': srs_out.ExportToProj4(),
         'verts_path': verts_path,
-        'elems_path': elems_path
+        'elems_path': elems_path,
+        'use_exactextract': use_exactextract
     }
     with open('pickled_param_prepare_args.pickle', 'wb') as f:
         cloudpickle.dump(prepare_args, f)
@@ -658,6 +660,7 @@ def main():
     os.remove('pickled_param_prepare_args.pickle')
 
     if MPI_exec_str is not None:
+        # RANK is placeholder, it's change within the do parameterize call
         exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""
         print(exec_str)
         subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
@@ -858,6 +861,11 @@ def read_config(configfile):
     mesher_debug = False
     if hasattr(X, 'mesher_debug'):
         mesher_debug = X.mesher_debug
+    # Default to exactextract for speed; allow users to opt out to retain
+    # the slower per-pixel parameterization semantics.
+    use_exactextract = True
+    if hasattr(X, 'use_exactextract'):
+        use_exactextract = X.use_exactextract
     user_output_dir = cwd + os.path.sep
     # output to the specific directory, instead of the root dir of the calling python script
     if hasattr(X, 'user_output_dir'):
@@ -1028,7 +1036,8 @@ def read_config(configfile):
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, mpi_shared_edge_constraints, mpi_shared_edge_spacing
+        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
+        mpi_shared_edge_constraints, mpi_shared_edge_spacing
 
 
 
@@ -1896,25 +1905,20 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
         # key[0:10] -> if the name is longer, it'll have been truncated when we made the field
         # pdb.set_trace()
         for key, data in parameter_files.items():
-            try:
-                output = data[elem]
-                # pdb.set_trace()
-                feature.SetField(key[0:10], float(output))
-            except TypeError as e:
-
-                print(e)
-                print('---')
-                print(key)
-                print(data)
-                print('---')
-                print(elem)
-                print(output)
-                print('---')
-                raise(e)
+            output = data[elem]
+            if output is None:
+                output = float('nan')
+            elif isinstance(output, (list, tuple, np.ndarray)):
+                output = output[0] if len(output) else float('nan')
+            feature.SetField(key[0:10], float(output))
 
         for key, data in initial_conditions.items():
             output = data[elem]
-            feature.SetField(key[0:10], output)
+            if output is None:
+                output = float('nan')
+            elif isinstance(output, (list, tuple, np.ndarray)):
+                output = output[0] if len(output) else float('nan')
+            feature.SetField(key[0:10], float(output))
 
         layer.CreateFeature(feature)
     output_usm.FlushCache()
@@ -1958,6 +1962,18 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
         vtu_cells[k] = vtk.vtkFloatArray()
         vtu_cells[k].SetName(k)
 
+    def as_float(value):
+        if value is None:
+            return float('nan')
+        if isinstance(value, (list, tuple, np.ndarray)):
+            if len(value) == 0:
+                return float('nan')
+            value = value[0]
+        try:
+            return float(value)
+        except Exception:
+            return float('nan')
+
     for elem in range(mesh['mesh']['nelem']):
         v0 = mesh['mesh']['elem'][elem][0]
         v1 = mesh['mesh']['elem'][elem][1]
@@ -1991,11 +2007,11 @@ def write_vtu(fname, mesh, parameter_files, initial_conditions):
         vtu_cells['area'].InsertNextTuple1(area)
 
         for key, data in parameter_files.items():
-            output = data[elem]
+            output = as_float(data[elem])
             vtu_cells['[param] ' + key].InsertNextTuple1(output)
 
         for key, data in initial_conditions.items():
-            output = data[elem]
+            output = as_float(data[elem])
             vtu_cells['[ic] ' + key].InsertNextTuple1(output)
 
     vtu.SetPoints(vtu_points)

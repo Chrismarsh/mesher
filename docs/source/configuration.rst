@@ -539,49 +539,14 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: bool
     :default: False
 
-    Enable MPI tile meshing and seam merge. Produces a single stitched mesh.
-
-.. confval:: mpi_seam_point_spacing
-
-    :type: double
-    :default: 5 * sqrt(min_area)
-
-    Target spacing for seam boundary densification and snap tolerance heuristics.
+    Enable MPI tile meshing and shared-edge merge. Produces a single stitched mesh.
 
 .. confval:: mpi_merge_snap_tol
 
     :type: double
     :default: None
 
-    Override the snap tolerance used for seam vertex deduplication.
-
-.. confval:: mpi_seam_lloyd
-
-    :type: int
-    :default: None
-
-    Run Lloyd iterations for seam re-meshing only.
-
-.. confval:: mpi_seam_point_cap
-
-    :type: int
-    :default: None
-
-    Cap the number of seam points passed to the seam mesher. Useful to limit memory usage.
-
-.. confval:: mpi_seam_constraints
-
-    :type: bool
-    :default: True
-
-    Clip and enforce constraint lines inside the seam polygon.
-
-.. confval:: mpi_seam_simplify_tol
-
-    :type: double
-    :default: 0.5
-
-    Simplify seam polygon boundary before writing the .poly file. Higher values simplify more.
+    Override the snap tolerance used for merge vertex deduplication.
 
 .. confval:: mpi_global_lloyd
 
@@ -597,44 +562,36 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
 
     Boundary lock distance for distributed Lloyd (vertices within this distance to the domain boundary remain fixed).
 
-.. confval:: mpi_dump_poly_only
+.. confval:: mpi_shared_edge_constraints
 
     :type: bool
     :default: False
 
-    Write tile/seam .poly and points.txt files but skip running the mesher.
+    Use shared-edge constraints instead of seam re-meshing. Each tile meshes only its
+    core bbox and enforces shared tile borders as constrained edges with matching
+    boundary points. This avoids expensive seam union/meshing but requires sufficient
+    boundary point density to keep triangles from crossing the shared edge.
+    When enabled, global MPI Lloyd will also lock vertices along shared tile borders
+    (using `mpi_lloyd_boundary_tol` as the lock distance) to prevent seam gaps.
 
-.. confval:: mpi_dump_poly_files
+.. confval:: mpi_shared_edge_spacing
 
-    :type: bool
-    :default: False
+    :type: double
+    :default: sqrt(min_area)
 
-    Write tile/seam .poly and points.txt files and continue running the mesher.
-    When enabled, Mesher also writes seam boundary and points as GeoJSON
-    (`*_seam.geojson` and `*_points.geojson`) for inspection in QGIS.
-
-.. confval:: mpi_seam_skip_angle_below_min_area
-
-    :type: bool
-    :default: False
-
-    If true, seam merges skip the angle check once triangles are below `min_area`.
-    This prevents infinite refinement on nearly-collinear seam triangles.
+    Target spacing used to densify shared tile boundary edges when
+    `mpi_shared_edge_constraints` is enabled.
 
 MPI pitfalls and guards
 -----------------------
 
-MPI tiling can produce skinny tiles or seam regions that cause the mesher to hang. Mesher now applies
+MPI tiling can produce skinny tiles that cause instability. Mesher now applies
 preflight checks that will fail fast before launching MPI work:
 
-- Tile size guard: ensures the smallest tile edge is not too small relative to `min_area` and the seam band.
-- Seam guard: checks seam bbox aspect ratio and min edge size for every adjacent tile pair.
+- Tile size guard: ensures the smallest tile edge is not too small relative to `min_area`.
 
 If you hit these guards, reduce `MPI_nworkers` or choose a more square grid (Mesher may leave some ranks idle
 to preserve square tiles).
-
-
-
 
 
 
