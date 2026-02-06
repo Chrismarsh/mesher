@@ -26,8 +26,17 @@ placing points along the seam, approximately spaced at the smallest allowed tria
 triangles may not be strictly Delaunay while crossing the boundary. This can result in a regular pattern of small
 triangles. This is more evident in areas with low topographic variability than in areas with high variability.
 
+Zoom in of a seam
+
 |image0-mpi|
+
+
 |image1-mpi|
+
+lloyd iterations
+++++++++++++++++++
+Global lloyd iterations breaks the alignment across the seams.
+
 
 
 .. |image0-mpi| image:: images/mpi_seam.png
