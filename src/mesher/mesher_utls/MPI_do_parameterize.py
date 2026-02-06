@@ -12,7 +12,8 @@ from mpi4py import MPI
 import numpy as np
 from osgeo import gdal, ogr, osr
 import importlib
-import json
+from exactextract import exact_extract
+from exactextract.feature import JSONFeatureSource
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
@@ -318,18 +319,6 @@ def main(pickle_file: str,
 
     gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4, use_exactextract = param_args
 
-    exactextract = None
-    # exactextract is much faster for zonal stats; fall back if it's unavailable.
-    if use_exactextract:
-        try:
-            from exactextract import exact_extract
-            from exactextract.feature import JSONFeatureSource
-
-            exactextract = exact_extract
-        except Exception:
-            warnings.warn('exactextract not available; falling back to per-pixel parameterization')
-            use_exactextract = False
-
     ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
 
     def build_tri_features(mesh):
@@ -355,14 +344,15 @@ def main(pickle_file: str,
 
     # Fast path: compute per-triangle stats once via exactextract. Parameters
     # with classifiers fall back to the per-pixel path so semantics match.
-    if use_exactextract and exactextract is not None:
+    # exactextract is much faster for zonal stats;
+    if use_exactextract:
         features = build_tri_features(mesh)
-        if JSONFeatureSource is not None:
-            srs = osr.SpatialReference()
-            srs.ImportFromProj4(srs_proj4)
-            srs_wkt = srs.ExportToWkt()
 
-            features = JSONFeatureSource(features, srs_wkt=srs_wkt)
+        srs = osr.SpatialReference()
+        srs.ImportFromProj4(srs_proj4)
+        srs_wkt = srs.ExportToWkt()
+
+        features = JSONFeatureSource(features, srs_wkt=srs_wkt)
 
         ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
 
@@ -387,7 +377,7 @@ def main(pickle_file: str,
             for fpath, method in zip(files, methods):
                 stats = stats_for_method(method)
                 print(fpath)
-                result = exactextract(fpath, features, stats)
+                result = exact_extract(fpath, features, stats)
                 values.append([row.get('properties').get(stats) for row in result])
             for tri_idx in range(mesh['mesh']['nelem']):
                 ret_tri[tri_idx][key] = values[0][tri_idx]
