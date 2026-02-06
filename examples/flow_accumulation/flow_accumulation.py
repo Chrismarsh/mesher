@@ -5,10 +5,10 @@ max_tolerance=50
 min_area=200**2
 
 use_input_prj=False
-lloyd_itr=100
+lloyd_itr=0
 simplify=True
 simplify_tol=100
-simplify_buffer=-50
+simplify_buffer=-150
 
 parameter_files = {    
                      'flow_accumulation':{
@@ -19,4 +19,12 @@ parameter_files = {
                    }
 
 
-MPI_nworkers = 1
+MPI_nworkers=64
+mpi_mesh=True
+MPI_exec_str='mpirun -n 64 python '
+nworkers_gdal=1
+mpi_global_lloyd = 1
+
+
+mpi_shared_edge_constraints=True
+mpi_shared_edge_spacing = 200

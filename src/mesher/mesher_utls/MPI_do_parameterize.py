@@ -7,10 +7,12 @@ except ModuleNotFoundError:
     from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
 ensure_mesher_on_path()
 import cloudpickle
+import warnings
 from mpi4py import MPI
 import numpy as np
 from osgeo import gdal, ogr, osr
 import importlib
+import json
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
@@ -218,6 +220,8 @@ def do_parameterize(gt, is_geographic, mesh,
 
     output = []
 
+    if data.get('file') is None:
+        raise RuntimeError(f'Parameter {key} has no open rasters in data[\"file\"]')
     for f, m in zip(data['file'], data['method']):
         output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
@@ -225,7 +229,8 @@ def do_parameterize(gt, is_geographic, mesh,
         fn = cloudpickle.loads(data['classifier'])
         output = fn(*output)
     else:
-        output = output[0]  # flatten the list for the append below
+        # flatten the list for the append below
+        output = output[0] if len(output) else float('nan')
 
     # we want to write actual NaN to vtu for better displaying
     if output == -9999:
@@ -239,7 +244,7 @@ def do_parameterize(gt, is_geographic, mesh,
     # for key, data in initial_conditions.items():
     #     output = []
     #
-    #     for f, m in zip(data['file'], data['method']):
+    #     for f, m in zip(data['filename'], data['method']):
     #         output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
     #
     #     if 'classifier' in data:
@@ -293,6 +298,7 @@ def main(pickle_file: str,
             prep['RasterXSize'],
             prep['RasterYSize'],
             prep['srs_proj4'],
+            prep.get('use_exactextract', True),
         ]
 
         out_pickle = f'pickled_param_args_{MPI.COMM_WORLD.rank}.pickle'
@@ -310,9 +316,120 @@ def main(pickle_file: str,
     with open(pickle_file, 'rb') as f:
         param_args = cloudpickle.load(f)
 
-    gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4 = param_args
+    gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4, use_exactextract = param_args
+
+    exactextract = None
+    # exactextract is much faster for zonal stats; fall back if it's unavailable.
+    if use_exactextract:
+        try:
+            from exactextract import exact_extract
+            from exactextract.feature import JSONFeatureSource
+
+            exactextract = exact_extract
+        except Exception:
+            warnings.warn('exactextract not available; falling back to per-pixel parameterization')
+            use_exactextract = False
 
     ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
+
+    def build_tri_features(mesh):
+        features = []
+        verts = mesh['mesh']['vertex']
+        elems = mesh['mesh']['elem']
+        for idx, tri in enumerate(elems):
+            v0 = verts[tri[0]]
+            v1 = verts[tri[1]]
+            v2 = verts[tri[2]]
+            coords = [[v0[0], v0[1]], [v1[0], v1[1]], [v2[0], v2[1]], [v0[0], v0[1]]]
+            features.append({
+                'type': 'Feature',
+                'properties': {'id': idx},
+                'geometry': {'type': 'Polygon', 'coordinates': [coords]}
+            })
+        return features
+
+    def stats_for_method(method):
+        if method == 'mode':
+            return 'majority'
+        return 'mean'
+
+    # Fast path: compute per-triangle stats once via exactextract. Parameters
+    # with classifiers fall back to the per-pixel path so semantics match.
+    if use_exactextract and exactextract is not None:
+        features = build_tri_features(mesh)
+        if JSONFeatureSource is not None:
+            srs = osr.SpatialReference()
+            srs.ImportFromProj4(srs_proj4)
+            srs_wkt = srs.ExportToWkt()
+
+            features = JSONFeatureSource(features, srs_wkt=srs_wkt)
+
+        ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
+
+        exact_params = {}
+        slow_params = {}
+        for key, data in parameter_files.items():
+            if key == 'area':
+                continue
+            if 'classifier' in data:
+                slow_params[key] = data
+            else:
+                exact_params[key] = data
+
+        for key, data in exact_params.items():
+            if len(data) == 0:
+                continue
+            print(f'Rank {MPI.COMM_WORLD.rank} {key}')
+            print(data)
+            files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
+            methods = data['method'] if isinstance(data['method'], list) else [data['method']]
+            values = []
+            for fpath, method in zip(files, methods):
+                stats = stats_for_method(method)
+                print(fpath)
+                result = exactextract(fpath, features, stats)
+                values.append([row.get('properties').get(stats) for row in result])
+            for tri_idx in range(mesh['mesh']['nelem']):
+                ret_tri[tri_idx][key] = values[0][tri_idx]
+
+        # Slow path for classifier-based parameters.
+        for key, data in slow_params.items():
+            warnings.warn(f'Rank {MPI.COMM_WORLD.rank} {key} uses per-pixel classifier; '
+                          f'exactextract is skipped for this parameter.')
+            print(f'Rank {MPI.COMM_WORLD.rank} {key} (per-pixel classifier)')
+            parameter_files[key]['file'] = []
+            if key != 'area':
+                files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
+                for f in files:
+                    ds = gdal.Open(f)
+                    if ds is None:
+                        raise RuntimeError(f'Error: Unable to open raster for: {key}')
+                    parameter_files[key]['file'].append(ds)
+
+            for elem in range(0, mesh['mesh']['nelem']):
+                ret = do_parameterize(gt, is_geographic, mesh, parameter_files, key,
+                                      initial_conditions, RasterXSize, RasterYSize,
+                                      srs_proj4, elem, configfile)
+                for k, d in ret.items():
+                    ret_tri[ret['id']][k] = d
+            parameter_files[key]['file'] = []
+
+        for tri_idx in range(mesh['mesh']['nelem']):
+            ret_tri[tri_idx]['id'] = tri_idx
+            if 'area' not in ret_tri[tri_idx]:
+                ret = do_parameterize(gt, is_geographic, mesh, parameter_files, 'area',
+                                      initial_conditions, RasterXSize, RasterYSize,
+                                      srs_proj4, tri_idx, configfile)
+                ret_tri[tri_idx]['area'] = ret['area']
+
+        print(f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
+        with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
+            cloudpickle.dump(ret_tri, f)
+        os.remove(pickle_file)
+        if disconnect:
+            comm = MPI.Comm.Get_parent()
+            comm.Disconnect()
+        return
 
     for key, data in parameter_files.items():
 

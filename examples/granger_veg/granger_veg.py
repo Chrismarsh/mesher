@@ -17,15 +17,21 @@ def water(w):
 dem_filename = '../data/granger1m.tif'
 
 max_area= 50**2  #Effectively unlimited upper area -- allow tolerance check to refine it further
-max_tolerance = 1    # 5m maxe RMSE between triangle and underlying elevation set to -1 to skip tolerance checks
-min_area = 5**2     #triangle area below which we will no longer refine, regardless of max_tolerance
+max_tolerance = 0.25    # 5m maxe RMSE between triangle and underlying elevation set to -1 to skip tolerance checks
+min_area = 1*2     #triangle area below which we will no longer refine, regardless of max_tolerance
 
 use_weights = True
 reuse_mesh = False
 
-
-MPI_nworkers=1
+MPI_nworkers=4
+mpi_mesh=True
+MPI_exec_str='mpirun -n 4 python '
 nworkers_gdal=1
+mpi_global_lloyd = 0
+
+
+mpi_shared_edge_constraints=True
+mpi_shared_edge_spacing = 500
 
 
 parameter_files = {
@@ -40,6 +46,5 @@ parameter_files = {
 }
 
 
-lloyd_itr=1
+# lloyd_itr=
 simplify=True
-

@@ -3,6 +3,13 @@
 github/*
 __pycache__
 python
+*.pickle
+
+# docs
+docs/build/*
+github/*
+__pycache__
+python
 
 # docs
 docs/build/*
