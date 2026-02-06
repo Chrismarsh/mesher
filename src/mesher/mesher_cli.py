@@ -69,7 +69,7 @@ def main():
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
         MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
+            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file, \
             mpi_shared_edge_spacing = read_config(configfile)
 
 
@@ -724,9 +724,16 @@ def main():
         json.dump(mesh, outfile, indent=4)
 
     # pdb.set_trace()
-    print('Saving parameters to file ' + output_name + '.param')
-    with open(user_output_dir + output_name + '.param', 'w') as outfile:
-        json.dump(params, outfile, indent=4)
+    if write_param_per_file:
+        print('Saving parameters to individual files')
+        for key, data in params.items():
+            out_path = user_output_dir + f'{output_name}.param.{key}.json'
+            with open(out_path, 'w') as outfile:
+                json.dump({key: data}, outfile, indent=4)
+    else:
+        print('Saving parameters to file ' + output_name + '.param')
+        with open(user_output_dir + output_name + '.param', 'w') as outfile:
+            json.dump(params, outfile, indent=4)
 
     print('Saving initial conditions  to file ' + output_name + '.ic')
     with open(user_output_dir + output_name + '.ic', 'w') as outfile:
@@ -866,6 +873,9 @@ def read_config(configfile):
     use_exactextract = True
     if hasattr(X, 'use_exactextract'):
         use_exactextract = X.use_exactextract
+    write_param_per_file = False
+    if hasattr(X, 'write_param_per_file'):
+        write_param_per_file = X.write_param_per_file
     user_output_dir = cwd + os.path.sep
     # output to the specific directory, instead of the root dir of the calling python script
     if hasattr(X, 'user_output_dir'):
@@ -1032,7 +1042,7 @@ def read_config(configfile):
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, \
+        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file, \
         mpi_shared_edge_spacing
 
 
