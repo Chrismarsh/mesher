@@ -26,5 +26,4 @@ nworkers_gdal=1
 mpi_global_lloyd = 1
 
 
-mpi_shared_edge_constraints=True
 mpi_shared_edge_spacing = 200

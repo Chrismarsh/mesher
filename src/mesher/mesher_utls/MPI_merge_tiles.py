@@ -104,7 +104,7 @@ def merge_tiles(args):
     data_a = np.load(tile_a['npz'])
     data_b = np.load(tile_b['npz'])
 
-    log_step('Merging tiles (shared-edge constraints)')
+    log_step('Merging tiles')
     verts_a = data_a['verts']
     tris_a = data_a['tris']
     verts_b = data_b['verts']
