@@ -37,6 +37,11 @@ lloyd iterations
 ++++++++++++++++++
 Global lloyd iterations breaks the alignment across the seams.
 
+MPI mesh gen
++++++++++++++
+
+To do the triangulation in parallel, ``mpi_mesh=True`` must be set.
+
 
 
 .. |image0-mpi| image:: images/mpi_seam.png

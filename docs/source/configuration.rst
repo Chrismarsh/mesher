@@ -579,6 +579,15 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     is applied to aggregated per-triangle stats (not per-pixel). Set to False
     to use the slower per-pixel path.
 
+.. confval:: write_param_per_file
+
+    :type: bool
+    :default: False
+
+    Write each parameter to its own JSON file (`<output>.param.<name>.json`)
+    instead of a single `<output>.param` file. This reduces memory pressure
+    for very large meshes.
+
 MPI pitfalls and guards
 -----------------------
 
@@ -589,7 +598,6 @@ preflight checks that will fail fast before launching MPI work:
 
 If you hit these guards, reduce `MPI_nworkers` or choose a more square grid (Mesher may leave some ranks idle
 to preserve square tiles).
-
 
 
 
