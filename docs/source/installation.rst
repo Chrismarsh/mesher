@@ -17,7 +17,7 @@ Install spack
 +++++++++++++++
 Install `spack <https://spack-tutorial.readthedocs.io/en/latest/tutorial_basics.html>`__
 
-Use the git repository and use the develop branch, as significant bug fixes to packages CHM uses have been made in
+Use the git repository and use the develop branch, as significant bug fixes to packages mesher uses have been made in
 this branch.
 
 Configure Spack
@@ -45,6 +45,7 @@ conda
 ++++++
 
 ::
+
     # ensure conda-forge is added
     conda config --add channels conda-forge
     conda config --set channel_priority strict
