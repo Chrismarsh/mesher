@@ -500,7 +500,12 @@ def main():
 
     final_npz_path = None
     if mpi_mesh and reuse_mesh:
-        raise RuntimeError('reuse_mesh=True is not supported with mpi_mesh=True')
+        final_npz_path = compute_mpi_final_npz_path(base_dir, base_name, MPI_nworkers)
+        if not os.path.exists(final_npz_path):
+            raise RuntimeError(
+                f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
+                'Ensure the previous MPI mesh run completed and used the same MPI_nworkers.'
+            )
 
     # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
@@ -1753,6 +1758,63 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                 total_merges=total_merges - completed_merges
             )
             completed_merges += len(tasks)
+            tile_grid = new_grid
+            rows = len(tile_grid)
+            stage += 1
+
+    return tile_grid[0][0]['npz']
+
+
+def compute_mpi_final_npz_path(base_dir, base_name, mpi_nworkers):
+    rows, cols = compute_tile_grid_allow_unused(mpi_nworkers)
+    tile_grid = []
+    for row in range(rows):
+        row_tiles = []
+        for col in range(cols):
+            tile_id = row * cols + col
+            tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
+            row_tiles.append({
+                'npz': base_dir + tile_prefix + '.npz'
+            })
+        tile_grid.append(row_tiles)
+
+    stage = 0
+    while rows > 1 or cols > 1:
+        if cols > 1:
+            new_grid = []
+            for row in range(rows):
+                new_row = []
+                col = 0
+                while col < cols:
+                    if col + 1 < cols:
+                        out_prefix = f"{base_name}_mpi_stage{stage}_r{row}_c{col // 2}"
+                        new_row.append({'npz': base_dir + out_prefix + '.npz'})
+                        col += 2
+                    else:
+                        new_row.append(tile_grid[row][col])
+                        col += 1
+                new_grid.append(new_row)
+            tile_grid = new_grid
+            cols = len(tile_grid[0])
+            stage += 1
+
+        if rows > 1:
+            new_grid = []
+            row = 0
+            new_row_idx = 0
+            while row < rows:
+                if row + 1 < rows:
+                    merged_row = []
+                    for col in range(cols):
+                        out_prefix = f"{base_name}_mpi_stage{stage}_r{new_row_idx}_c{col}"
+                        merged_row.append({'npz': base_dir + out_prefix + '.npz'})
+                    new_grid.append(merged_row)
+                    row += 2
+                    new_row_idx += 1
+                else:
+                    new_grid.append(tile_grid[row])
+                    row += 1
+                    new_row_idx += 1
             tile_grid = new_grid
             rows = len(tile_grid)
             stage += 1
