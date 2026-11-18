@@ -331,8 +331,26 @@ def main():
         featureDefn = bufferlyr.GetLayerDefn()
 
         for feature in inputlyr:
-            ingeom = feature.GetGeometryRef()
+            raw_ingeom = feature.GetGeometryRef()
+            # collapse the raster-resolution staircase (e.g. a 500km square on a 15m grid is
+            # ~130k collinear vertices) so the buffer below is cheap. Accuracy is bounded by
+            # simplify_tol, which is the same tolerance the linestring conversion uses later.
+            # NOTE: SimplifyPreserveTopology() returns a NEW geometry, it does not modify the
+            # input in place, so the returned geometry must be used.
+            ingeom = raw_ingeom
+            simplified = None
+            try:
+                simplified = raw_ingeom.SimplifyPreserveTopology(simplify_tol)
+            except Exception as e:
+                print('Warning: SimplifyPreserveTopology failed (%s). Using original boundary.' % e)
+            if simplified is not None and not simplified.IsEmpty():
+                ingeom = simplified
+            elif simplified is not None:
+                print('Warning: simplified boundary is empty. Using original boundary.')
             geomBuffer = ingeom.Buffer(bufferDist)
+            print('Outer boundary vertices: %d raw -> %d simplified -> %d buffered' %
+                  (_geom_point_count(raw_ingeom), _geom_point_count(ingeom),
+                   _geom_point_count(geomBuffer)))
 
             outFeature = ogr.Feature(featureDefn)
             outFeature.SetGeometry(geomBuffer)
@@ -816,7 +834,7 @@ def read_config(configfile):
     # Can set simplify_buffer to 0, but we can also just disable this here
     no_simplify_buffer = False
     if hasattr(X, 'no_simplify_buffer'):
-        bufferDist = X.no_simplify_buffer
+        no_simplify_buffer = X.no_simplify_buffer
     if bufferDist > 0:
         print('Buffer must be < 0 as we need to shrink the extent.')
         exit(-1)
@@ -1184,7 +1202,11 @@ def extract_point(raster, mx, my):
         px = px - 1
     if py == raster.RasterYSize:
         py = py - 1
-    mz = rb.ReadAsArray(px, py, 1, 1)
+    try:
+        mz = rb.ReadAsArray(px, py, 1, 1)
+    except:
+        mz = rb.GetNoDataValue()
+
     if mz is None:
         return rb.GetNoDataValue()
     mz = float(mz.flatten()[0])
@@ -1897,6 +1919,27 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 # To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the
 # gdal_polygonize.py code from
 # https://github.com/OSGeo/gdal/blob/release/2.4/gdal/swig/python/scripts/gdal_polygonize.py
+def _geom_point_count(geom):
+    # Total number of coordinate points across all rings of a (multi)polygon or linestring.
+    # Useful for logging how much a simplify/buffer step reduced the boundary complexity.
+    if geom is None:
+        return -1
+    count = 0
+    stack = [geom]
+    while stack:
+        g = stack.pop()
+        t = g.GetGeometryType()
+        if t in (ogr.wkbPolygon, ogr.wkbPolygon25D):
+            for i in range(g.GetGeometryCount()):
+                stack.append(g.GetGeometryRef(i))
+        elif t in (ogr.wkbLinearRing, ogr.wkbLineString, ogr.wkbLineString25D):
+            count += g.GetPointCount()
+        else:
+            for i in range(g.GetGeometryCount()):
+                stack.append(g.GetGeometryRef(i))
+    return count
+
+
 def gdal_polygonize(src_filename, mask, dst_filename):
     options = []
     src_band_n = 1
