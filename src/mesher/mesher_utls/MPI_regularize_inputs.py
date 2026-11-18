@@ -1,4 +1,7 @@
+import hashlib
+import json
 import os
+import tempfile
 import sys
 try:
     from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
@@ -12,6 +15,7 @@ import numpy as np
 import uuid
 from osgeo import gdal
 import subprocess
+from mesher.mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
 
@@ -21,8 +25,37 @@ def str2bool(s: str) -> bool:
 
     return False
 
+
+def projected_path(directory, filename, dataset, warp_options, fill_distance):
+    # Include GDAL-reported dependencies (e.g. tiles behind a VRT) without reading raster data.
+    dependencies = {}
+    pending = list(dataset.GetFileList() or [])
+    while pending:
+        path = os.path.realpath(pending.pop())
+        if path in dependencies:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            dependencies.clear()
+            break
+        dependencies[path] = (stat.st_size, stat.st_mtime_ns)
+        if path.lower().endswith('.vrt') and path != os.path.realpath(filename):
+            pending.extend(gdal.Open(path).GetFileList() or [])
+
+    if dependencies:
+        recipe = (filename, dependencies, gdal.VersionInfo(), warp_options, fill_distance)
+        digest = hashlib.sha256(json.dumps(recipe, sort_keys=True).encode()).hexdigest()[:24]
+    else:
+        # A GDAL virtual source may have no local file timestamps. Always rebuild it.
+        digest = uuid.uuid4().hex
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    return os.path.join(directory, f'{stem}_{digest}_projected.tif')
+
+
 def regularize_inputs(args):
-    base_dir, data, exec_str, gdal_prefix, key, pixel_height, pixel_width, srs_out, xmax, xmin, ymax, ymin, fill_holes = args
+    (parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width, srs_out,
+     xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters) = args
 
 
     # there can be multiple files per param output that we use a classifier to merge into one.
@@ -50,46 +83,44 @@ def regularize_inputs(args):
         data['file'] = [data['file']]
     if not isinstance(data['method'], list):
         data['method'] = [data['method']]
+    if len(data['file']) != len(data['method']):
+        raise ValueError(f'{key}: Specify one aggregation method per input file.')
 
     ret_df = dict()
     ret_df['filename'] = []
     ret_df['key'] = key
 
+    fill_distance = int(max(pixel_height, pixel_width) * 5) if fill_holes else None
     for f, resample_method in zip(data['file'], data['method']):
-
-        # make a copy as this exec string is reused for inital conditions
-        # and we don't want the changes made here to impact it
-        estr = exec_str
-        if resample_method == 'mode':
-            estr = exec_str + ' -r mode'
-        else:
-            estr = exec_str + ' -r average'
-
-        do_cell_resize = True
-        estr = estr + ' -tr %s %s'
-
-        # we need to handle a path being passed in
-        output_param_fname = os.path.basename(f)
-        output_param_fname = os.path.splitext(output_param_fname)[0]
-
-        if gdal.Open(f).GetProjection() == '':
+        source = gdal.Open(f)
+        if source.GetProjection() == '':
             print("Parameter " + f + " must have spatial reference information.")
             exit(1)
 
-        mangle = uuid.uuid4().hex[:8]
-
-        out_name = base_dir + output_param_fname + '_' + mangle + '_projected.tif'
-
-        # force all the parameter files to have the same extent as the input DEM
-        subprocess.check_call([estr % (gdal_prefix,
-                                       f, out_name, srs_out, xmin, ymin, xmax, ymax, pixel_width,
-                                       pixel_height)], shell=True)
-        if fill_holes:
-            dist = max([pixel_height,pixel_width]) * 5
-            exec_str = '%sgdal_fillnodata.py %s -md %d' % (gdal_prefix, out_name, dist)
-            subprocess.check_call([exec_str], shell=True)
-
+        warp_options = ['-ot', 'Float32', '-overwrite', '-multi', '-dstnodata', '-9999',
+                        '-t_srs', srs_out, '-te', *map(str, (xmin, ymin, xmax, ymax)),
+                        '-tr', str(pixel_width), str(pixel_height),
+                        '-r', 'mode' if resample_method == 'mode' else 'average']
+        out_name = projected_path(parameter_dir, f, source, warp_options, fill_distance)
+        source = None
         ret_df['filename'].append(out_name)
+        if reuse_projected_parameters and os.path.isfile(out_name):
+            try:
+                if gdal.Open(out_name) is not None:
+                    print(f'Reusing projected parameter {key}: {out_name}', flush=True)
+                    continue
+            except RuntimeError:
+                print(f'Rebuilding unreadable projected parameter: {out_name}', flush=True)
+
+        # Publish only after warp and optional filling succeed, including when two ranks
+        # use the same source and settings for different parameters.
+        with tempfile.TemporaryDirectory(dir=parameter_dir) as work_dir:
+            tmp = os.path.join(work_dir, 'projected.tif')
+            subprocess.check_call([gdal_prefix + 'gdalwarp', *warp_options, f, tmp],
+                                  env=dict(os.environ, GDAL_CACHEMAX='5%'))
+            if fill_holes:
+                fill_nodata(tmp, fill_distance)
+            os.replace(tmp, out_name)
 
     return ret_df
 
@@ -109,7 +140,7 @@ def main(pickle_file: str,
     for args in param_args_split[MPI.COMM_WORLD.rank]:
         r.append(regularize_inputs(args))
 
-    # there is no way to return the uuid mangled filename + param name  so save it to a pickly
+    # Return this rank's filenames to the parent process.
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
         cloudpickle.dump(r, f)
 
