@@ -10,6 +10,7 @@ spack:
     - py-natsort
     - py-scipy
     - "exactextract +python +tbb"
+    - openmpi/eyiwcpt
 
     # cmake build
     - "cgal@6: +gmp"
