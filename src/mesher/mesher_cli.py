@@ -1204,12 +1204,12 @@ def extract_point(raster, mx, my):
         py = py - 1
     try:
         mz = rb.ReadAsArray(px, py, 1, 1)
-    except:
+    except RuntimeError:
         mz = rb.GetNoDataValue()
 
     if mz is None:
         return rb.GetNoDataValue()
-    mz = float(mz.flatten()[0])
+    mz = float(np.asarray(mz).item())
 
     if mz == rb.GetNoDataValue():
 
