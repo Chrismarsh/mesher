@@ -1,0 +1,6 @@
+spack:
+  specs:
+  - py-pip
+  - py-build
+  - py-twine@6
+  view: ./venv-deploy
