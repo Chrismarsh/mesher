@@ -177,6 +177,23 @@ Sets a user-defined output directory instead of the automatically generated fold
 
  If a mesh was already generated, and only applying a new parametrization is required, enabling this skips the mesh generation step.
 
+.. confval:: reuse_projected_parameters
+
+   :type: boolean
+   :default: False
+
+Set ``reuse_projected_parameters = True`` to reuse rasters from ``parameter_files`` that
+Mesher has already aligned to the DEM grid. For example, leave ``reuse_mesh = False``
+when changing mesh tolerances to generate a new mesh from the same rasters. The DEM
+is still processed and triangle parameters are calculated for the current mesh.
+
+Mesher writes the rasters to ``projected_parameters/`` inside the DEM output directory,
+including on runs with reuse disabled. Missing rasters are built as needed. Reuse
+requires matching source files, target grid, GDAL version, resampling algorithm and
+hole-filling settings. Keep the original inputs accessible so Mesher can check the paths,
+sizes and modification times of the files GDAL reports. Sources without local file
+timestamps are processed on every run. Older runs with randomly named projected
+TIFFs need one preprocessing pass.
 
 .. confval:: write_shp
    

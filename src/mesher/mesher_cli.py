@@ -41,6 +41,7 @@ from natsort import natsorted
 
 
 from . import mesher_utls
+from .mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -81,18 +82,25 @@ def main():
     base_name = os.path.splitext(base_name)[0]
 
     base_dir = user_output_dir + base_name + os.path.sep
+    parameter_dir = os.path.join(base_dir, 'projected_parameters')
+    reuse_projected_parameters = getattr(X, 'reuse_projected_parameters', False)
 
     if not os.path.isdir(base_dir) and reuse_mesh:
         raise Exception(f"Using reuse_mesh=True, however the directory {base_dir} does not exist")
 
-    # Delete previous dir (if exists)
+    # A fresh mesh needs fresh intermediates, even when the parameter rasters are reused.
     if os.path.isdir(base_dir) and not reuse_mesh:
-        shutil.rmtree(base_dir, ignore_errors=True)
+        if os.path.islink(os.path.normpath(base_dir)):
+            raise OSError(f'Cannot clean a symlinked mesh directory: {base_dir}')
+        for entry in os.scandir(base_dir):
+            if entry.is_dir(follow_symlinks=False):
+                if reuse_projected_parameters and entry.path == parameter_dir:
+                    continue
+                shutil.rmtree(entry.path)
+            else:
+                os.remove(entry.path)
 
-    # these have to be separate ifs for the logic to work correctly
-    if not reuse_mesh:
-        # make new output dir
-        os.makedirs(base_dir)
+    os.makedirs(base_dir, exist_ok=True)
 
     # we want to reuse an already generated mesh, but we will need to clean up the shp file as gdal won't overwrite
     # an existing one
@@ -128,14 +136,12 @@ def main():
 
     # clip to a user-specified extent
     if extent is not None:
-        src_ds = gdal.Open(dem_filename)
         wkt = src_ds.GetProjection()
         srs = osr.SpatialReference()
 
         srs.ImportFromWkt(wkt)
 
         ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
-        src_ds = None
 
     cutline_cmd = ''
     if clip_to_shp:
@@ -155,8 +161,7 @@ def main():
         pixel_height = gt[5]
 
         dist = max([pixel_height, pixel_width]) * 5
-        exec_str = '%sgdal_fillnodata.py %s -md %d' % (gdal_prefix, base_dir + base_name + output_file_name, dist)
-        subprocess.check_call([exec_str], shell=True)
+        fill_nodata(base_dir + base_name + output_file_name, int(dist))
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
 
@@ -223,18 +228,11 @@ def main():
     xmax = xmin + pixel_width * src_ds.RasterXSize
     ymin = ymax + pixel_height * src_ds.RasterYSize  # pixel_height is negative
 
-    exec_str = f'%sgdalwarp %s %s -ot Float32 -overwrite -multi -dstnodata -9999 -t_srs "%s" -te %s %s %s %s'
-
-    # pdb.set_trace()
-    total_weights_param, use_weights_param = regularize_inputs(base_dir, exec_str, gdal_prefix, parameter_files,
+    total_weights_param, use_weights_param = regularize_inputs(parameter_dir, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
                                                                srs_out, xmax, xmin, ymax, ymin, fill_holes,
-                                                               MPI_exec_str, MPI_nworkers)
+                                                               MPI_exec_str, MPI_nworkers, reuse_projected_parameters)
 
-    # total_weights_ic, use_weights_ic = regularize_inputs(base_dir, exec_str, gdal_prefix, initial_conditions,
-    #                                                      pixel_height, pixel_width,
-    #                                                      srs_out, xmax, xmin, ymax, ymin, fill_holes,
-    #                                                      MPI_exec_str, MPI_nworkers)
     total_weights_ic, use_weights_ic = 0, False
 
     use_weights = use_weights_param or use_weights_ic
@@ -1054,13 +1052,15 @@ def read_config(configfile):
 
 
 
-def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
-                      xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers):
+def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
+                      xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers, reuse_projected_parameters):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
     param_args = []
-    ret = []
+    if not input_files:
+        return total_weights, use_weights
+    os.makedirs(parameter_dir, exist_ok=True)
     for key, data in input_files.items():
         if 'weight' in data:
             total_weights += data['weight']
@@ -1068,8 +1068,8 @@ def regularize_inputs(base_dir, exec_str, gdal_prefix, input_files, pixel_height
         if 'classifier' in data:
             input_files[key]['classifier'] = cloudpickle.dumps(input_files[key]['classifier'])
 
-        param_args.append((base_dir, data, exec_str, gdal_prefix, key, pixel_height,
-                           pixel_width, srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes))
+        param_args.append((parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width,
+                           srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters))
 
     with open('pickled_param_args.pickle', 'wb') as f:
         cloudpickle.dump(param_args, f)
