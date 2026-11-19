@@ -40,8 +40,18 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
         for (size_t i = 1; i < vertices.size(); ++i)
             if (vertices[i - 1] != vertices[i]) cdt.insert_constraint(vertices[i - 1], vertices[i]);
     }
-    if (cdt.dimension() != 2 || cdt.number_of_vertices() > max_vertices)
-        throw std::runtime_error("Invalid or over-budget patch constraint graph");
+    if (cdt.dimension() != 2)
+        throw std::runtime_error("Patch constraint graph is not two-dimensional");
+    const size_t input_vertices = cdt.number_of_vertices();
+    size_t steps = 0;
+    auto budget_error = [&]() {
+        return std::runtime_error("Patch vertex budget exceeded: vertices=" + std::to_string(cdt.number_of_vertices()) +
+            ", limit=" + std::to_string(max_vertices) + ", input_vertices=" + std::to_string(input_vertices) +
+            ", refinement_steps=" + std::to_string(steps) +
+            ". Check boundary detail and area/tolerance settings before increasing mpi_remesh_max_vertices.");
+    };
+    if (input_vertices > max_vertices) throw budget_error();
+    std::cout << "Patch input: vertices=" << input_vertices << ", budget=" << max_vertices << std::endl;
 
     // Explicit marking preserves holes and disconnected components, including
     // components divided by internal physical constraints. Default CGAL marking
@@ -59,9 +69,11 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
     mesher.init(true);
     while (!mesher.is_refinement_done()) {
         if (cdt.number_of_vertices() >= max_vertices)
-            throw std::runtime_error("Patch vertex budget exceeded");
+            throw budget_error();
         mesher.step_by_step_refine_mesh();
+        ++steps;
     }
+    if (cdt.number_of_vertices() > max_vertices) throw budget_error();
 
     size_t bad = 0, faces = 0;
     auto is_bad = criteria.is_bad_object();

@@ -97,6 +97,21 @@ unresolved quality failures is rejected, including at sharp physical constraints
 where those criteria cannot be met. The retry and vertex budgets make failures
 explicit; there is no silent fallback to the shared-edge algorithm.
 
+Backend or validation failures retain a ``cavity-*`` directory whose path is
+reported in the exception. It contains ``domain.json``, ``constraints.json``,
+``invocation.json`` (the command, working directory and tile/merge identity),
+and the complete ``backend.log``. Successful calls remove their temporary
+directory. Failed-attempt directories can be deleted after diagnosis. The log
+is streamed to disk rather than accumulated in the MPI worker's memory.
+
+The vertex-budget error reports the limit, current/input vertex counts and
+refinement steps. It is distinct from a GDAL allocation or read error. Inspect
+the log and boundary detail before increasing ``mpi_remesh_max_vertices``.
+Triangle raster sampling clips windows against all four raster edges and
+rejects failed reads before using their data. Disjoint windows supply no raster
+samples; this does not extend DEM coverage or make out-of-domain geometry valid
+for the final elevation export.
+
 Only validated results are written, followed by metadata containing attempt,
 retained-triangle and replacement-triangle counts. Parameters are extracted after
 geometry is finalized. The current MPI smoothing implementation is disabled for
@@ -121,6 +136,12 @@ terrain, holes, disconnected components, crossing physical constraints, a
 four-tile junction, retry exhaustion and the vertex budget. With OpenMPI
 available, a four-rank tile/merge/export test runs as well. Without
 ``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
+
+The C++ raster sampling regressions can also be built with
+``cmake -S . -B build -DBUILD_TESTING=ON`` and ``cmake --build build``; run them
+with ``ctest --test-dir build --output-on-failure``. They cover partial/disjoint
+windows, rotated geotransforms, large coordinates, valid zeros, NoData and
+failed source reads.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++

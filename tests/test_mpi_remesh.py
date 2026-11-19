@@ -169,8 +169,29 @@ class CgalCavityTests(unittest.TestCase):
         np.testing.assert_array_equal(ta, original)
 
     def test_backend_budget_failure_is_explicit(self):
-        with self.assertRaisesRegex(PatchError, 'budget'):
+        with self.assertRaisesRegex(PatchError, 'budget.*vertices=4.*limit=4') as failure:
             remesh_domain(box(0, 0, 20, 20), [], dict(self.options, remesh_max_vertices=4), self.work)
+        folders = list(self.work.glob('cavity-*'))
+        self.assertEqual(len(folders), 1)
+        self.assertIn(str(folders[0]), str(failure.exception))
+        invocation = json.loads((folders[0] / 'invocation.json').read_text())
+        self.assertEqual(invocation['domain_area'], 400)
+        self.assertIn('refinement_steps=', (folders[0] / 'backend.log').read_text())
+        self.assertTrue((folders[0] / 'domain.json').is_file())
+        self.assertTrue((folders[0] / 'constraints.json').is_file())
+
+    def test_backend_partial_and_disjoint_raster_coverage_is_bounded(self):
+        # Source footprint is [-20, -20, 60, 40]. These include negative read
+        # offsets and wholly disjoint windows which formerly underflowed in MEM.
+        # This exercises sampling robustness, not valid DEM coverage for export.
+        for bounds in [(-30, 0, -16, 20), (56, 0, 70, 20), (0, 36, 20, 50),
+                       (0, -30, 20, -16), (-32, 0, -25, 20), (65, 0, 72, 20)]:
+            with self.subTest(bounds=bounds):
+                domain = box(*bounds)
+                v, t = self.mesh(domain)
+                validate_patch(v, t, domain)
+                self.assertLess(len(v), 300)
+        self.assertEqual(list(self.work.glob('cavity-*')), [])
 
     def test_four_tile_junction_with_crossing_stream_and_hole(self):
         domain = box(0, 0, 40, 20).difference(box(2, 2, 5, 5))

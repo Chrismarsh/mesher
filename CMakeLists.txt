@@ -144,3 +144,14 @@ target_link_libraries(
 
 install(TARGETS meshercxx RUNTIME)
 install(FILES ${CMAKE_BINARY_DIR}/build-bin/metis-config.py DESTINATION bin)
+
+option(BUILD_TESTING "Build C++ regression tests" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test_raster_sampling
+        tests/cxx/test_raster_sampling.cpp src-cxx/triangle.cpp src-cxx/raster.cpp)
+    target_compile_features(test_raster_sampling PRIVATE cxx_std_14)
+    target_include_directories(test_raster_sampling PRIVATE src-cxx)
+    target_link_libraries(test_raster_sampling PRIVATE GDAL::GDAL Boost::boost)
+    add_test(NAME raster_sampling COMMAND test_raster_sampling)
+endif()

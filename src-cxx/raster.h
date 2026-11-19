@@ -35,18 +35,20 @@ public:
     void create_memory_raster(double xsize, double ysize, GDALDataType type);
 
     double getXY(double X, double Y);
-    double getpXpY(int px, int py);
+    double getpXpY(int px, int py, bool apply_mask = true);
     GDALRasterBand *getBand() const;
 
     GDALDataset *getDs() const;
     void setDs(GDALDataset* ds);
     std::pair<int,int> xy_to_pxpy(double pX, double pY);
+    std::pair<double,double> pixel_coordinates(double x, double y) const;
     void setMask(float *mask);
     void setBand(float *data, int xsize, int ysize);
     double *getGt() const;
 
 private:
     double* gt;
+    double inverse_gt[6];
     GDALDataset* ds;
     GDALRasterBand* band;
     float* mask;

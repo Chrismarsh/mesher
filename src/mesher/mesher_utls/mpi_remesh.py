@@ -8,7 +8,9 @@ the candidate and enlarge the cavity. No tolerance-based vertex welding is used.
 
 import json
 import math
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
@@ -185,21 +187,35 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
     linework = [domain.boundary] + [line.intersection(domain) for line in constraints] + list(fixed_edges)
     noded = line_parts(union_all(linework))
     features = [{'type': 'Feature', 'properties': {}, 'geometry': mapping(line)} for line in noded]
-    with tempfile.TemporaryDirectory(prefix='cavity-', dir=directory) as work:
-        work = Path(work)
+    # Preserve failed inputs and the full backend log for production cases.
+    # Stream output to disk: repeated GDAL errors must not fill the parent's RAM.
+    work = Path(tempfile.mkdtemp(prefix='cavity-', dir=directory)).resolve()
+    try:
         (work / 'domain.json').write_text(json.dumps(mapping(domain)))
         (work / 'constraints.json').write_text(json.dumps({'type': 'FeatureCollection', 'features': features}))
         output = work / 'mesh.json'
         command = _mesher_arguments(options) + ['--domain-file', str(work / 'domain.json'),
                    '--interior-plgs-file', str(work / 'constraints.json'), '--patch-output', str(output),
                    '--patch-max-vertices', str(options.get('remesh_max_vertices', 500000))]
-        run = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        (work / 'invocation.json').write_text(json.dumps({'command': command, 'cwd': os.getcwd(),
+            'tile': options.get('tile_prefix'), 'merge': options.get('out_prefix'),
+            'domain_bounds': list(domain.bounds), 'domain_area': domain.area}, indent=2))
+        with (work / 'backend.log').open('w') as log:
+            run = subprocess.run(command, text=True, stdout=log, stderr=subprocess.STDOUT)
         if run.returncode:
-            raise PatchError('C++ patch refinement failed: ' + run.stdout[-3000:])
+            with (work / 'backend.log').open('rb') as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - 3000))
+                tail = log.read().decode(errors='replace')
+            raise PatchError(f'C++ patch refinement failed (exit {run.returncode}): ' + tail)
         data = json.loads(output.read_text())
-    vertices = np.asarray(data['vertices'], dtype=float)
-    triangles = np.asarray(data['triangles'], dtype=np.int64)
-    validate_patch(vertices, triangles, domain, constraints)
+        vertices = np.asarray(data['vertices'], dtype=float)
+        triangles = np.asarray(data['triangles'], dtype=np.int64)
+        validate_patch(vertices, triangles, domain, constraints)
+    except Exception as exc:
+        context = options.get('tile_prefix') or options.get('out_prefix') or 'cavity'
+        raise PatchError(f'{context}: {exc}\nReproduction files and full backend log: {work}') from exc
+    shutil.rmtree(work)
     return vertices, triangles
 
 
