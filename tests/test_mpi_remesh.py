@@ -321,6 +321,34 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain)
         self.assertTrue(audit(v, t)['valid'])
 
+    def test_raster_refinement_is_not_dropped_at_protected_constraints(self):
+        # Seven-vertex reduction of stage0_r2_c0. With ordinary BAD raster
+        # status, CGAL drops faces near its acute constraint cluster; the final
+        # check then rejects otherwise well-shaped triangles. Use a synthetic
+        # raster so the regression does not require the production DEM.
+        fixture = Path(__file__).parent / 'fixtures' / 'raster_constraint_cavity.geojson'
+        domain = shape(json.loads(fixture.read_text()))
+        cx, cy = -1884667.712364624, 3655927.0012882375
+        # Keep the production-like 50 m pixel origin fixed, including when
+        # clipping the domain, since RMSE samples depend on the pixel grid.
+        x0, y0 = -1885767.712364624, 3657027.0012882375
+        ds = gdal.GetDriverByName('GTiff').Create(str(self.work / 'anomaly.tif'), 44, 44, 1, gdal.GDT_Float32)
+        ds.SetGeoTransform((x0, 50, 0, y0, 0, -50))
+        xx, yy = np.meshgrid(x0 + (np.arange(44)+.5)*50, y0 - (np.arange(44)+.5)*50)
+        ds.GetRasterBand(1).WriteArray(10 + 1000*np.exp(-((xx-cx)**2 + (yy-cy)**2)/(2*300**2)))
+        ds = None
+        options = dict(self.options, max_area=6250000, min_area=2500,
+                       dem_path=str(self.work / 'anomaly.tif'), max_tolerance=30,
+                       remesh_max_vertices=5000)
+        for weighted in (False, True):
+            with self.subTest(weighted=weighted):
+                args = dict(options, use_weights=weighted, topo_weight=1, weight_threshold=1)
+                v, t = remesh_domain(domain, [], args, self.work)
+                validate_patch(v, t, domain)
+                self.assertTrue(audit(v, t)['valid'])
+                self.assertLess(len(v), 1000)
+        self.assertEqual(list(self.work.glob('cavity-*')), [])
+
     def test_overlapping_tiles_merge_with_no_seam_line_or_density_band(self):
         bounds_a, bounds_b = [0, 0, 20, 20], [20, 0, 40, 20]
         domain = box(0, 0, 40, 20)

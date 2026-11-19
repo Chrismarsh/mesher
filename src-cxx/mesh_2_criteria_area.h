@@ -121,6 +121,7 @@
                 _sine = 0;
                 _area = 0;
                 _size = 0;
+                _weighted_raster_bad = false;
             };
 
 
@@ -149,6 +150,9 @@
             double _size; // area normalized by its maximum, for queue priority
             double _area;
             double _sine;
+            // CGAL re-evaluates cached Quality when removing a face from the
+            // queue. Preserve weighted rejection as well as geometry there.
+            bool _weighted_raster_bad;
             std::vector< std::pair<double,double> > _tolerance; // first = tol, seond = max tol
 
             std::vector<std::pair<double,double>> _category_tol; //first = current percent, second = threshold percent
@@ -590,7 +594,7 @@
 
             }
 
-            CGAL::Mesh_2::Face_badness operator()(const Quality q) const
+            CGAL::Mesh_2::Face_badness operator()(const Quality& q) const
             {
                 if (q.area() > max_area)
                 {
@@ -614,8 +618,16 @@
                 if (q.area() <= min_area )
                     return CGAL::Mesh_2::NOT_BAD;
 
+                // Raster resolution is mandatory, like maximum area. CGAL
+                // may drop ordinary BAD (shape) faces near protected acute
+                // constraint clusters; doing so for raster error leaves an
+                // apparently finished mesh which still violates tolerance.
+                if (q._weighted_raster_bad)
+                    return CGAL::Mesh_2::IMPERATIVELY_BAD;
+
                 for(auto& itr : q._tolerance)
                 {
+                    if (itr.second == -1) continue; // explicitly disabled raster
                     //first == current tol
                     //second == max tol
                     if(itr.first >= itr.second) //do we violate the max tol
@@ -623,7 +635,7 @@
                         if (debug)
                             std::cout << "Is_bad tolerance reject: tol=" << itr.first
                                       << " max_tol=" << itr.second << std::endl;
-                        return CGAL::Mesh_2::BAD;
+                        return CGAL::Mesh_2::IMPERATIVELY_BAD;
                     }
                 }
 
@@ -636,7 +648,7 @@
                         if (debug)
                             std::cout << "Is_bad category reject: frac=" << itr.first
                                       << " min_frac=" << itr.second << std::endl;
-                        return CGAL::Mesh_2::BAD;
+                        return CGAL::Mesh_2::IMPERATIVELY_BAD;
                     }
                 }
 
@@ -823,10 +835,8 @@
                         alpha += weight;
                     }
 
-                    if (alpha >= weight_threshold)
-                        return CGAL::Mesh_2::NOT_BAD;
-                    else
-                        return CGAL::Mesh_2::BAD;
+                    q._weighted_raster_bad = !(alpha >= weight_threshold);
+                    return operator()(q);
 
                 } else //this rigorously ensures each tolerance is met
                 {

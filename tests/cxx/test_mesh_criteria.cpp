@@ -8,9 +8,68 @@ void require(bool condition, const char* message)
     if (!condition) throw std::runtime_error(message);
 }
 
+void mandatory_raster_cases()
+{
+    using CGAL::Mesh_2::BAD;
+    using CGAL::Mesh_2::NOT_BAD;
+    using CGAL::Mesh_2::IMPERATIVELY_BAD;
+    std::vector<std::tuple<boost::shared_ptr<raster>, double, double>> rasters, categories;
+    const std::string metric = "rmse";
+    Criteria criteria(.125, 100, 1, rasters, categories, metric);
+    auto bad = criteria.is_bad_object();
+    Criteria::Quality q;
+    q._area = 20; q._size = .2; q._sine = .7;
+    require(bad(q) == NOT_BAD, "Well-shaped geometry passes");
+    q._tolerance.emplace_back(50, 30);
+    require(bad(q) == IMPERATIVELY_BAD, "Numeric raster error must not be dropped at protected clusters");
+    q._tolerance = {{0, -1}};
+    require(bad(q) == NOT_BAD, "A disabled raster must not fail a cached check");
+    q._category_tol.emplace_back(.4, .6);
+    require(bad(q) == IMPERATIVELY_BAD, "Categorical error must request mandatory refinement");
+    q._category_tol.clear(); q._weighted_raster_bad = true;
+    require(bad(q) == IMPERATIVELY_BAD, "Preserve weighted failure when CGAL reads cached Quality");
+    q._area = 1;
+    require(bad(q) == NOT_BAD, "Minimum area still stops raster refinement");
+    q._sine = .01;
+    require(bad(q) == BAD, "Shape-only refinement remains nonmandatory even below minimum area");
+    q._area = 101;
+    require(bad(q) == IMPERATIVELY_BAD, "Maximum area remains mandatory");
+
+    // Exercise both predicate overloads on an actual raster and CDT face.
+    auto source = boost::make_shared<raster>();
+    auto ds = GetGDALDriverManager()->GetDriverByName("MEM")->Create("", 8, 8, 1, GDT_Float32, nullptr);
+    double gt[] = {0, 1, 0, 8, 0, -1};
+    require(ds && ds->SetGeoTransform(gt) == CE_None, "Create raster fixture");
+    require(ds->GetRasterBand(1)->Fill(0) == CE_None, "Fill raster fixture");
+    float value = 100;
+    require(ds->GetRasterBand(1)->RasterIO(GF_Write, 3, 5, 1, 1, &value, 1, 1, GDT_Float32, 0, 0) == CE_None,
+            "Write interior raster anomaly");
+    source->setDs(ds);
+    rasters.emplace_back(source, 1, 1);
+    CDT mesh;
+    mesh.insert(Point(1, 1)); mesh.insert(Point(6, 1)); mesh.insert(Point(3, 6));
+    auto face = mesh.finite_faces_begin();
+    for (bool weighted : {false, true}) {
+        Criteria check(.125, 100, 1, rasters, categories, metric, false, weighted, 1);
+        auto evaluate = check.is_bad_object();
+        Criteria::Quality quality;
+        require(evaluate(face, quality) == IMPERATIVELY_BAD, "Raster anomaly requires refinement");
+        require(evaluate(quality) == IMPERATIVELY_BAD, "Cached and face checks must agree");
+        if (weighted) {
+            Criteria permissive(.125, 100, 1, rasters, categories, metric, false, true, 0);
+            Criteria::Quality passed;
+            auto accept = permissive.is_bad_object();
+            require(accept(face, passed) == NOT_BAD && accept(passed) == NOT_BAD,
+                    "A satisfied weighted score must remain accepted in both checks");
+        }
+    }
+}
+
 int main()
 {
+    GDALAllRegister();
     try {
+        mandatory_raster_cases();
         std::vector<Criteria::Quality> values;
         for (double size : {.01, .5, 1., 2., 100.}) {
             for (double sine : {.001, .125, .5, .75}) {

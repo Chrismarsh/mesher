@@ -87,6 +87,14 @@ then the smallest minimum angle once the area bound is met. Intersecting
 constraint lines are noded before insertion. This preserves the domain supplied
 to the MPI stage; it does not repair upstream domain preprocessing choices.
 
+Raster tolerance failures request mandatory CGAL refinement, like maximum-area
+failures. An ordinary shape-refinement request can be dropped near protected
+acute constraint clusters; using that status for raster error previously let
+refinement finish while the final check still found raster violations. Weighted
+failures are also preserved in CGAL's cached quality record. The minimum-area
+stop and the existing numeric/categorical comparisons remain in force. These
+criteria are shared with serial meshing, so both paths receive the correction.
+
 The retained interface is a contract: every retained edge facing the cavity must
 have an exact matching patch edge. If CGAL splits an interface, the candidate is
 discarded and the affected retained faces plus neighbouring rings are absorbed
@@ -181,6 +189,11 @@ when the protrusion is a physical domain boundary that cannot be removed.
 Further regressions cover repeatedly subdivided interfaces, growth stopping at
 existing cavities, and CGAL-refined sloping physical edges at large projected
 coordinates. Genuine gaps and subdivided internal edges remain rejected.
+A seven-vertex production-cavity reduction with a synthetic elevation anomaly
+checks that raster refinement is not dropped at protected constraint clusters,
+in both weighted and unweighted modes. C++ tests check mandatory numeric and
+categorical refinement, cached weighted results, disabled numeric rasters and
+the minimum-area stop.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++
