@@ -57,7 +57,16 @@ The maximum difference (vertical distance) between the triangle and the underlyi
    :type: double
    :default: ``pixel_width * pixel_height``
 
-A minimum area (m^2) past which mesher should not refine a triangle further. A good setting is the square area of a DEM cell. This does not mean a triangle won't be smaller than this; rather, if a triangle is below this threshold it will automatically be accepted as valid. This will override the tolerance setting. For example, if the threshold is 3m^2, and a 2m^2 triangle is checked for validity, it will automatically be accepted, without checking the tolerance. A triangle may end up smaller than this threshold due to other splitting that occurs in order to guarantee triangle quality. 
+The area (m^2) at or below which a well-shaped triangle is accepted without
+sampling or checking elevation, land-cover or other raster criteria, including
+weighted criteria. The minimum-angle requirement still applies. For example,
+with ``min_area = 3``, a well-shaped 2 m^2 triangle is accepted even if its raster
+error would exceed the requested tolerance; a poorly shaped triangle of the
+same area still requires refinement.
+
+A good starting value is the area of a DEM cell. This is a stopping threshold
+for raster-driven refinement, not a lower bound on triangle size: shape
+refinement and constraint splitting can produce smaller triangles.
 
 .. note::
    Although there is a default value for this, it really should be specified with a value that makes sense.

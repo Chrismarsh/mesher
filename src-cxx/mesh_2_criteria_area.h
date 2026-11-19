@@ -753,9 +753,11 @@
                     q._size = area / max_area;
                 }
 
-                //if our triangle already fails either: area or angle, bail now.
+                // Geometry comes first. Once a well-shaped face reaches the
+                // minimum area, accept it before reading any raster: further
+                // numeric, categorical or weighted criteria no longer apply.
                 auto current_badness = operator()(q);
-                if (current_badness != CGAL::Mesh_2::NOT_BAD)
+                if (current_badness != CGAL::Mesh_2::NOT_BAD || q.area() <= min_area)
                     return current_badness;
 
                 if(use_weights)

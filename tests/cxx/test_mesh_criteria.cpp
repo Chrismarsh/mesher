@@ -65,11 +65,64 @@ void mandatory_raster_cases()
     }
 }
 
+void minimum_area_cases()
+{
+    using CGAL::Mesh_2::BAD;
+    using CGAL::Mesh_2::NOT_BAD;
+    // This VRT opens successfully but throws if sampled. Small, well-shaped
+    // faces must not depend on raster values or even attempt a raster read.
+    const char* vrt = "<VRTDataset rasterXSize='10' rasterYSize='10'>"
+        "<GeoTransform>0,1,0,10,0,-1</GeoTransform><VRTRasterBand dataType='Float32' band='1'>"
+        "<SimpleSource><SourceFilename>/nonexistent/mesher-min-area-test.tif</SourceFilename>"
+        "<SourceBand>1</SourceBand><SrcRect xOff='0' yOff='0' xSize='10' ySize='10'/>"
+        "<DstRect xOff='0' yOff='0' xSize='10' ySize='10'/></SimpleSource>"
+        "</VRTRasterBand></VRTDataset>";
+    auto source = boost::make_shared<raster>();
+    source->setDs(static_cast<GDALDataset*>(GDALOpen(vrt, GA_ReadOnly)));
+    CDT mesh, skinny;
+    mesh.insert(Point(1, 1)); mesh.insert(Point(6, 1)); mesh.insert(Point(3, 6)); // area 12.5
+    skinny.insert(Point(1, 1)); skinny.insert(Point(6, 1)); skinny.insert(Point(1.05, 1.05));
+    const std::string metric = "rmse";
+    for (bool weighted : {false, true}) {
+        for (bool categorical : {false, true}) {
+            std::vector<std::tuple<boost::shared_ptr<raster>, double, double>> rasters, categories;
+            (categorical ? categories : rasters).emplace_back(source, .9, 1);
+            for (double minimum : {12.5, 13.0}) {
+                Criteria criteria(.125, 100, minimum, rasters, categories, metric, false, weighted, 1);
+                auto evaluate = criteria.is_bad_object();
+                Criteria::Quality quality;
+                require(evaluate(mesh.finite_faces_begin(), quality) == NOT_BAD,
+                        "At/below minimum area, accept good geometry without reading any raster");
+                require(evaluate(quality) == NOT_BAD, "Cached minimum-area acceptance must agree");
+                quality._tolerance.emplace_back(1000, .9);
+                quality._category_tol.emplace_back(0, .9);
+                quality._weighted_raster_bad = true;
+                require(evaluate(quality) == NOT_BAD, "Minimum area overrides all raster failures");
+                Criteria::Quality narrow;
+                require(evaluate(skinny.finite_faces_begin(), narrow) == BAD,
+                        "Minimum area must not waive the shape requirement");
+            }
+            Criteria above(.125, 100, 12, rasters, categories, metric, false, weighted, 1);
+            Criteria::Quality quality;
+            bool read_failed = false;
+            CPLPushErrorHandler(CPLQuietErrorHandler);
+            try {
+                above.is_bad_object()(mesh.finite_faces_begin(), quality);
+            } catch (const std::runtime_error& error) {
+                read_failed = std::string(error.what()).find("reading source raster") != std::string::npos;
+            }
+            CPLPopErrorHandler();
+            require(read_failed, "Above minimum area, raster sampling and read failures remain active");
+        }
+    }
+}
+
 int main()
 {
     GDALAllRegister();
     try {
         mandatory_raster_cases();
+        minimum_area_cases();
         std::vector<Criteria::Quality> values;
         for (double size : {.01, .5, 1., 2., 100.}) {
             for (double sine : {.001, .125, .5, .75}) {
@@ -103,7 +156,7 @@ int main()
                 }
             }
         }
-        std::cout << "Mesh criteria ordering regressions passed" << std::endl;
+        std::cout << "Mesh criteria regressions passed" << std::endl;
     } catch (const std::exception& error) {
         std::cerr << error.what() << std::endl;
         return 1;

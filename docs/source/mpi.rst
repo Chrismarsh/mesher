@@ -91,9 +91,12 @@ Raster tolerance failures request mandatory CGAL refinement, like maximum-area
 failures. An ordinary shape-refinement request can be dropped near protected
 acute constraint clusters; using that status for raster error previously let
 refinement finish while the final check still found raster violations. Weighted
-failures are also preserved in CGAL's cached quality record. The minimum-area
-stop and the existing numeric/categorical comparisons remain in force. These
-criteria are shared with serial meshing, so both paths receive the correction.
+failures are also preserved in CGAL's cached quality record. At or below
+``min_area``, a well-shaped triangle is accepted before any raster sampling;
+numeric, categorical and weighted criteria cannot force further refinement.
+Shape quality is still required at every area. Above ``min_area``, the existing
+numeric/categorical comparisons remain in force. These criteria are shared with
+serial meshing, so both paths receive the correction.
 
 The retained interface is a contract: every retained edge facing the cavity must
 have an exact matching patch edge. If CGAL splits an interface, the candidate is
@@ -193,7 +196,10 @@ A seven-vertex production-cavity reduction with a synthetic elevation anomaly
 checks that raster refinement is not dropped at protected constraint clusters,
 in both weighted and unweighted modes. C++ tests check mandatory numeric and
 categorical refinement, cached weighted results, disabled numeric rasters and
-the minimum-area stop.
+the minimum-area stop. An unreadable raster regression verifies that triangles
+at or below the stopping threshold perform no raster reads, in both weighting
+modes and for numeric/categorical inputs. Above the threshold, read errors still
+fail explicitly; small triangles with poor angles remain rejected.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++
