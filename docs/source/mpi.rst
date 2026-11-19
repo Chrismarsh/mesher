@@ -77,7 +77,13 @@ preventing overlapping strips at joins.
 CGAL remeshes the cavity from its boundary and the original physical constraints,
 using the same raster, categorical, weighting, area and shape criteria as normal
 meshing. Old seam vertices inside the cavity are discarded. Domain marking
-explicitly preserves holes and disconnected polygon components. Intersecting
+classifies connected regions separated by constrained edges. The region touching
+infinity is always outside; bounded regions are classified using their largest
+face. This avoids misclassifying an almost-collinear exterior triangle when its
+centroid rounds onto the wrong side of a staircase boundary, while preserving
+holes, disconnected components and regions enclosed by physical constraints.
+The refinement queue uses a strict ordering: largest area violations first,
+then the smallest minimum angle once the area bound is met. Intersecting
 constraint lines are noded before insertion. This preserves the domain supplied
 to the MPI stage; it does not repair upstream domain preprocessing choices.
 
@@ -137,11 +143,13 @@ four-tile junction, retry exhaustion and the vertex budget. With OpenMPI
 available, a four-rank tile/merge/export test runs as well. Without
 ``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
 
-The C++ raster sampling regressions can also be built with
+The C++ raster sampling and refinement-queue ordering regressions can also be built with
 ``cmake -S . -B build -DBUILD_TESTING=ON`` and ``cmake --build build``; run them
 with ``ctest --test-dir build --output-on-failure``. They cover partial/disjoint
-windows, rotated geotransforms, large coordinates, valid zeros, NoData and
-failed source reads.
+windows, rotated geotransforms, large coordinates, valid zeros, NoData,
+failed source reads and the ordering requirements of CGAL's refinement queue.
+The Python integration suite includes a reduced production staircase boundary
+that previously refined exterior faces until the vertex budget was exhausted.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++

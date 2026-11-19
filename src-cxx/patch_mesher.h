@@ -53,17 +53,44 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
     if (input_vertices > max_vertices) throw budget_error();
     std::cout << "Patch input: vertices=" << input_vertices << ", budget=" << max_vertices << std::endl;
 
-    // Explicit marking preserves holes and disconnected components, including
-    // components divided by internal physical constraints. Default CGAL marking
-    // would fill every bounded component, including holes.
-    for (auto f = cdt.all_faces_begin(); f != cdt.all_faces_end(); ++f) {
+    // A single rounded centroid near a raster-stair boundary can falsely mark
+    // an exterior sliver as inside. Mark whole regions separated by constrained
+    // edges instead. The region touching infinity is ALWAYS outside; classify
+    // other regions using their largest face to avoid near-collinear samples.
+    // This also distinguishes holes from regions enclosed by physical streams.
+    for (auto f = cdt.all_faces_begin(); f != cdt.all_faces_end(); ++f) f->id = -1;
+    int region = 0;
+    for (auto seed = cdt.all_faces_begin(); seed != cdt.all_faces_end(); ++seed) {
+        if (seed->id >= 0) continue;
+        std::vector<Face_handle> faces{seed};
+        seed->id = region++;
+        bool exterior = false;
+        double largest_area = 0;
+        Face_handle representative;
+        for (size_t i = 0; i < faces.size(); ++i) {
+            auto face = faces[i];
+            if (cdt.is_infinite(face)) exterior = true;
+            else {
+                const double area = CGAL::to_double(CGAL::area(face->vertex(0)->point(),
+                    face->vertex(1)->point(), face->vertex(2)->point()));
+                if (area > largest_area) { largest_area = area; representative = face; }
+            }
+            for (int side = 0; side < 3; ++side) {
+                auto neighbour = face->neighbor(side);
+                if (!face->is_constrained(side) && neighbour->id < 0) {
+                    neighbour->id = seed->id;
+                    faces.push_back(neighbour);
+                }
+            }
+        }
         bool inside = false;
-        if (!cdt.is_infinite(f)) {
-            const auto p = CGAL::centroid(f->vertex(0)->point(), f->vertex(1)->point(), f->vertex(2)->point());
+        if (!exterior && largest_area > 0) {
+            const auto p = CGAL::centroid(representative->vertex(0)->point(),
+                representative->vertex(1)->point(), representative->vertex(2)->point());
             OGRPoint center(CGAL::to_double(p.x()), CGAL::to_double(p.y()));
             inside = domain->Contains(&center);
         }
-        f->set_in_domain(inside);
+        for (auto face : faces) face->set_in_domain(inside);
     }
     Mesher mesher(cdt, criteria);
     mesher.init(true);

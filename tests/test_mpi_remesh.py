@@ -5,11 +5,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import shutil
+import subprocess
 import sys
 
 import numpy as np
 from osgeo import gdal, osr
-from shapely.geometry import box, Polygon, LineString
+from shapely.geometry import box, Polygon, LineString, mapping, shape
 
 from mesher.mesher_utls.mpi_remesh import (
     PatchError, merge_cavity, mesh_coverage, remesh_domain, validate_patch, _stitch,
@@ -130,6 +131,35 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain, lines)
         self.assertTrue(audit(v, t)['valid'])
         self.assertEqual(audit(v, t)['components'], 2)
+
+    def test_closed_physical_constraint_does_not_create_a_hole(self):
+        domain = box(0, 0, 20, 20)
+        lines = [LineString(box(5, 5, 15, 15).exterior.coords)]
+        v, t = self.mesh(domain, lines)
+        validate_patch(v, t, domain, lines)
+        self.assertTrue(audit(v, t)['valid'])
+        self.assertEqual(audit(v, t)['components'], 1)
+
+    def test_rounded_exterior_centroid_cannot_start_runaway_refinement(self):
+        # Reduced from the production boundary. A nearly collinear exterior
+        # CDT face has a rounded centroid which OGR classifies as inside.
+        # Geometry alone reproduced the runaway; no raster is required.
+        fixture = Path(__file__).parent / 'fixtures' / 'raster_stair_boundary.geojson'
+        domain = shape(json.loads(fixture.read_text()))
+        constraints = self.work / 'constraints.json'
+        constraints.write_text(json.dumps({'type': 'FeatureCollection', 'features': [
+            {'type': 'Feature', 'properties': {}, 'geometry': mapping(LineString(domain.exterior.coords))}]}))
+        output = self.work / 'geometry.json'
+        result = subprocess.run([self.options['mesher_path'], '--area', '6250000', '--min-area', '2500',
+            '--domain-file', str(fixture.resolve()), '--interior-plgs-file', str(constraints),
+            '--patch-output', str(output), '--patch-max-vertices', '5000'],
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mesh = json.loads(output.read_text())
+        v, t = np.array(mesh['vertices']), np.array(mesh['triangles'])
+        self.assertLess(len(v), 1000)
+        validate_patch(v, t, domain)
+        self.assertTrue(audit(v, t)['valid'])
 
     def test_overlapping_tiles_merge_with_no_seam_line_or_density_band(self):
         bounds_a, bounds_b = [0, 0, 20, 20], [20, 0, 40, 20]

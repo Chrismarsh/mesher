@@ -120,6 +120,7 @@
             {
                 _sine = 0;
                 _area = 0;
+                _size = 0;
             };
 
 
@@ -134,39 +135,18 @@
         // ( q1 == *this, q2 == q )
             bool operator<(const Quality &q) const
             {
-                if ( this->_area < q._area)
-                    return true;
-                else
-                {
-                    if( this->_sine < q._sine)
-                        return true;
-                    else
-                    {
-                        if(_tolerance.size() != 0 && q._tolerance.size() == 0)
-                            return false; //they're empty, we aren't, we should check their tolerance
-                        if(_tolerance.size() == 0 && q._tolerance.size() != 0)
-                            return true; //we're empty, they aren't, we should check our tolerance
-
-                        if(_tolerance.size() != 0 && q._tolerance.size() != 0)
-                        {
-                            //compare who has the the greatest current error
-                            auto my_max_tol = std::max_element(_tolerance.begin(), _tolerance.end(),
-                                                               [] (std::pair< double,double> const& lhs, std::pair< double,double> const& rhs)
-                                                               {return lhs.first < rhs.first;});
-
-                            auto their_max_tol = std::max_element(q._tolerance.begin(), q._tolerance.end(),
-                                                                  [] (std::pair< double,double> const& lhs, std::pair< double,double> const& rhs)
-                                                                  {return lhs.first < rhs.first;});
-
-                            if(my_max_tol->first > their_max_tol->first )
-                                return true; //remember we want to be preferential if our max tolerance is worse
-                        }
-
-                        return (sine() < q.sine()); //check angles as tie breaker
-                    }
-                }
+                // CGAL stores qualities in an ordered map. Every comparison
+                // must be a strict weak ordering, even when area and angle
+                // disagree. The old independent comparisons could make both
+                // a < b and b < a true, violating the queue's map contract.
+                // Prioritize oversized faces, then the worst minimum angle,
+                // following CGAL's standard size/shape refinement ordering.
+                if (_size > 1 || q._size > 1)
+                    return _size > q._size;
+                return _sine < q._sine;
             }
 
+            double _size; // area normalized by its maximum, for queue priority
             double _area;
             double _sine;
             std::vector< std::pair<double,double> > _tolerance; // first = tol, seond = max tol
@@ -758,6 +738,7 @@
                 if (max_area != 0)
                 {
                     q._area = area;
+                    q._size = area / max_area;
                 }
 
                 //if our triangle already fails either: area or angle, bail now.
