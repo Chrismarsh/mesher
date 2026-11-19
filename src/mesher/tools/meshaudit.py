@@ -47,6 +47,7 @@ def main(argv=None):
             report['neighbour_errors'] = []
             report['valid'] = True
             report['output'] = args.outfile
+            report.pop('recovery', None)
     except (OSError, TypeError, ValueError) as exc:
         parser.exit(1, f'meshaudit: {exc}\n')
     if args.json:
@@ -59,6 +60,8 @@ def main(argv=None):
             print(f'WARNING: {message}')
         for message in report['errors'] + report['neighbour_errors']:
             print(f'ERROR: {message}')
+        if not report['valid'] and 'recovery' in report:
+            print(report['recovery'])
         print('Domain coverage and arbitrary triangle overlaps are not checked.')
         print('Audit passed.' if report['valid'] else 'Audit failed; no repaired mesh was written.')
     return 0 if report['valid'] else 1

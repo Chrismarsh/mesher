@@ -126,3 +126,18 @@ class MeshPermutationTests(unittest.TestCase):
             self.assertEqual(result['elem'], document['mesh']['elem'])
             self.assertEqual(result['vertex'], document['mesh']['vertex'])
             self.assertEqual(result['version'], '2.0.0')
+
+    @unittest.skipUnless(importlib.util.find_spec('metis') and ctypes.util.find_library('metis'), 'METIS Python wrapper and shared library required')
+    def test_real_metis_after_seam_reconciliation(self):
+        from mesher.mesh_seams import reconcile_boundary_subdivisions
+        from test_mesh_seams import strip_mesh
+
+        vertices, triangles = strip_mesh()
+        repaired, neighbours, stats = reconcile_boundary_subdivisions(vertices, triangles)
+        self.assertEqual(stats['added_triangles'], 3)
+        for ranks in (2, 4):
+            with self.subTest(ranks=ranks), contextlib.redirect_stdout(io.StringIO()):
+                sizes, order = permutation.compute_metis_permutation_N(neighbours.tolist(), ranks)
+                self.assertEqual(sum(sizes), len(repaired))
+                self.assertTrue(all(n > 0 for n in sizes))
+                self.assertEqual(sorted(order), list(range(len(repaired))))

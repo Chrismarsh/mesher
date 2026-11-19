@@ -37,6 +37,14 @@ components are warnings because separate model regions can be intentional.
 Component counts use the graph reconstructed from triangles, even when the
 stored neighbour table is missing or corrupt.
 
+``hanging_nodes`` counts vertex-on-edge detections, not necessarily distinct
+vertices. The JSON report includes up to ten examples with vertex/edge/face IDs
+and XY coordinates. One connected component can still contain hanging nodes:
+triangles may connect through other, correctly joined parts of a seam.
+``neighbour_rebuild_allowed`` explicitly indicates whether geometry blocks
+neighbour-only recovery. If MPI seams need splitting, use the MPI generation
+or reuse workflow described in :doc:`mpi`; face parameters must be regenerated.
+
 ``--boundary-tolerance`` controls coincidence and hanging-node checks in the
 mesh's coordinate units (default ``1e-8``). It does not snap or move vertices.
 The audit does not certify domain coverage, arbitrary triangle overlaps, or

@@ -59,6 +59,10 @@ class MeshAuditTests(unittest.TestCase):
         self.assertEqual(report['components'], 2)
         self.assertEqual(report['hanging_nodes'], 1)
         self.assertEqual(report['hanging_node_examples'][0]['vertex'], 6)
+        self.assertEqual(report['hanging_node_examples'][0]['vertex_xy'], [1, .5])
+        self.assertFalse(report['neighbour_rebuild_allowed'])
+        self.assertIn('blocked', report['recovery'])
+        self.assertNotIn('Run meshaudit --rebuild-neighbours', report['neighbour_errors'][0])
         self.assertFalse(self.output.exists())
 
     def test_unwelded_seam_is_reported(self):

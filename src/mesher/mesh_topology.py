@@ -137,7 +137,7 @@ def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_
 def validate_neighbours(values, expected=None):
     """Validate a neighbour graph and optionally its exact edge-slot mapping."""
     if len(values) == 0:
-        raise MeshTopologyError('Neighbour table is empty. Run meshaudit --rebuild-neighbours on the mesh before partitioning')
+        raise MeshTopologyError('Neighbour table is empty. Audit geometry before rebuilding neighbours or partitioning')
     neighbours = integer_rows(values, 'neigh')
     n = len(neighbours)
     if expected is not None and neighbours.shape != expected.shape:
@@ -162,38 +162,62 @@ def validate_neighbours(values, expected=None):
     return neighbours
 
 
-def _boundary_defects(vertices, triangles, neighbours, tolerance):
-    """Find coincident boundary vertices and T-junctions; do not weld them."""
+def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
+    """Return coincidence count and an iterator over boundary-edge subdivisions.
+
+    Each item is (face, slot, ordered_vertex_ids). Only boundary vertices strictly
+    inside an unmatched edge, within tolerance in XY, are considered. This is a
+    geometric candidate search, not proof that the edge is an MPI seam.
+    """
     from scipy.spatial import cKDTree
 
+    if not np.isfinite(tolerance) or tolerance < 0:
+        raise ValueError('boundary tolerance must be finite and non-negative')
     faces, slots = np.nonzero(neighbours == -1)
     a = triangles[faces, (slots + 1) % 3]
     b = triangles[faces, (slots + 2) % 3]
     ids = np.unique(np.concatenate((a, b)))
     if len(ids) < 2:
-        return {'coincident_boundary_vertices': 0, 'hanging_nodes': 0, 'hanging_node_examples': []}
+        return 0, iter(())
     xy = vertices[ids, :2]
     tree = cKDTree(xy)
     distances, _ = tree.query(xy, k=2)
     coincident = int(np.count_nonzero(distances[:, 1] <= tolerance))
+
+    def subdivisions():
+        for face, slot, va, vb in zip(faces, slots, a, b):
+            p, q = vertices[va, :2], vertices[vb, :2]
+            delta = q - p
+            length = np.linalg.norm(delta)
+            candidates = tree.query_ball_point((p + q) / 2, length / 2 + tolerance)
+            inside = []
+            for candidate in candidates:
+                vid = int(ids[candidate])
+                if vid in (va, vb):
+                    continue
+                offset = xy[candidate] - p
+                along = np.dot(offset, delta) / length
+                distance = abs(delta[0] * offset[1] - delta[1] * offset[0]) / length
+                if tolerance < along < length - tolerance and distance <= tolerance:
+                    inside.append((along, vid))
+            if inside:
+                yield int(face), int(slot), [vid for _, vid in sorted(inside)]
+
+    return coincident, subdivisions()
+
+
+def _boundary_defects(vertices, triangles, neighbours, tolerance):
+    """Find coincident boundary vertices and T-junctions; do not weld them."""
+    coincident, subdivisions = boundary_subdivisions(vertices, triangles, neighbours, tolerance)
     hanging = 0
     examples = []
-    for face, va, vb in zip(faces, a, b):
-        p, q = vertices[va, :2], vertices[vb, :2]
-        delta = q - p
-        length = np.linalg.norm(delta)
-        candidates = tree.query_ball_point((p + q) / 2, length / 2 + tolerance)
-        for candidate in candidates:
-            vid = int(ids[candidate])
-            if vid in (va, vb):
-                continue
-            offset = xy[candidate] - p
-            along = np.dot(offset, delta) / length
-            distance = abs(delta[0] * offset[1] - delta[1] * offset[0]) / length
-            if tolerance < along < length - tolerance and distance <= tolerance:
-                hanging += 1
-                if len(examples) < 10:
-                    examples.append({'vertex': vid, 'edge': [int(va), int(vb)], 'face': int(face)})
+    for face, slot, nodes in subdivisions:
+        va, vb = triangles[face, (slot + 1) % 3], triangles[face, (slot + 2) % 3]
+        hanging += len(nodes)
+        for vid in nodes[:max(0, 10 - len(examples))]:
+            examples.append({'vertex': vid, 'edge': [int(va), int(vb)], 'face': face,
+                             'vertex_xy': vertices[vid, :2].tolist(),
+                             'edge_xy': vertices[[va, vb], :2].tolist()})
     return {'coincident_boundary_vertices': coincident, 'hanging_nodes': hanging, 'hanging_node_examples': examples}
 
 
@@ -209,7 +233,7 @@ def audit_mesh(document, chunk_size=DEFAULT_CHUNK_SIZE, boundary_tolerance=1e-8,
 
     if not np.isfinite(boundary_tolerance) or boundary_tolerance < 0:
         raise ValueError('boundary_tolerance must be finite and non-negative')
-    report = {'errors': [], 'neighbour_errors': [], 'warnings': [],
+    report = {'errors': [], 'neighbour_errors': [], 'warnings': [], 'neighbour_rebuild_allowed': False,
               'boundary_geometry_checked': check_boundaries, 'domain_coverage_checked': False}
     try:
         mesh = document['mesh']
@@ -251,4 +275,9 @@ def audit_mesh(document, chunk_size=DEFAULT_CHUNK_SIZE, boundary_tolerance=1e-8,
         if defects['hanging_nodes']:
             report['errors'].append('Hanging boundary nodes detected; neighbour-only repair cannot fix these seams')
     report['valid'] = not (report['errors'] or report['neighbour_errors'])
+    report['neighbour_rebuild_allowed'] = check_boundaries and not report['errors']
+    if report['errors']:
+        report['recovery'] = 'Geometry must be corrected before neighbour-only recovery; --rebuild-neighbours is blocked'
+    elif report['neighbour_errors']:
+        report['recovery'] = 'Run meshaudit --rebuild-neighbours -o NEW.mesh to rebuild neighbours without changing triangles'
     return report, neighbours
