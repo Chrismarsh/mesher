@@ -369,6 +369,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     original_neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
     physical_boundary = _physical_boundary_band(domain)
     growth_rings = 1
+    interface_recovery = False
     context = options.get('out_prefix') or options.get('tile_prefix')
     label = f' [{Path(context).name}]' if context else ''
     last_error = None
@@ -383,15 +384,17 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         try:
             # Preserve every retained boundary vertex, including collinear ones
             # which a polygon boolean operation might otherwise discard.
-            fixed, fixed_owners = [], []
+            fixed, fixed_owners, interface_owners = [], [], []
             if len(retained):
                 neighbours = build_neighbours(retained, len(joined_v), joined_v)
                 faces, slots = np.nonzero(neighbours < 0)
                 for f, s in zip(faces, slots):
                     line = LineString(joined_v[retained[f, [(s + 1) % 3, (s + 2) % 3]], :2])
-                    if cavity.boundary.covers(line) and not physical_boundary.covers(line):
-                        fixed.append(line)
-                        fixed_owners.append(f)
+                    if not physical_boundary.covers(line):
+                        interface_owners.append(f)
+                        if cavity.boundary.covers(line):
+                            fixed.append(line)
+                            fixed_owners.append(f)
             patch_v, patch_t = mesher(cavity, constraints, options, directory, fixed)
             if len(patch_t):
                 validate_patch(patch_v, patch_t, cavity, constraints)
@@ -399,7 +402,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             # Coverage of retained triangles and patch was checked separately;
             # set difference makes their interiors disjoint by construction.
             return output_v, output_t, {'attempts': attempt + 1, 'band_width': width,
-                                       'retained_triangles': len(retained), 'patch_triangles': len(patch_t)}
+                                       'retained_triangles': len(retained), 'patch_triangles': len(patch_t),
+                                       'interface_recovery': interface_recovery}
         except (PatchError, MeshTopologyError) as exc:
             last_error = exc
             print(f'Remesh candidate rejected{label}: {exc}', flush=True)
@@ -407,6 +411,20 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             # larger patch after the backend has already exhausted its budget.
             if attempt + 1 == attempts or not len(retained) or 'Patch vertex budget exceeded' in str(exc):
                 break
+            if attempt + 2 == attempts and interface_owners:
+                # Moving a frozen boundary does not guarantee the next patch
+                # will leave it unsplit. Reserve the final attempt for removing
+                # all such interfaces. Absorb every retained component with a
+                # nonphysical boundary; complete disconnected regions bounded
+                # only by the physical perimeter remain intact. Seed all
+                # interfaces, since rebuilding can expose a mismatch elsewhere.
+                affected = retained_ids[np.unique(interface_owners)]
+                removed = _grow_cavity(keep, original_neighbours, affected, len(joined_t))
+                interface_recovery = True
+                print(f'Final interface recovery{label}: removed={removed}, '
+                      f'retained={np.count_nonzero(keep)}; remeshing components touching the cavity '
+                      'with unchanged quality checks and vertex budget', flush=True)
+                continue
             local_faces = np.empty(0, dtype=np.int64)
             if isinstance(exc, InterfaceChanged):
                 local_faces = exc.faces

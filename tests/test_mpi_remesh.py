@@ -105,25 +105,59 @@ class CavityGeometryTests(unittest.TestCase):
         domain = box(0, 0, 100, 4).union(box(0, 10, 4, 14))
         fine_v, fine_t = grid(0, 100, 0, 4, .5)
         fine_polygons = polygons(fine_v[fine_t, :2])
-        calls = []
-        def finer_patch(cavity, constraints, options, directory, fixed):
-            calls.append(cavity.area)
-            selected = fine_t[covers(cavity, fine_polygons)]
-            used, inverse = np.unique(selected, return_inverse=True)
-            return fine_v[used], inverse.reshape((-1, 3))
-        v, t, stats = merge_cavity(a, ta, [0, 0, 50, 14], b, tb, [50, 0, 100, 14], domain, [],
-            {'max_area': .5, 'remesh_band_width': 1, 'remesh_max_attempts': 8}, '.', finer_patch)
-        self.assertGreater(stats['attempts'], 2)
-        self.assertLessEqual(stats['attempts'], 8)
-        self.assertEqual(stats['band_width'], 1)
-        self.assertEqual(stats['retained_triangles'], len(island_t))
-        self.assertTrue(all(second > first for first, second in zip(calls, calls[1:])))
-        np.testing.assert_array_equal(a, original_a)
-        np.testing.assert_array_equal(ta, original_ta)
-        validate_patch(v, t, domain)
-        report = audit(v, t)
-        self.assertTrue(report['valid'], report)
-        self.assertEqual(report['components'], 2)
+        for limit in (4, 10):
+            with self.subTest(attempt_limit=limit):
+                calls, interfaces = [], []
+                def finer_patch(cavity, constraints, options, directory, fixed):
+                    calls.append(cavity.area)
+                    interfaces.append(len(fixed))
+                    selected = fine_t[covers(cavity, fine_polygons)]
+                    used, inverse = np.unique(selected, return_inverse=True)
+                    return fine_v[used], inverse.reshape((-1, 3))
+                v, t, stats = merge_cavity(a, ta, [0, 0, 50, 14], b, tb, [50, 0, 100, 14], domain, [],
+                    {'max_area': .5, 'remesh_band_width': 1, 'remesh_max_attempts': limit}, '.', finer_patch)
+                self.assertGreater(stats['attempts'], 2)
+                self.assertLessEqual(stats['attempts'], limit)
+                self.assertEqual(stats['band_width'], 1)
+                self.assertEqual(stats['retained_triangles'], len(island_t))
+                self.assertEqual(stats['interface_recovery'], limit == 4)
+                self.assertEqual(interfaces[-1], 0)
+                self.assertTrue(all(second > first for first, second in zip(calls, calls[1:])))
+                # Preserve every original triangle of the complete, separate
+                # island even when the last attempt removes other interfaces.
+                np.testing.assert_array_equal(v[t[:len(island_t)]], island_v[island_t])
+                np.testing.assert_array_equal(a, original_a)
+                np.testing.assert_array_equal(ta, original_ta)
+                validate_patch(v, t, domain)
+                report = audit(v, t)
+                self.assertTrue(report['valid'], report)
+                self.assertEqual(report['components'], 2)
+
+    def test_interface_recovery_cannot_skip_validation_or_vertex_budget(self):
+        a, ta = grid(0, 20, 0, 20, 2)
+        b, tb = grid(20, 40, 0, 20, 2)
+        before_a, before_b = ta.copy(), tb.copy()
+        for failure in ('budget', 'gap', 'generic_gap'):
+            with self.subTest(failure=failure):
+                calls = []
+                def candidate(cavity, constraints, options, directory, fixed):
+                    calls.append(len(fixed))
+                    if fixed:
+                        if failure == 'generic_gap':
+                            raise PatchError('Invalid candidate coverage')
+                        raise InterfaceChanged([0])
+                    if failure == 'budget':
+                        raise PatchError('Patch vertex budget exceeded: vertices=100, limit=100')
+                    return grid(0, 1, 0, 1)  # Invalid coverage must still fail.
+                with self.assertRaises(PatchError) as error:
+                    merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], box(0, 0, 40, 20), [],
+                        {'max_area': 8, 'remesh_band_width': 2, 'remesh_max_attempts': 2}, '.', candidate)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[-1], 0)
+                self.assertIn('after 2 attempts', str(error.exception))
+                self.assertIn('vertex budget exceeded' if failure == 'budget' else 'cover exactly', str(error.exception))
+                np.testing.assert_array_equal(ta, before_a)
+                np.testing.assert_array_equal(tb, before_b)
 
     def test_last_attempt_does_not_grow_an_untested_cavity(self):
         a, ta = grid(0, 20, 0, 20, 2)
@@ -299,6 +333,34 @@ class CgalCavityTests(unittest.TestCase):
         self.assertFalse((folder / 'mesh.json').exists())
         supplied = shape(json.loads((folder / 'domain.json').read_text()))
         self.assertEqual(supplied.symmetric_difference(domain).area, 0)
+
+    def test_final_attempt_removes_interfaces_before_real_cgal_refinement(self):
+        a, ta = grid(0, 20, 0, 20, 2)
+        b, tb = grid(20, 40, 0, 20, 2)
+        domain = box(0, 0, 40, 20).difference(box(26, 4, 30, 8))
+        tb = tb[covers(domain, polygons(b[tb, :2]))]
+        line = LineString([(0, 0), (40, 20)])
+        calls = []
+        def split_interface(cavity, constraints, options, directory, fixed):
+            calls.append(len(fixed))
+            forced = list(fixed)
+            if forced:
+                edge = forced[0]
+                # A valid refined patch which always subdivides a retained
+                # edge reproduces the endless moving-interface failure.
+                forced[0] = LineString([edge.coords[0], edge.interpolate(.5, normalized=True).coords[0], edge.coords[-1]])
+            return remesh_domain(cavity, constraints, options, directory, forced)
+        v, t, stats = merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], domain, [line],
+            dict(self.options, remesh_max_attempts=2), self.work, split_interface)
+        self.assertEqual(stats['attempts'], 2)
+        self.assertEqual(stats['retained_triangles'], 0)
+        self.assertTrue(stats['interface_recovery'])
+        self.assertGreater(calls[0], 0)
+        self.assertEqual(calls[-1], 0)
+        validate_patch(v, t, domain, [line])
+        report = audit(v, t)
+        self.assertTrue(report['valid'], report)
+        self.assertEqual(report['hanging_nodes'], 0)
 
     def test_rounded_exterior_centroid_cannot_start_runaway_refinement(self):
         # Reduced from the production boundary. A nearly collinear exterior

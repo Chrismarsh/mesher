@@ -114,6 +114,17 @@ failures widen the removal band. Rows and
 columns use the same kernel; the later merge remeshes across earlier seams at
 four-tile intersections. No old internal tile line is kept as a constraint.
 
+Local growth can keep exposing another edge that refinement splits. If a retry
+is still needed before the final allowed attempt, all retained components with
+a retained/cavity interface are absorbed into that last patch. This removes
+every artificial interface rather than spending the last attempt on another
+finite ring expansion. Complete disconnected regions bounded only by the
+physical perimeter are preserved. The log reports ``Final interface recovery``
+and the number of removed and retained faces. This can remesh most or all of the
+current merge group and increase time and memory use. The same vertex budget,
+raster/shape criteria, coverage and topology checks still apply. A budget
+failure stops immediately; it never triggers a larger recovery patch.
+
 Physical perimeter edges are classified using a roundoff-sized band around the
 domain boundary. The **entire edge** must lie in that band; touching the boundary
 at an endpoint is insufficient. This handles refined points on sloping physical
@@ -144,7 +155,9 @@ terminal merge failure unless recovery is exhausted or a vertex budget is hit.
 Merge logs identify the tile/group and report the local neighbour-ring depth and
 number of retained faces removed. The final rejected attempt does not announce
 or perform growth that would never be retried. Attempt and vertex limits remain
-hard limits; accelerated local growth does not guarantee every case converges.
+hard limits. The final interface recovery resolves the moving artificial
+boundary, but physical constraints, quality requirements or resource limits can
+still prevent a valid result.
 
 The vertex-budget error reports the limit, current/input vertex counts and
 refinement steps. It is distinct from a GDAL allocation or read error. Inspect
@@ -155,7 +168,8 @@ samples; this does not extend DEM coverage or make out-of-domain geometry valid
 for the final elevation export.
 
 Only validated results are written, followed by metadata containing attempt,
-retained-triangle and replacement-triangle counts. Parameters are extracted after
+retained-triangle and replacement-triangle counts, and whether
+``interface_recovery`` was used. Parameters are extracted after
 geometry is finalized. The current MPI smoothing implementation is disabled for
 this path because it does not preserve the checked constraints and criteria.
 
@@ -192,6 +206,11 @@ when the protrusion is a physical domain boundary that cannot be removed.
 Further regressions cover repeatedly subdivided interfaces, growth stopping at
 existing cavities, and CGAL-refined sloping physical edges at large projected
 coordinates. Genuine gaps and subdivided internal edges remain rejected.
+With a short attempt limit, a moving-interface regression requires the final
+component recovery and preserves an unchanged disconnected island. A real CGAL
+regression forces interface subdivision and verifies recovery while preserving
+a physical hole and stream constraint. Budget failures and invalid replacement
+coverage still fail without modifying the inputs.
 A seven-vertex production-cavity reduction with a synthetic elevation anomaly
 checks that raster refinement is not dropped at protected constraint clusters,
 in both weighted and unweighted modes. C++ tests check mandatory numeric and

@@ -597,8 +597,13 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: int
     :default: 12
 
-    Maximum cavity attempts per merge. Exhaustion fails the merge without
-    accepting a nonconforming candidate.
+    Maximum cavity attempts per merge, including final interface recovery.
+    If a retry is still required before the last attempt, retained components
+    with artificial cavity interfaces are absorbed in full. This can remesh
+    most or all of the current merge group; complete disconnected regions with
+    only physical boundary edges are preserved. The vertex budget and quality
+    checks still apply. A value of 1 allows no recovery attempt. Exhaustion
+    fails the merge without accepting a nonconforming candidate.
 
 .. confval:: mpi_remesh_max_vertices
 
