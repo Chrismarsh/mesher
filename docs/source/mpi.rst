@@ -19,6 +19,10 @@ mesher process running in a small job and spawn MPI sub-jobs in dedicated jobs. 
 Mesh seam
 +++++++++++
 
+There are two merge methods. ``mpi_merge_method="shared"`` is the compatibility
+default described below. The opt-in ``"remesh"`` method removes artificial
+seam constraints and is described in the next section.
+
 The mesh generator is, by default, serial. For large meshes, this can be very slow. Enabling multiple MPI workers
 will split the domain into subdomains and mesh each subdomain independently. Points are placed
 along the seam, approximately spaced at the smallest allowed triangle size. This can be controlled with
@@ -42,6 +46,81 @@ The log reports the number of split faces and added triangles. Triangle counts
 and ordering can change, so parameter extraction and partitioning must use the
 resulting mesh. Existing ``.param`` files and partition metadata must not be
 attached to a mesh with repaired geometry.
+
+Local cavity remeshing
+++++++++++++++++++++++
+
+Rebuild ``meshercxx`` after updating the source; this mode uses a new C++ domain
+meshing entry point. Install the updated Python dependencies (including Shapely
+>= 2). In the configuration, set:
+::
+
+   mpi_mesh = True
+   mpi_merge_method = "remesh"
+   reuse_mesh = False
+   lloyd_itr = 0
+   mpi_global_lloyd = 0
+
+Use a projected working CRS with area and length units consistent with
+``min_area``/``max_area``. Start in a separate output directory to retain older
+results. A shared-boundary NPZ cannot be reused as a remesh result. Subsequent
+``reuse_mesh=True`` runs may reuse a completed remesh result to regenerate
+parameters; changing geometry criteria requires fresh tiles.
+
+Each tile is meshed with a halo. At a merge, only whole triangles inside each
+tile's nonoverlapping core and outside the removal band are retained. The
+cavity is the intended polygonal domain **minus the coverage of those retained
+triangles**. It is not a rectangle filled over existing triangles, and triangles
+are never selected by centroid ownership. This set difference is central to
+preventing overlapping strips at joins.
+
+CGAL remeshes the cavity from its boundary and the original physical constraints,
+using the same raster, categorical, weighting, area and shape criteria as normal
+meshing. Old seam vertices inside the cavity are discarded. Domain marking
+explicitly preserves holes and disconnected polygon components. Intersecting
+constraint lines are noded before insertion. This preserves the domain supplied
+to the MPI stage; it does not repair upstream domain preprocessing choices.
+
+The retained interface is a contract: every retained edge facing the cavity must
+have an exact matching patch edge. If CGAL splits an interface, the candidate is
+discarded and the affected retained faces plus one neighbouring ring are absorbed
+into the cavity. Other recoverable failures widen the removal band. Rows and
+columns use the same kernel; the later merge remeshes across earlier seams at
+four-tile intersections. No old internal tile line is kept as a constraint.
+
+Before acceptance, validation checks numeric degeneracy, indexed topology,
+positive-area overlaps (triangle area versus union area), symmetric difference
+against the exact cavity, physical constraints, interface pairing and hanging
+boundary nodes. Area comparisons allow scale-dependent floating-point roundoff.
+The C++ backend re-evaluates its criteria on every output face. A candidate with
+unresolved quality failures is rejected, including at sharp physical constraints
+where those criteria cannot be met. The retry and vertex budgets make failures
+explicit; there is no silent fallback to the shared-edge algorithm.
+
+Only validated results are written, followed by metadata containing attempt,
+retained-triangle and replacement-triangle counts. Parameters are extracted after
+geometry is finalized. The current MPI smoothing implementation is disabled for
+this path because it does not preserve the checked constraints and criteria.
+
+This change addresses seam geometry and correctness. Pairwise stages still load
+the two tile/group arrays, and the final export remains in memory. It does not
+yet implement streaming assembly. Large cavities and complex boundaries can be
+expensive; the logs expose retries rather than silently accepting a bad join.
+
+Validation tests
+~~~~~~~~~~~~~~~
+
+Build the C++ binary, then run:
+::
+
+   PYTHONPATH=src:tests MESHER_TEST_EXE=/absolute/path/to/meshercxx \
+       python -m unittest discover -s tests -v
+
+The C++ tests cover overlapping tiles, a shifted seam on sloping terrain, rugged
+terrain, holes, disconnected components, crossing physical constraints, a
+four-tile junction, retry exhaustion and the vertex budget. With OpenMPI
+available, a four-rank tile/merge/export test runs as well. Without
+``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++

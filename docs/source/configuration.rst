@@ -556,14 +556,55 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: bool
     :default: False
 
-    Enable MPI tile meshing and shared-edge merge. Produces a single stitched mesh.
+    Enable MPI tile meshing. Produces a single stitched mesh.
+
+.. confval:: mpi_merge_method
+
+    :type: str
+    :default: "shared"
+
+    ``shared`` uses the existing densely sampled shared-edge merge.
+    ``remesh`` generates overlapping tiles and replaces artificial boundaries
+    with validated local CGAL meshes. Requires a rebuilt C++ executable,
+    Shapely >= 2, a projected working CRS, ``lloyd_itr=0``, and
+    ``mpi_global_lloyd=0``. See :doc:`mpi` for the recovery and validation rules.
+
+.. confval:: mpi_remesh_band_width
+
+    :type: double or None
+    :default: None
+
+    Initial halo and removal-band width in projected coordinate units. The
+    automatic value is the smaller of ``2*sqrt(max_area)`` and 20% of the
+    smallest tile dimension. The area/coordinate units must be consistent.
+    Retained faces affected by interface refinement are absorbed locally on
+    retry. Other recoverable failures double the initial removal band.
+
+.. confval:: mpi_remesh_max_attempts
+
+    :type: int
+    :default: 12
+
+    Maximum cavity attempts per merge. Exhaustion fails the merge without
+    accepting a nonconforming candidate.
+
+.. confval:: mpi_remesh_max_vertices
+
+    :type: int
+    :default: 500000
+
+    CGAL vertex budget per tile or cavity invocation. Refinement fails when
+    the budget is reached. This does not cap memory used by retained tile
+    arrays, graph construction, or GEOS validation.
 
 .. confval:: mpi_merge_snap_tol
 
     :type: double
     :default: None
 
-    Override the snap tolerance used for merge vertex deduplication.
+    Override the snap tolerance used for ``shared`` merge vertex deduplication.
+    ``remesh`` connects retained interfaces by exact coordinates/IDs and does
+    not use this tolerance to weld unrelated vertices.
 
 .. confval:: mpi_global_lloyd
 
@@ -584,7 +625,8 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: double
     :default: sqrt(min_area)
 
-    Target spacing used to densify shared tile boundary edges.
+    Target spacing used to densify shared tile boundary edges in ``shared``
+    mode. Ignored in ``remesh`` mode, where artificial seam vertices are removed.
 
 .. confval:: use_exactextract
 

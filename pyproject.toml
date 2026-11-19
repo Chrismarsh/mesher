@@ -15,6 +15,7 @@ dependencies = [
     'vtk',
     'numpy',
     'scipy',
+    'shapely>=2.0',
     'matplotlib',
     'cloudpickle',
     'gdal[numpy]',

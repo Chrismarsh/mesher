@@ -1,0 +1,103 @@
+// Local constrained remeshing with the same Criteria as ordinary Mesher.
+// Included after read_json() in mesher.cpp.
+#pragma once
+#include <limits>
+#include <memory>
+#include <cstdio>
+
+int mesh_patch(const std::string& domain_file, const std::string& constraints_file,
+               const std::string& output, const Criteria& criteria, size_t max_vertices)
+{
+    if (output.empty() || constraints_file.empty() || max_vertices < 3)
+        throw std::invalid_argument("Patch output, constraints and a vertex budget >= 3 are required");
+    std::ifstream input(domain_file);
+    std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    std::unique_ptr<OGRGeometry> domain(OGRGeometryFactory::createFromGeoJson(json.c_str()));
+    if (!domain || domain->IsEmpty() || !domain->IsValid())
+        throw std::invalid_argument("Patch domain must be nonempty valid polygon geometry");
+    auto kind = wkbFlatten(domain->getGeometryType());
+    if (kind != wkbPolygon && kind != wkbMultiPolygon)
+        throw std::invalid_argument("Patch domain must be Polygon or MultiPolygon");
+
+    CDT cdt;
+    // Python supplies all boundary and physical constraints, noded together.
+    // The old MPI seam is deliberately absent from this graph.
+    const auto constraints = read_json(constraints_file);
+    for (const auto& feature : constraints.get_child("features")) {
+        if (feature.second.get<std::string>("geometry.type") != "LineString")
+            throw std::invalid_argument("Patch constraints must be noded LineStrings");
+        std::vector<Vertex_handle> vertices;
+        for (const auto& coordinate : feature.second.get_child("geometry.coordinates")) {
+            if (coordinate.second.size() < 2)
+                throw std::invalid_argument("Patch coordinates need x and y");
+            auto it = coordinate.second.begin();
+            double x = it++->second.get_value<double>();
+            double y = it->second.get_value<double>();
+            if (!std::isfinite(x) || !std::isfinite(y))
+                throw std::invalid_argument("Non-finite patch coordinate");
+            vertices.push_back(cdt.insert(Point(x, y)));
+        }
+        for (size_t i = 1; i < vertices.size(); ++i)
+            if (vertices[i - 1] != vertices[i]) cdt.insert_constraint(vertices[i - 1], vertices[i]);
+    }
+    if (cdt.dimension() != 2 || cdt.number_of_vertices() > max_vertices)
+        throw std::runtime_error("Invalid or over-budget patch constraint graph");
+
+    // Explicit marking preserves holes and disconnected components, including
+    // components divided by internal physical constraints. Default CGAL marking
+    // would fill every bounded component, including holes.
+    for (auto f = cdt.all_faces_begin(); f != cdt.all_faces_end(); ++f) {
+        bool inside = false;
+        if (!cdt.is_infinite(f)) {
+            const auto p = CGAL::centroid(f->vertex(0)->point(), f->vertex(1)->point(), f->vertex(2)->point());
+            OGRPoint center(CGAL::to_double(p.x()), CGAL::to_double(p.y()));
+            inside = domain->Contains(&center);
+        }
+        f->set_in_domain(inside);
+    }
+    Mesher mesher(cdt, criteria);
+    mesher.init(true);
+    while (!mesher.is_refinement_done()) {
+        if (cdt.number_of_vertices() >= max_vertices)
+            throw std::runtime_error("Patch vertex budget exceeded");
+        mesher.step_by_step_refine_mesh();
+    }
+
+    size_t bad = 0, faces = 0;
+    auto is_bad = criteria.is_bad_object();
+    for (auto f = cdt.finite_faces_begin(); f != cdt.finite_faces_end(); ++f) {
+        if (!f->is_in_domain()) continue;
+        ++faces;
+        Criteria::Quality quality;
+        if (is_bad(f, quality) != CGAL::Mesh_2::NOT_BAD) ++bad;
+    }
+    // Never silently accept quality failures next to a frozen interface. The
+    // caller can enlarge the cavity; small physical angles may still fail.
+    if (!faces || bad) throw std::runtime_error("Patch has " + std::to_string(bad) +
+        " triangles failing Mesher criteria (or an empty domain)");
+
+    const std::string temporary = output + ".tmp";
+    std::ofstream out(temporary);
+    out << std::setprecision(std::numeric_limits<double>::max_digits10);
+    out << "{\"vertices\":[";
+    size_t id = 0;
+    for (auto v = cdt.finite_vertices_begin(); v != cdt.finite_vertices_end(); ++v) {
+        v->info() = id;
+        if (id++) out << ',';
+        out << '[' << v->point().x() << ',' << v->point().y() << ",0]";
+    }
+    out << "],\"triangles\":[";
+    bool first = true;
+    for (auto f = cdt.finite_faces_begin(); f != cdt.finite_faces_end(); ++f) {
+        if (!f->is_in_domain()) continue;
+        if (!first) out << ',';
+        first = false;
+        out << '[' << f->vertex(0)->info() << ',' << f->vertex(1)->info() << ',' << f->vertex(2)->info() << ']';
+    }
+    out << "],\"criteria_failures\":0}\n";
+    out.close();
+    if (!out || std::rename(temporary.c_str(), output.c_str()) != 0)
+        throw std::runtime_error("Cannot publish patch output");
+    std::cout << "Patch: " << faces << " triangles, all criteria passed" << std::endl;
+    return 0;
+}

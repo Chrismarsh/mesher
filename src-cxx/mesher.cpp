@@ -83,6 +83,8 @@ pt::ptree read_json(const std::string& path)
     return config;
 }
 
+#include "patch_mesher.h"
+
 int main(int argc, char *argv[])
 {
     GDALAllRegister();
@@ -93,6 +95,8 @@ int main(int argc, char *argv[])
     std::string poly_file;
     std::string interior_plgs_file;
     std::string points_file;
+    std::string domain_file, patch_output;
+    size_t patch_max_vertices = 500000;
     double max_area = 0;
     double min_area = 1;
     bool is_geographic = false;
@@ -123,6 +127,9 @@ int main(int argc, char *argv[])
              "Interior PLGS file to use to bound triangulation, e.g., rivers")
             ("points-file", po::value<std::string>(&points_file),
              "Optional file of points to insert before refinement (two columns: x y)")
+            ("domain-file", po::value<std::string>(&domain_file), "Polygon/MultiPolygon GeoJSON domain for patch meshing")
+            ("patch-output", po::value<std::string>(&patch_output), "Patch mesh JSON output; requires domain-file and noded interior-plgs-file")
+            ("patch-max-vertices", po::value<size_t>(&patch_max_vertices), "Hard vertex budget for patch refinement")
 
             ("raster,r", po::value<std::vector<std::string>>(), "If tolerance checking is used,"
                     "this provides a list of the rasters to provide the tolerance checking against. "
@@ -266,6 +273,19 @@ int main(int argc, char *argv[])
             }
 
             category_rasters.push_back(std::make_tuple( r,tols.at(i),w ));
+        }
+    }
+
+    if (!domain_file.empty())
+    {
+        try {
+            Criteria criteria(0.125, max_area, min_area, rasters, category_rasters,
+                              error_metric, is_geographic, use_weights, weight_threshold, debug);
+            return mesh_patch(domain_file, interior_plgs_file, patch_output,
+                              criteria, patch_max_vertices);
+        } catch (const std::exception& e) {
+            std::cerr << "Patch meshing failed: " << e.what() << std::endl;
+            return 2;
         }
     }
 

@@ -257,6 +257,19 @@ def compute_band_mask(verts, tris, tile_bbox, band_width):
 
 
 def mesh_tile(args):
+    if args.get('merge_method') == 'remesh':
+        from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, box
+        tile_bbox = args['tile_bbox']
+        band = args['band_width']
+        domain = load_domain(args['outer_polygon_shp']).intersection(box(
+            tile_bbox[0] - band, tile_bbox[1] - band, tile_bbox[2] + band, tile_bbox[3] + band))
+        verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
+        prefix = args['base_dir'] + args['tile_prefix']
+        np.savez(prefix + '.npz', verts=verts, tris=tris, band_tri_mask=np.zeros(len(tris), dtype=bool))
+        with open(prefix + '.json', 'w') as stream:
+            json.dump({'tile_bbox': tile_bbox, 'core_bbox': tile_bbox, 'band_width': band,
+                       'empty_tile': len(tris) == 0, 'merge_method': 'remesh'}, stream)
+        return
     tile_prefix = args['tile_prefix']
     base_dir = args['base_dir']
     tile_bbox = args['tile_bbox']

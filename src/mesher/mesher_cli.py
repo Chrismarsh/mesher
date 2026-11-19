@@ -85,6 +85,17 @@ def main():
     base_dir = user_output_dir + base_name + os.path.sep
     parameter_dir = os.path.join(base_dir, 'projected_parameters')
     reuse_projected_parameters = getattr(X, 'reuse_projected_parameters', False)
+    mpi_merge_method = getattr(X, 'mpi_merge_method', 'shared')
+    if mpi_merge_method not in ('shared', 'remesh'):
+        raise ValueError('mpi_merge_method must be shared or remesh')
+    mpi_remesh_options = {'merge_method': mpi_merge_method,
+        'remesh_band_width': getattr(X, 'mpi_remesh_band_width', None),
+        'remesh_max_attempts': getattr(X, 'mpi_remesh_max_attempts', 12),
+        'remesh_max_vertices': getattr(X, 'mpi_remesh_max_vertices', 500000)}
+    if mpi_mesh and mpi_merge_method == 'remesh' and mpi_global_lloyd > 0:
+        raise ValueError('mpi_global_lloyd must be 0 with remesh: the current MPI smoother does not preserve the validated patch criteria')
+    if mpi_mesh and mpi_merge_method == 'remesh' and lloyd_itr > 0:
+        raise ValueError('lloyd_itr must be 0 with remesh; patch refinement validates the original criteria without smoothing')
 
     if not os.path.isdir(base_dir) and reuse_mesh:
         raise Exception(f"Using reuse_mesh=True, however the directory {base_dir} does not exist")
@@ -523,6 +534,10 @@ def main():
                 f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
                 'Ensure the previous MPI mesh run completed and used the same MPI_nworkers.'
             )
+        if mpi_merge_method == 'remesh':
+            with open(os.path.splitext(final_npz_path)[0] + '.json') as stream:
+                if json.load(stream).get('merge_method') != 'remesh':
+                    raise ValueError('reuse_mesh cannot switch an old shared-boundary run to remesh; generate fresh tiles')
 
     # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
@@ -535,7 +550,7 @@ def main():
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                                              mpi_merge_snap_tol,
                                              mesher_debug,
-                                             mpi_shared_edge_spacing)
+                                             mpi_shared_edge_spacing, mpi_remesh_options)
         else:
             start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
@@ -1564,14 +1579,29 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                     max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                     mpi_merge_snap_tol=None, mesher_debug=False,
-                    mpi_shared_edge_spacing=None):
-    band_width = 5 * math.sqrt(min_area)
-    band_width = 0.0
+                    mpi_shared_edge_spacing=None, remesh_options=None):
+    remesh_options = dict(remesh_options or {})
+    remesh = remesh_options.get('merge_method') == 'remesh'
+    if remesh and is_geographic:
+        raise ValueError('mpi_merge_method=remesh requires a projected working CRS')
+    if remesh:
+        for key, minimum, default in (('remesh_max_attempts', 1, 12), ('remesh_max_vertices', 3, 500000)):
+            value = remesh_options.get(key, default)
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
     rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
 
     tile_width = (xmax - xmin) / cols
     tile_height = (ymax - ymin) / rows
     min_edge = min(tile_width, tile_height)
+    band_width = 0.0
+    if remesh:
+        band_width = remesh_options.get('remesh_band_width')
+        if band_width is None:
+            band_width = min(2 * math.sqrt(max_area), .2 * min_edge)
+        if not np.isfinite(band_width) or band_width <= 0:
+            raise ValueError('mpi_remesh_band_width must be positive and finite')
+        remesh_options['remesh_band_width'] = float(band_width)
     min_edge_threshold = 1.25 * band_width
     # min_edge_threshold=1
     if min_edge <= min_edge_threshold:
@@ -1591,16 +1621,18 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
 
     tile_args = []
+    # Shared coordinates are computed once, preventing roundoff differences in
+    # neighbouring core boxes and making ownership an exact geometric contract.
+    x_edges = np.linspace(xmin, xmax, cols + 1)
+    y_edges = np.linspace(ymin, ymax, rows + 1)
     if mpi_shared_edge_spacing is None:
         mpi_shared_edge_spacing = max(1e-6, math.sqrt(min_area))
     for rank in range(tile_count):
         row = rank // cols
         col = rank % cols
 
-        tile_xmin = xmin + col * tile_width
-        tile_xmax = tile_xmin + tile_width
-        tile_ymax = ymax - row * tile_height
-        tile_ymin = tile_ymax - tile_height
+        tile_xmin, tile_xmax = x_edges[col:col + 2]
+        tile_ymin, tile_ymax = y_edges[rows - row - 1:rows - row + 1]
 
         tile_bbox = [tile_xmin, tile_ymin, tile_xmax, tile_ymax]
         tile_prefix = f"{base_name}_mpi_tile_{rank}"
@@ -1633,8 +1665,9 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'dem_path': base_dir + base_name + '_projected.tif',
             'outer_polygon_shp': outer_polygon_shp,
             'mesher_debug': mesher_debug,
-            'use_shared_edges': True,
-            'shared_edge_spacing': mpi_shared_edge_spacing
+            'use_shared_edges': not remesh,
+            'shared_edge_spacing': mpi_shared_edge_spacing,
+            **remesh_options
         })
 
     with open('pickled_mesh_tile_args.pickle', 'wb') as f:
@@ -1714,7 +1747,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': True
+                            'use_shared_edges': not remesh,
+                            **remesh_options
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1770,7 +1804,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': True
+                            'use_shared_edges': not remesh,
+                            **remesh_options
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
