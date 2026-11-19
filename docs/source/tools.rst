@@ -1,6 +1,64 @@
 Tools
 =======
 
+meshaudit
+***********
+
+Checks a CHM ``.mesh`` JSON file and can reconstruct its neighbour table from
+the existing triangle vertex IDs. This repairs older MPI meshes that contain
+triangles but have an empty ``mesh.neigh`` array.
+
+Usage:
+::
+
+   meshaudit input.mesh
+   meshaudit input.mesh --json
+   meshaudit input.mesh --rebuild-neighbours -o repaired.mesh
+   meshpermutation -i repaired.mesh -o partitioned.mesh -t metis -n 4
+
+From a source checkout, the same audit is available without rebuilding the C++
+executable:
+::
+
+   PYTHONPATH=src python -m mesher.tools.meshaudit input.mesh
+
+Rebuilding neighbours preserves triangle order, vertex coordinates, metadata,
+and any existing permutation. Separate parameter files remain aligned and do
+not need to be regenerated. The output must be a new file: neither the input
+nor an existing output is overwritten. A completed output is published
+atomically. The command exits with status 0 on success and nonzero on failure.
+
+Checks include declared row counts, integer index ranges, finite coordinates
+and elevations, degenerate/duplicate triangles, non-manifold edges, neighbour
+reciprocity and opposite-vertex slots, connected components, coincident
+boundary vertices, and boundary vertices lying inside another boundary edge
+(hanging nodes). Geometric defects block neighbour-only recovery. Disconnected
+components are warnings because separate model regions can be intentional.
+Component counts use the graph reconstructed from triangles, even when the
+stored neighbour table is missing or corrupt.
+
+``hanging_nodes`` counts vertex-on-edge detections, not necessarily distinct
+vertices. The JSON report includes up to ten examples with vertex/edge/face IDs
+and XY coordinates. One connected component can still contain hanging nodes:
+triangles may connect through other, correctly joined parts of a seam.
+``neighbour_rebuild_allowed`` explicitly indicates whether geometry blocks
+neighbour-only recovery. If MPI seams need splitting, use the MPI generation
+or reuse workflow described in :doc:`mpi`; face parameters must be regenerated.
+
+``--boundary-tolerance`` controls coincidence and hanging-node checks in the
+mesh's coordinate units (default ``1e-8``). It does not snap or move vertices.
+The audit does not certify domain coverage, arbitrary triangle overlaps, or
+terrain-approximation quality. In particular, rebuilding neighbours is not a
+repair for incompatible subdivisions along an MPI tile seam.
+
+``--chunk-size`` limits triangles per edge-sorting run (default one million).
+Larger meshes use temporary sorted edge files under ``TMPDIR`` (or the system
+temporary directory). Allow approximately 72 bytes per triangle of temporary
+disk space. JSON input, triangle and neighbour arrays, component analysis and
+boundary geometry still require memory; this is not a fully out-of-core mesh
+pipeline. Boundary checks can also be expensive for complex domains.
+
+
 mesh2vtu
 ***********
 
@@ -72,6 +130,12 @@ File for output. Overwrite input file
 ``nd`` Performing ND fill-in minimization
 
 ``metis`` Performing METIS communication minimization partitioning. Requires ``-n <value>`` where ``<value>`` is the number of partitions. If this mesh is used later for MPI simulation, this should correspond to the number of MPI ranks that will be used.
+
+METIS input is validated against the triangle connectivity before the library
+is called. Missing or corrupt neighbour rows must be repaired explicitly with
+``meshaudit``. The number of ranks must be between 2 and the number of triangles;
+empty partitions returned by METIS are rejected. Full boundary-geometry checks
+are performed by ``meshaudit``, not by the partition command.
 
 .. confval:: n
 

@@ -41,6 +41,7 @@ from natsort import natsorted
 
 
 from . import mesher_utls
+from .mesh_seams import reconcile_boundary_subdivisions
 from .mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
@@ -1299,10 +1300,19 @@ def bbox_intersection(a, b):
 
 
 def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
+    # Shared points alone do not stop independently refined MPI tile edges from
+    # acquiring different subdivisions. Reconcile before DEM/parameter sampling,
+    # including reuse_mesh runs loading older stitched NPZ intermediates.
+    print('Checking MPI seam subdivisions...', flush=True)
+    tris, neighbours, seam_stats = reconcile_boundary_subdivisions(verts_xy, tris)
+    print('MPI seams: %d faces split, %d triangles added' %
+          (seam_stats['split_faces'], seam_stats['added_triangles']), flush=True)
     mesh = {'mesh': {}}
     mesh['mesh']['vertex'] = []
     mesh['mesh']['elem'] = []
-    mesh['mesh']['neigh'] = []
+    # Reconstruct the global graph after tile vertex IDs have been merged.
+    # Tile-local .neigh files cannot supply cross-tile neighbours.
+    mesh['mesh']['neigh'] = neighbours.tolist()
     mesh['mesh']['nvertex'] = len(verts_xy)
     mesh['mesh']['nelem'] = len(tris)
     mesh['mesh']['is_geographic'] = is_geographic

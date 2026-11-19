@@ -4,6 +4,8 @@ import numpy as np
 from osgeo import gdal
 
 from mesher.mesher_cli import build_mesh_from_arrays, extract_point
+from mesher.mesh_topology import audit_mesh
+from test_mesh_seams import strip_mesh
 
 
 class ExtractPointTests(unittest.TestCase):
@@ -26,3 +28,28 @@ class ExtractPointTests(unittest.TestCase):
         vertices = [(-3.5, 1.5), (1.5, 2.5), (2.5, 2.5)]
         mesh = build_mesh_from_arrays(vertices, [(0, 1, 2)], raster, band, None, True, False)
         self.assertEqual([v[2] for v in mesh['mesh']['vertex']], [2.5, 2.0, 3.0])
+        self.assertEqual(mesh['mesh']['neigh'], [[-1, -1, -1]])
+
+    def test_mpi_array_export_includes_reciprocal_neighbours(self):
+        raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
+        raster.SetGeoTransform((0, 1, 0, 3, 0, -1))
+        band = raster.GetRasterBand(1)
+        band.SetNoDataValue(-9999)
+        band.Fill(10)
+        vertices = [(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5)]
+        mesh = build_mesh_from_arrays(vertices, [(0, 1, 2), (0, 2, 3)], raster, band, None, True, False)
+        self.assertEqual(mesh['mesh']['neigh'], [[-1, 1, -1], [-1, -1, 0]])
+
+    def test_reused_mpi_arrays_reconcile_before_dem_and_parameter_sampling(self):
+        raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
+        raster.SetGeoTransform((0, 1, 0, 3, 0, -1))
+        band = raster.GetRasterBand(1)
+        band.SetNoDataValue(-9999)
+        band.Fill(123)
+        vertices, triangles = strip_mesh()
+        mesh = build_mesh_from_arrays(vertices, triangles, raster, band, None, True, False)
+        self.assertEqual(mesh['mesh']['nelem'], len(triangles) + 3)
+        self.assertEqual(len(mesh['mesh']['elem']), mesh['mesh']['nelem'])
+        self.assertEqual(len(mesh['mesh']['neigh']), mesh['mesh']['nelem'])
+        self.assertTrue(all(v[2] == 123 for v in mesh['mesh']['vertex']))
+        self.assertTrue(audit_mesh(mesh)[0]['valid'])
