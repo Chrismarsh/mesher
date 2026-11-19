@@ -1,0 +1,216 @@
+[
+  {
+    "mode": "baseline",
+    "size": 1200,
+    "wall_seconds": 38.77486603699799,
+    "tile_seconds": 3.2781323560011515,
+    "merge_seconds": 35.49673368099684,
+    "cpu_seconds": 41.91599200000001,
+    "triangles": 137066,
+    "vertices": 69066,
+    "stats": {
+      "attempts": 11,
+      "band_width": 2.0,
+      "retained_triangles": 4,
+      "patch_triangles": 137062,
+      "interface_recovery": false,
+      "cavity_calls": [
+        {
+          "area": 4761.693750633873,
+          "triangles": 892
+        },
+        {
+          "area": 5362.407827229259,
+          "triangles": 1024
+        },
+        {
+          "area": 5683.552215788155,
+          "triangles": 1061
+        },
+        {
+          "area": 5899.2515008603605,
+          "triangles": 1114
+        },
+        {
+          "area": 7249.135976846561,
+          "triangles": 1370
+        },
+        {
+          "area": 10276.768561690656,
+          "triangles": 1939
+        },
+        {
+          "area": 21740.10910648052,
+          "triangles": 4134
+        },
+        {
+          "area": 76475.44661960998,
+          "triangles": 14602
+        },
+        {
+          "area": 297701.03009868896,
+          "triangles": 56755
+        },
+        {
+          "area": 719977.5987772,
+          "triangles": 137124
+        },
+        {
+          "area": 719981.8384229633,
+          "triangles": 137062
+        }
+      ],
+      "total_attempted_cavity_area": 1875108.8328579916,
+      "generated_patch_triangles": 357077
+    },
+    "sampled_peak_process_tree_pss_bytes": 293193728
+  },
+  {
+    "mode": "preserved",
+    "size": 1200,
+    "wall_seconds": 6.464453472999594,
+    "tile_seconds": 3.1014524419988447,
+    "merge_seconds": 3.363001031000749,
+    "cpu_seconds": 9.145745999999999,
+    "triangles": 136666,
+    "vertices": 68872,
+    "stats": {
+      "subdivided_parents": 38,
+      "local_repairs": 3,
+      "patch_triangles_generated": 926,
+      "failed_subdivision_parents": 5,
+      "attempts": 4,
+      "band_width": 2.0,
+      "patch_triangles": 8,
+      "retained_triangles": 136654,
+      "original_triangles_retained": 135687,
+      "generated_triangles_reused": 967,
+      "interface_recovery": false,
+      "attempt_stats": [
+        {
+          "attempt": 1,
+          "cavity_area": 4761.693750633873,
+          "retained_triangles": 135735,
+          "preparation_seconds": 0.06516887800535187,
+          "refinement_steps": 270,
+          "refinement_seconds": 0.010614909,
+          "raster_evaluations": 2162,
+          "raster_seconds": 0.01641345300000002,
+          "backend_seconds": 0.17805716300063068,
+          "io_seconds": 0.0011638479991233908,
+          "validation_seconds": 0.0391765589993156,
+          "repair_seconds": 0.5188178460011841,
+          "subdivision_seconds": 0.002287404,
+          "stitch_seconds": 0.13582157700147945,
+          "generated_preserved": 959,
+          "failed_subdivisions": 1
+        },
+        {
+          "attempt": 2,
+          "cavity_area": 40.36226160492367,
+          "retained_triangles": 136655,
+          "preparation_seconds": 0.05291693799881614,
+          "refinement_steps": 5,
+          "refinement_seconds": 0.000928903,
+          "raster_evaluations": 28,
+          "raster_seconds": 0.0013396760000000001,
+          "backend_seconds": 0.18086331599988625,
+          "io_seconds": 8.820299990475178e-05,
+          "validation_seconds": 0.0008325969974976033,
+          "repair_seconds": 0.5195331420000002,
+          "subdivision_seconds": 0.000729181,
+          "stitch_seconds": 0.04432285000075353,
+          "generated_preserved": 957,
+          "failed_subdivisions": 3
+        },
+        {
+          "attempt": 3,
+          "cavity_area": 61.91790065246745,
+          "retained_triangles": 136649,
+          "preparation_seconds": 0.04243037100241054,
+          "refinement_steps": 3,
+          "refinement_seconds": 0.000436639,
+          "raster_evaluations": 33,
+          "raster_seconds": 0.00048109700000000005,
+          "backend_seconds": 0.17815513599998667,
+          "io_seconds": 8.357600017916411e-05,
+          "validation_seconds": 0.0007850059992051683,
+          "repair_seconds": 0.4941940139979124,
+          "subdivision_seconds": 0.000343058,
+          "stitch_seconds": 0.039901694002765,
+          "generated_preserved": 968,
+          "failed_subdivisions": 1
+        },
+        {
+          "attempt": 4,
+          "cavity_area": 27.565426641019037,
+          "retained_triangles": 136656,
+          "preparation_seconds": 0.041353655000420986,
+          "refinement_steps": 2,
+          "refinement_seconds": 0.000457221,
+          "raster_evaluations": 22,
+          "raster_seconds": 0.000732836,
+          "backend_seconds": 0.127950530997623,
+          "io_seconds": 7.481300053768791e-05,
+          "validation_seconds": 0.0025214469969796482,
+          "repair_seconds": 0.552023188000021,
+          "subdivision_seconds": 0.000553455,
+          "stitch_seconds": 0.08788700299919583
+        }
+      ],
+      "elapsed_seconds": 3.362183637000271,
+      "backend_seconds": 0.6650261459981266,
+      "preparation_seconds": 0.20186984200699953,
+      "validation_seconds": 0.04331560899299802,
+      "stitch_seconds": 0.3079331240041938,
+      "io_seconds": 0.0014104399997449946,
+      "repair_seconds": 2.0845681899991177,
+      "refinement_seconds": 0.012437672,
+      "refinement_steps": 280,
+      "raster_seconds": 0.01896706200000002,
+      "raster_evaluations": 2245,
+      "cavity_calls": [
+        {
+          "area": 4761.693750633873,
+          "triangles": 892
+        },
+        {
+          "area": 40.36226160492367,
+          "triangles": 12
+        },
+        {
+          "area": 61.91790065246745,
+          "triangles": 14
+        },
+        {
+          "area": 27.565426641019037,
+          "triangles": 8
+        }
+      ],
+      "total_attempted_cavity_area": 4891.539339532283,
+      "generated_patch_triangles": 926
+    },
+    "sampled_peak_process_tree_pss_bytes": 293253120
+  },
+  {
+    "mode": "serial",
+    "size": 1200,
+    "wall_seconds": 5.665461840999342,
+    "tile_seconds": 0,
+    "merge_seconds": 0,
+    "cpu_seconds": 5.613987,
+    "triangles": 137298,
+    "vertices": 69188,
+    "stats": {
+      "refinement_steps": 69184,
+      "refinement_seconds": 1.888088211,
+      "raster_evaluations": 313064,
+      "raster_seconds": 2.153212071999995,
+      "backend_seconds": 3.0229632509981457,
+      "preparation_seconds": 0.0007304930004465859,
+      "io_seconds": 0.13696620100017753,
+      "validation_seconds": 2.496820762000425
+    },
+    "sampled_peak_process_tree_pss_bytes": 216888320
+  }
+]

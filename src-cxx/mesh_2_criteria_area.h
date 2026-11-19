@@ -27,6 +27,22 @@
 #include <vector>
 #include <cmath>
 #include "triangle.h"
+#include <chrono>
+
+// Per-process instrumentation enabled only for patch operations. No cache is
+// shared between raster inputs, criteria configurations, or backend invocations.
+struct MesherRasterStats { bool enabled = false; size_t evaluations = 0; double seconds = 0; };
+static MesherRasterStats mesher_raster_stats;
+struct MesherRasterTimer {
+    std::chrono::steady_clock::time_point start;
+    MesherRasterTimer() {
+        if (mesher_raster_stats.enabled) { start = std::chrono::steady_clock::now(); ++mesher_raster_stats.evaluations; }
+    }
+    ~MesherRasterTimer() {
+        if (mesher_raster_stats.enabled)
+            mesher_raster_stats.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+};
 
     template<class CDT>
     class mesh_2_criterion_area
@@ -218,6 +234,7 @@
 
             double rmse_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;
@@ -335,6 +352,7 @@
             }
             double categoryraster_isok(const typename CDT::Face_handle &fh, const raster& r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;
@@ -402,6 +420,7 @@
             }
             double mean_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex v0;
                 vertex v1;
@@ -489,6 +508,7 @@
             }
             double max_diff(const typename CDT::Face_handle &fh, const raster & r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;

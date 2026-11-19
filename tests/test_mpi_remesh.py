@@ -257,6 +257,103 @@ class CgalCavityTests(unittest.TestCase):
     def mesh(self, domain, constraints=()):
         return remesh_domain(domain, constraints, self.options, self.work)
 
+    def test_batched_subdivision_multiple_sides_at_large_coordinates(self):
+        from mesher.mesher_utls.mpi_remesh import subdivide_parents
+        records = []
+        for i, (x, y) in enumerate(((0, 0), (-1934381.4845238777, 3429022.4631309444))):
+            parent = np.array([[0, 0], [6, 0], [3, 3*np.sqrt(3)]]) + [x, y]
+            boundary = [((1-f)*a + f*b).tolist() for a, b in zip(parent, np.roll(parent, -1, axis=0))
+                        for f in (0, 1/3, 2/3)]
+            records.append({'id': i, 'parent': parent.tolist(), 'boundary': boundary})
+        result = subdivide_parents(records, dict(self.options, max_area=100, min_area=100), self.work)
+        self.assertTrue(all(r['accepted'] for r in result['repairs']), result)
+        self.assertEqual(result['stats']['raster_evaluations'], 0)
+        self.assertEqual(len(list(self.work.glob('repair-*'))), 0)
+
+    def test_small_children_skip_rasters_but_bad_shape_is_rejected(self):
+        from mesher.mesher_utls.mpi_remesh import subdivide_parents
+        records = [
+            {'id': 7, 'parent': [[0, 0], [2, 0], [0, 2]],
+             'boundary': [[0, 0], [2, 0], [1, 1], [0, 2]]},
+            {'id': 9, 'parent': [[0, 0], [2, 0], [0, 2]],
+             'boundary': [[0, 0], [.01, 0], [2, 0], [0, 2]]}]
+        # tol=0 rejects even a perfectly flat raster above min_area.
+        result = subdivide_parents(records, dict(self.options, min_area=2, max_tolerance=0), self.work)
+        self.assertEqual([r['accepted'] for r in result['repairs']], [True, False])
+        self.assertEqual(result['stats']['raster_evaluations'], 0)
+        above = subdivide_parents(records[:1], dict(self.options, min_area=.25, max_tolerance=0), self.work)
+        self.assertFalse(above['repairs'][0]['accepted'])
+        self.assertGreater(above['stats']['raster_evaluations'], 0)
+
+    def test_patch_interiors_survive_repair_and_later_failure_is_transactional(self):
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        xx, yy = np.meshgrid(-20+(np.arange(160)+.5)*.5, 40-(np.arange(120)+.5)*.5)
+        ds.GetRasterBand(1).WriteArray(10+30*np.exp(-((xx-20)**2+(yy-10)**2)/20)); ds = None
+        domain = box(0, 0, 40, 20)
+        a, ta = self.mesh(box(0, 0, 23, 20)); b, tb = self.mesh(box(17, 0, 40, 20))
+        originals = [x.copy() for x in (a, ta, b, tb)]
+        calls, results = [], []
+        def capture(cavity, constraints, options, directory, fixed):
+            calls.append(cavity)
+            result = remesh_domain(cavity, constraints, options, directory, fixed)
+            results.append(result)
+            return result
+        v, t, stats = merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
+                                  domain, [], self.options, self.work, capture)
+        self.assertGreater(stats['generated_triangles_reused'], 0)
+        self.assertGreater(stats['local_repairs'], 0)
+        self.assertFalse(stats['interface_recovery'])
+        self.assertLess(calls[-1].area, calls[0].area)
+        def keys(vertices, triangles):
+            return {tuple(sorted(map(tuple, face))) for face in vertices[triangles]}
+        final = keys(v, t)
+        first_v, first_t = results[0]
+        untouched = [tri for tri in first_t if all(Polygon(first_v[tri, :2]).disjoint(region)
+                                                  for region in calls[1:])]
+        self.assertGreater(len(untouched), 0)
+        self.assertTrue(keys(first_v, np.asarray(untouched)).issubset(final))
+        original_untouched = [tri for tri in ta if box(0, 0, 20, 20).covers(Polygon(a[tri, :2]))
+                              and all(Polygon(a[tri, :2]).disjoint(region) for region in calls)]
+        self.assertTrue(keys(a, np.asarray(original_untouched)).issubset(final))
+        validate_patch(v, t, domain)
+        self.assertTrue(audit(v, t)['valid'])
+        # Fail after promotion of the first valid patch. No input array changes.
+        invocations = []
+        def fail_after_preservation(*args):
+            invocations.append(1)
+            if len(invocations) > 1:
+                raise PatchError('Patch vertex budget exceeded in later repair')
+            return remesh_domain(*args)
+        with self.assertRaisesRegex(PatchError, 'after 2 attempts.*budget'):
+            merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], domain, [],
+                         self.options, self.work, fail_after_preservation)
+        for actual, expected in zip((a, ta, b, tb), originals):
+            np.testing.assert_array_equal(actual, expected)
+
+    def test_backend_signal_stops_retry_and_keeps_diagnostics(self):
+        from mesher.mesher_utls.mpi_remesh import BackendTerminated
+        executable = self.work / 'terminated-backend'
+        executable.write_text('#!/bin/sh\nkill -TERM "$$"\n')
+        executable.chmod(0o755)
+        a, ta = grid(0, 20, 0, 20, 2); b, tb = grid(20, 40, 0, 20, 2)
+        with self.assertRaisesRegex(PatchError, 'after 1 attempts.*signal 15'):
+            merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], box(0, 0, 40, 20), [],
+                         dict(self.options, mesher_path=str(executable)), self.work)
+        self.assertEqual(len(list(self.work.glob('cavity-*'))), 1)
+
+    def test_bad_subdivision_output_is_rejected_before_promotion(self):
+        from mesher.mesher_utls.mpi_remesh import subdivide_parents
+        record = {'id': 0, 'parent': [[0, 0], [2, 0], [0, 2]],
+                  'boundary': [[0, 0], [2, 0], [1, 1], [0, 2]]}
+        def wrong_output(command, work, options):
+            (work / 'mesh.json').write_text(json.dumps({'repairs': [
+                {'id': 0, 'accepted': True, 'triangles': [[[0, 0], [2, 0], [0, 1]]]}]}))
+            return 0, .01
+        with patch('mesher.mesher_utls.mpi_remesh._run_backend', side_effect=wrong_output):
+            with self.assertRaisesRegex(PatchError, 'cover exactly'):
+                subdivide_parents([record], self.options, self.work)
+        self.assertEqual(len(list(self.work.glob('repair-*'))), 1)
+
     def test_backend_holes_components_and_crossing_constraints(self):
         domain = box(0, 0, 20, 20).difference(box(7, 7, 13, 13)).union(box(25, 0, 30, 5))
         lines = [LineString([(0, 5), (20, 5)]), LineString([(5, 0), (5, 20)])]

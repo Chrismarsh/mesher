@@ -2,8 +2,9 @@
 
 Only whole triangles are retained. The patch is the exact set difference
 between the intended domain and their coverage, never a centroid-clipped strip.
-CGAL may refine the patch perimeter: if it changes a retained interface, discard
-the candidate and enlarge the cavity. No tolerance-based vertex welding is used.
+CGAL may refine patch interfaces. Subdivide their retained owners first, then
+repair local two-sided regions while preserving validated triangles elsewhere.
+No tolerance-based vertex welding is used.
 """
 
 import json
@@ -13,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 import numpy as np
 from osgeo import ogr
@@ -27,6 +29,45 @@ ogr.UseExceptions()
 
 class PatchError(MeshTopologyError):
     """A proposed replacement cannot be accepted."""
+
+
+class BackendTerminated(PatchError):
+    """A killed backend cannot be recovered by increasing the cavity."""
+
+
+class PatchResult(tuple):
+    """Validated immutable arrays plus explicit CGAL interface lineage."""
+    def __new__(cls, vertices, triangles, interfaces, stats):
+        vertices.setflags(write=False)
+        triangles.setflags(write=False)
+        result = super().__new__(cls, (vertices, triangles))
+        result.interfaces = interfaces
+        result.stats = stats
+        return result
+
+
+def _run_backend(command, work, options):
+    """Keep full output on disk and report progress without accumulating logs."""
+    started = time.perf_counter()
+    context = Path(options.get('out_prefix') or options.get('tile_prefix') or work).name
+    with (work / 'backend.log').open('w') as log:
+        with subprocess.Popen(command, text=True, stdout=log, stderr=subprocess.STDOUT) as process:
+            while True:
+                try:
+                    code = process.wait(timeout=10)
+                    break
+                except subprocess.TimeoutExpired:
+                    with (work / 'backend.log').open('rb') as progress:
+                        progress.seek(0, os.SEEK_END)
+                        progress.seek(max(0, progress.tell() - 512))
+                        lines = progress.read().decode(errors='replace').splitlines()
+                    print(f'Backend active [{context}]: elapsed={time.perf_counter()-started:.1f}s; '
+                          + (lines[-1] if lines else 'initializing'), flush=True)
+    if code < 0:
+        error = BackendTerminated(f'C++ backend terminated by signal {-code}; refusing cavity retry')
+        error.stats = {'backend_seconds': time.perf_counter()-started}
+        raise error
+    return code, time.perf_counter() - started
 
 
 class PatchQualityError(PatchError):
@@ -86,7 +127,7 @@ def line_parts(geometry):
     return []  # Point intersections do not define a segment.
 
 
-def mesh_coverage(vertices, triangles):
+def mesh_coverage(vertices, triangles, neighbours=None):
     """Polygonize directed boundary edges without unioning all interior faces.
 
     A polygonized face is retained only if its CCW exterior follows a directed
@@ -95,7 +136,8 @@ def mesh_coverage(vertices, triangles):
     """
     if not len(triangles):
         return Polygon()
-    neighbours = build_neighbours(triangles, len(vertices), vertices)
+    if neighbours is None:
+        neighbours = build_neighbours(triangles, len(vertices), vertices)
     faces, slots = np.nonzero(neighbours < 0)
     edges = []
     directed = set()
@@ -198,6 +240,7 @@ def _mesher_arguments(options):
 
 def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
     """Invoke the real C++ refinement criteria, including raster constraints."""
+    started = time.perf_counter()
     domain = polygon_domain(domain)
     if domain.is_empty:
         return np.empty((0, 3)), np.empty((0, 3), dtype=np.int64)
@@ -210,41 +253,57 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
     # Preserve failed inputs and the full backend log for production cases.
     # Stream output to disk: repeated GDAL errors must not fill the parent's RAM.
     work = Path(tempfile.mkdtemp(prefix='cavity-', dir=directory)).resolve()
+    stats = {}
     try:
         (work / 'domain.json').write_text(json.dumps(mapping(domain)))
         (work / 'constraints.json').write_text(json.dumps({'type': 'FeatureCollection', 'features': features}))
+        (work / 'interfaces.json').write_text(json.dumps({'edges': [list(line.coords) for line in fixed_edges]}))
         output = work / 'mesh.json'
         command = _mesher_arguments(options) + ['--domain-file', str(work / 'domain.json'),
                    '--interior-plgs-file', str(work / 'constraints.json'), '--patch-output', str(output),
-                   '--patch-max-vertices', str(options.get('remesh_max_vertices', 500000))]
+                   '--patch-max-vertices', str(options.get('remesh_max_vertices', 500000)),
+                   '--patch-interfaces', str(work / 'interfaces.json')]
         (work / 'invocation.json').write_text(json.dumps({'command': command, 'cwd': os.getcwd(),
             'tile': options.get('tile_prefix'), 'merge': options.get('out_prefix'),
             'domain_bounds': list(domain.bounds), 'domain_area': domain.area}, indent=2))
-        with (work / 'backend.log').open('w') as log:
-            run = subprocess.run(command, text=True, stdout=log, stderr=subprocess.STDOUT)
-        if run.returncode:
+        preparation_seconds = time.perf_counter() - started
+        code, backend_seconds = _run_backend(command, work, options)
+        stats_path = Path(str(output) + '.stats.json')
+        stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+        stats.update(backend_seconds=backend_seconds, preparation_seconds=preparation_seconds)
+        if code:
             with (work / 'backend.log').open('rb') as log:
                 log.seek(0, os.SEEK_END)
                 log.seek(max(0, log.tell() - 3000))
                 tail = log.read().decode(errors='replace')
-            message = f'C++ patch refinement failed (exit {run.returncode}): ' + tail
+            message = f'C++ patch refinement failed (exit {code}): ' + tail
             quality_path = Path(str(output) + '.quality.json')
             if quality_path.exists():
                 raise PatchQualityError(message, json.loads(quality_path.read_text())['faces'])
             raise PatchError(message)
+        io_started = time.perf_counter()
         data = json.loads(output.read_text())
         vertices = np.asarray(data['vertices'], dtype=float)
         triangles = np.asarray(data['triangles'], dtype=np.int64)
-        validate_patch(vertices, triangles, domain, constraints)
+        io_seconds = time.perf_counter() - io_started
+        validation_started = time.perf_counter()
+        try:
+            validate_patch(vertices, triangles, domain, constraints)
+        finally:
+            stats.update(io_seconds=io_seconds, validation_seconds=time.perf_counter()-validation_started)
+        stats.update(data.get('stats', {}))
     except Exception as exc:
         context = options.get('tile_prefix') or options.get('out_prefix') or 'cavity'
         message = f'{context}: {exc}\nReproduction files and full backend log: {work}'
         if isinstance(exc, PatchError):
+            exc.stats = dict(stats, **getattr(exc, 'stats', {}))
             exc.args = (message,)
             raise
-        raise PatchError(message) from exc
+        error = PatchError(message)
+        error.stats = stats
+        raise error from exc
     shutil.rmtree(work)
-    return vertices, triangles
+    return PatchResult(vertices, triangles, data.get('interfaces', []), stats)
 
 
 def _shared_interface(a, b):
@@ -288,6 +347,16 @@ def _quality_interface_faces(fixed_edges, owners, failures, domain):
     return np.asarray(sorted(affected), dtype=np.int64)
 
 
+def _retained_neighbours(neighbours, keep):
+    """Restrict validated adjacency to a subset without sorting its edges again."""
+    if neighbours is None:
+        return np.empty((0, 3), dtype=np.int64)
+    mapping = np.full(len(keep), -1, dtype=np.int64)
+    mapping[keep] = np.arange(np.count_nonzero(keep))
+    selected = neighbours[keep]
+    return np.where(selected >= 0, mapping[np.maximum(selected, 0)], -1)
+
+
 def _grow_cavity(keep, neighbours, affected, rings):
     """Remove whole faces through retained adjacency, without crossing cavities."""
     frontier = np.unique(affected)
@@ -304,9 +373,58 @@ def _grow_cavity(keep, neighbours, affected, rings):
     return removed
 
 
-def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=None):
-    # Only exact XY equality to a retained vertex authorizes reusing its ID.
-    # The C++ writer uses max_digits10 so interface doubles round-trip unchanged.
+def subdivide_parents(records, options, directory):
+    """One C++ call for all split parents; failed parents receive no children."""
+    work = Path(tempfile.mkdtemp(prefix='repair-', dir=directory)).resolve()
+    stats = {}
+    try:
+        (work / 'parents.json').write_text(json.dumps({'repairs': records}))
+        output = work / 'mesh.json'
+        command = _mesher_arguments(options) + ['--patch-repair-file', str(work / 'parents.json'),
+            '--patch-output', str(output), '--patch-max-vertices', str(options.get('remesh_max_vertices', 500000))]
+        (work / 'invocation.json').write_text(json.dumps({'command': command, 'cwd': os.getcwd(),
+                                                       'merge': options.get('out_prefix')}, indent=2))
+        code, seconds = _run_backend(command, work, options)
+        stats_path = Path(str(output) + '.stats.json')
+        stats = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+        stats['backend_seconds'] = seconds
+        if code:
+            raise PatchError(f'C++ subdivision failed (exit {code}): ' + (work / 'backend.log').read_text()[-3000:])
+        data = json.loads(output.read_text())
+        stats.update(data.get('stats', {}))
+        data['stats'] = stats
+        validation_started = time.perf_counter()
+        expected = {record['id']: record for record in records}
+        if len(data['repairs']) != len(expected) or {r['id'] for r in data['repairs']} != set(expected):
+            raise PatchError('Subdivision output lost parent identity')
+        for result in data['repairs']:
+            if not result['accepted']:
+                continue
+            record = expected[result['id']]
+            points = np.asarray(result['triangles'], dtype=float).reshape((-1, 2))
+            vertices, inverse = np.unique(points, axis=0, return_inverse=True)
+            vertices = np.column_stack((vertices, np.zeros(len(vertices))))
+            triangles = inverse.reshape((-1, 3))
+            neighbours = validate_patch(vertices, triangles, Polygon(record['parent']))
+            faces, slots = np.nonzero(neighbours < 0)
+            actual = {tuple(sorted(map(tuple, vertices[triangles[f, [(s+1)%3, (s+2)%3]], :2])))
+                      for f, s in zip(faces, slots)}
+            ring = record['boundary']
+            boundary = {tuple(sorted((tuple(a), tuple(b)))) for a, b in zip(ring, ring[1:]+ring[:1])}
+            if actual != boundary:
+                raise PatchError('Subdivision changed its prescribed boundary')
+        stats['validation_seconds'] = time.perf_counter()-validation_started
+    except Exception as exc:
+        if isinstance(exc, PatchError):
+            exc.stats = dict(stats, **getattr(exc, 'stats', {}))
+            exc.args = (f'{exc}\nSubdivision reproduction files: {work}',)
+            raise
+        raise PatchError(f'{exc}\nSubdivision reproduction files: {work}') from exc
+    shutil.rmtree(work)
+    return data
+
+
+def _join_exact(retained_v, retained_t, patch_v, patch_t):
     used = np.unique(retained_t)
     vertices = retained_v[used].tolist()
     mapping_old = np.full(len(retained_v), -1, dtype=np.int64)
@@ -322,15 +440,101 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
             ids[key] = len(vertices)
             vertices.append(point.tolist())
         remap[i] = ids[key]
-    result_v = np.asarray(vertices, dtype=float)
-    result_t = np.vstack((kept, remap[patch_t]))
-    neighbours = build_neighbours(result_t, len(result_v), result_v)
+    return np.asarray(vertices, dtype=float).reshape((-1, 3)), kept, remap[patch_t]
+
+
+def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, options, directory, generation):
+    """Stage valid children and patch interiors, removing failed two-sided regions.
+
+    Returned arrays are private until the caller validates the remaining coverage.
+    All chains refer to current retained edges by caller-owned IDs, not proximity.
+    """
+    patch_v, patch_t = patch
+    if len(patch.interfaces) != len(fixed):
+        raise PatchError('Backend omitted retained interface lineage; rebuild meshercxx')
+    patch_neighbours = build_neighbours(patch_t, len(patch_v), patch_v)
+    pf, ps = np.nonzero(patch_neighbours < 0)
+    boundary_owners = {tuple(sorted(patch_t[f, [(s+1)%3, (s+2)%3]])): int(f) for f, s in zip(pf, ps)}
+    split, adjacent, seen = {}, {}, set()
+    for interface in patch.interfaces:
+        edge_id = interface['id']
+        if edge_id in seen or not 0 <= edge_id < len(fixed):
+            raise PatchError('Invalid interface identity')
+        seen.add(edge_id)
+        chain = np.asarray(interface['vertices'], dtype=np.int64)
+        if len(chain) < 2 or np.any(chain < 0) or np.any(chain >= len(patch_v)):
+            raise PatchError('Invalid interface subdivision')
+        coords = patch_v[chain, :2]
+        original = np.asarray(fixed[edge_id].coords)[[0, -1], :2]
+        if not np.array_equal(coords[[0, -1]], original):
+            raise PatchError('Interface endpoints changed')
+        face_ids = []
+        for a, b in zip(chain[:-1], chain[1:]):
+            key = tuple(sorted((a, b)))
+            if key not in boundary_owners:
+                raise PatchError('Interface subdivision is not a patch boundary')
+            face_ids.append(boundary_owners[key])
+        if len(chain) > 2:
+            owner = int(owners[edge_id])
+            split.setdefault(owner, {})[tuple(sorted(map(tuple, original)))] = coords.tolist()
+            adjacent.setdefault(owner, set()).update(face_ids)
+    if not split:
+        return None
+    records = []
+    for owner, edges in split.items():
+        parent = vertices[retained[owner], :2].tolist()
+        boundary = []
+        for a, b in zip(parent, parent[1:]+parent[:1]):
+            chain = edges.get(tuple(sorted((tuple(a), tuple(b)))), [a, b])
+            if chain[0] != a:
+                chain = chain[::-1]
+            boundary.extend(chain[:-1])
+        records.append({'id': owner, 'parent': parent, 'boundary': boundary})
+    repairs = subdivide_parents(records, options, directory)
+    combined_v, old_t, new_t = _join_exact(vertices, retained, patch_v, patch_t)
+    ids = {tuple(v[:2]): i for i, v in enumerate(combined_v)}
+    child_t, accepted, failed = [], [], []
+    for repair in repairs['repairs']:
+        owner = repair['id']
+        if repair['accepted']:
+            accepted.append(owner)
+            for triangle in repair['triangles']:
+                # Children may only use supplied boundary vertices.
+                child_t.append([ids[tuple(point)] for point in triangle])
+        else:
+            failed.append(owner)
+    selection = np.ones(len(old_t) + len(new_t), dtype=bool)
+    selection[accepted] = False
+    all_t = np.vstack((old_t, new_t))
+    old_to_new = np.cumsum(selection) - 1
+    result_t = np.vstack((all_t[selection], np.asarray(child_t, dtype=np.int64).reshape((-1, 3))))
+    sources = np.concatenate((provenance, np.full(len(new_t), generation)))[selection]
+    sources = np.concatenate((sources, np.full(len(child_t), generation)))
+    keep = np.ones(len(result_t), dtype=bool)
+    neighbours = build_neighbours(result_t, len(combined_v), combined_v)
+    if failed:
+        seeds = list(old_to_new[failed])
+        for owner in failed:
+            seeds.extend(old_to_new[len(old_t) + np.asarray(sorted(adjacent[owner]), dtype=np.int64)])
+        _grow_cavity(keep, neighbours, seeds, 1)
+    return combined_v, result_t, sources, keep, neighbours, repairs['stats'], len(accepted), len(failed)
+
+
+def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=None,
+            retained_neighbours=None, result_neighbours=None):
+    # Only exact XY equality to a retained vertex authorizes reusing its ID.
+    # The C++ writer uses max_digits10 so interface doubles round-trip unchanged.
+    result_v, kept, added = _join_exact(retained_v, retained_t, patch_v, patch_t)
+    result_t = np.vstack((kept, added))
+    neighbours = (build_neighbours(result_t, len(result_v), result_v)
+                  if result_neighbours is None else result_neighbours)
     # Every retained edge which faces the cavity must have exactly one patch
     # neighbour. Boundary points that CGAL inserted therefore trigger a retry.
     if len(kept):
         if physical_boundary is None:
             physical_boundary = _physical_boundary_band(domain)
-        old_neighbours = build_neighbours(kept, len(result_v), result_v)
+        old_neighbours = (build_neighbours(kept, len(result_v), result_v)
+                          if retained_neighbours is None else retained_neighbours)
         faces, slots = np.nonzero(old_neighbours < 0)
         changed = []
         for face, slot in zip(faces, slots):
@@ -348,7 +552,8 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
 
 def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bounds_b,
                  domain, constraints, options, directory, mesher=remesh_domain):
-    """Retry a local cavity transaction; never modify either input tile."""
+    """Repair a private working mesh; publish only a conforming complete result."""
+    started = time.perf_counter()
     axis, seam = _shared_interface(bounds_a, bounds_b)
     bounds = [min(bounds_a[0], bounds_b[0]), min(bounds_a[1], bounds_b[1]),
               max(bounds_a[2], bounds_b[2]), max(bounds_a[3], bounds_b[3])]
@@ -362,87 +567,164 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         raise PatchError('Remesh band width and attempt count must be positive')
     joined_v = np.vstack((vertices_a, vertices_b))
     joined_t = np.vstack((triangles_a, triangles_b + len(vertices_a)))
+    sources = np.arange(len(joined_t))  # Nonnegative: unchanged original; negative: generation.
     keep = np.concatenate((_retain_mask(vertices_a, triangles_a, bounds_a, axis, seam, width),
                            _retain_mask(vertices_b, triangles_b, bounds_b, axis, seam, width)))
-    # Tile-local neighbours are sufficient for growing the cavity into either
-    # retained core. Overlapping halo vertices still have separate IDs here.
-    original_neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
+    neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
     physical_boundary = _physical_boundary_band(domain)
-    growth_rings = 1
-    interface_recovery = False
+    growth_rings, interface_recovery = 1, False
     context = options.get('out_prefix') or options.get('tile_prefix')
     label = f' [{Path(context).name}]' if context else ''
     last_error = None
-    for attempt in range(attempts):
+    history = []
+    lineage_available = mesher is remesh_domain
+    totals = {'subdivided_parents': 0, 'local_repairs': 0, 'patch_triangles_generated': 0,
+              'failed_subdivision_parents': 0}
+
+    def final_recovery():
+        nonlocal interface_recovery
         retained_ids = np.flatnonzero(keep)
         retained = joined_t[keep]
-        coverage = mesh_coverage(joined_v, retained)
+        if not len(retained):
+            return
+        adjacency = _retained_neighbours(neighbours, keep)
+        faces, slots = np.nonzero(adjacency < 0)
+        owners = [f for f, s in zip(faces, slots)
+                  if not physical_boundary.covers(LineString(joined_v[retained[f, [(s+1)%3, (s+2)%3]], :2]))]
+        if owners:
+            removed = _grow_cavity(keep, neighbours, retained_ids[np.unique(owners)], len(joined_t))
+            interface_recovery = True
+            print(f'Final interface recovery{label}: removed={removed}, retained={np.count_nonzero(keep)}; '
+                  'remeshing components touching the cavity with unchanged quality checks and vertex budget', flush=True)
+
+    def finish(v, t, provenance, attempt, patch_count):
+        stats = dict(totals, attempts=attempt+1, band_width=width, patch_triangles=patch_count,
+                     retained_triangles=int(np.count_nonzero(provenance > -(attempt+1))),
+                     original_triangles_retained=int(np.count_nonzero(provenance >= 0)),
+                     generated_triangles_reused=int(np.count_nonzero((provenance < 0) & (provenance > -(attempt+1)))),
+                     interface_recovery=interface_recovery, attempt_stats=history,
+                     elapsed_seconds=time.perf_counter()-started)
+        for key in ('backend_seconds', 'preparation_seconds', 'validation_seconds', 'stitch_seconds',
+                    'io_seconds', 'repair_seconds', 'refinement_seconds', 'refinement_steps', 'raster_seconds', 'raster_evaluations'):
+            stats[key] = sum(record.get(key, 0) for record in history)
+        print(f'Merge complete{label}: original_retained={stats["original_triangles_retained"]}, '
+              f'generated_reused={stats["generated_triangles_reused"]}, '
+              f'subdivided={stats["subdivided_parents"]}, elapsed={stats["elapsed_seconds"]:.2f}s', flush=True)
+        return v, t, stats
+
+    for attempt in range(attempts):
+        record = {'attempt': attempt+1}
+        history.append(record)
+        prepare_started = time.perf_counter()
+        retained_ids = np.flatnonzero(keep)
+        retained, retained_sources = joined_t[keep], sources[keep]
+        adjacency = _retained_neighbours(neighbours, keep)
+        coverage = mesh_coverage(joined_v, retained, adjacency)
         if coverage.difference(domain).area > area_tolerance(domain):
             raise PatchError('Retained triangles extend outside the intended domain')
         cavity = polygon_domain(domain.difference(coverage))
-        print(f'Remesh attempt {attempt + 1}{label}: width={width:g}, retained={len(retained)}, cavity_area={cavity.area:g}', flush=True)
+        record.update(cavity_area=cavity.area, retained_triangles=len(retained))
+        print(f'Remesh attempt {attempt+1}{label}: width={width:g}, retained={len(retained)}, cavity_area={cavity.area:g}', flush=True)
+        fixed, owners = [], []
+        if len(retained):
+            faces, slots = np.nonzero(adjacency < 0)
+            for f, s in zip(faces, slots):
+                line = LineString(joined_v[retained[f, [(s+1)%3, (s+2)%3]], :2])
+                if not physical_boundary.covers(line) and cavity.boundary.covers(line):
+                    fixed.append(line)
+                    owners.append(f)
+        record['preparation_seconds'] = time.perf_counter()-prepare_started
         try:
-            # Preserve every retained boundary vertex, including collinear ones
-            # which a polygon boolean operation might otherwise discard.
-            fixed, fixed_owners, interface_owners = [], [], []
-            if len(retained):
-                neighbours = build_neighbours(retained, len(joined_v), joined_v)
-                faces, slots = np.nonzero(neighbours < 0)
-                for f, s in zip(faces, slots):
-                    line = LineString(joined_v[retained[f, [(s + 1) % 3, (s + 2) % 3]], :2])
-                    if not physical_boundary.covers(line):
-                        interface_owners.append(f)
-                        if cavity.boundary.covers(line):
-                            fixed.append(line)
-                            fixed_owners.append(f)
-            patch_v, patch_t = mesher(cavity, constraints, options, directory, fixed)
-            if len(patch_t):
+            patch = mesher(cavity, constraints, options, directory, fixed)
+            patch_v, patch_t = patch
+            if isinstance(patch, PatchResult):
+                lineage_available = True
+                for key, value in patch.stats.items():
+                    record[key] = record.get(key, 0) + value
+            elif len(patch_t):
+                validation_started = time.perf_counter()
                 validate_patch(patch_v, patch_t, cavity, constraints)
-            output_v, output_t = _stitch(joined_v, retained, patch_v, patch_t, domain, physical_boundary)
-            # Coverage of retained triangles and patch was checked separately;
-            # set difference makes their interiors disjoint by construction.
-            return output_v, output_t, {'attempts': attempt + 1, 'band_width': width,
-                                       'retained_triangles': len(retained), 'patch_triangles': len(patch_t),
-                                       'interface_recovery': interface_recovery}
+                record['validation_seconds'] = time.perf_counter()-validation_started
+            totals['patch_triangles_generated'] += len(patch_t)
+            repair = None
+            if isinstance(patch, PatchResult) and fixed:
+                repair_started = time.perf_counter()
+                try:
+                    repair = _repair_candidate(joined_v, retained, retained_sources, patch, fixed, owners,
+                                               options, directory, -(attempt+1))
+                finally:
+                    record['repair_seconds'] = time.perf_counter()-repair_started
+            stitch_started = time.perf_counter()
+            if repair is not None:
+                v, t, provenance, selection, candidate_neighbours, repair_stats, accepted, failed = repair
+                for key, value in repair_stats.items():
+                    record[key] = record.get(key, 0) + value
+                if failed:
+                    if attempt+1 == attempts:
+                        raise PatchError(f'{failed} parent subdivisions require another local repair')
+                    # Validate the staged remainder BEFORE promoting it. Every
+                    # preserved generated triangle passed backend quality; all
+                    # children passed both quality and exact footprint checks.
+                    remaining = t[selection]
+                    remaining_neighbours = _retained_neighbours(candidate_neighbours, selection)
+                    remainder = mesh_coverage(v, remaining, remaining_neighbours)
+                    if remainder.difference(domain).area > area_tolerance(domain):
+                        raise PatchError('Staged repair extends beyond the domain')
+                    coincident, hanging = boundary_subdivisions(v, remaining, remaining_neighbours, 1e-8)
+                    if coincident or next(hanging, None) is not None:
+                        raise PatchError('Staged repair has unresolved hanging nodes')
+                    joined_v, joined_t, sources, keep = v, t, provenance, selection
+                    neighbours = candidate_neighbours
+                    totals['local_repairs'] += 1
+                    preserved = int(np.count_nonzero((sources < 0) & keep))
+                    totals['subdivided_parents'] += accepted
+                    totals['failed_subdivision_parents'] += failed
+                    print(f'Preserving patch work{label}: generated={preserved}, '
+                          f'failed_parents={failed}, removed={np.count_nonzero(~keep)}', flush=True)
+                    record.update(stitch_seconds=time.perf_counter()-stitch_started,
+                                  generated_preserved=preserved, failed_subdivisions=failed)
+                    if attempt+2 == attempts:
+                        final_recovery()
+                    continue
+                totals['subdivided_parents'] += accepted
+                output_v, output_t = _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=np.int64),
+                                            domain, physical_boundary, candidate_neighbours, candidate_neighbours)
+                record['stitch_seconds'] = time.perf_counter()-stitch_started
+                return finish(output_v, output_t, provenance, attempt, len(patch_t))
+            output_v, output_t = _stitch(joined_v, retained, patch_v, patch_t, domain, physical_boundary,
+                                         retained_neighbours=adjacency)
+            record['stitch_seconds'] = time.perf_counter()-stitch_started
+            return finish(output_v, output_t, np.concatenate((retained_sources, np.full(len(patch_t), -(attempt+1)))),
+                          attempt, len(patch_t))
         except (PatchError, MeshTopologyError) as exc:
             last_error = exc
+            for key, value in getattr(exc, 'stats', {}).items():
+                record[key] = record.get(key, 0) + value
+            record['rejection'] = str(exc)
             print(f'Remesh candidate rejected{label}: {exc}', flush=True)
-            # Do not grow a cavity which will never be attempted, or retry a
-            # larger patch after the backend has already exhausted its budget.
-            if attempt + 1 == attempts or not len(retained) or 'Patch vertex budget exceeded' in str(exc):
+            if (attempt+1 == attempts or not len(retained) or isinstance(exc, BackendTerminated)
+                    or 'Patch vertex budget exceeded' in str(exc)):
                 break
-            if attempt + 2 == attempts and interface_owners:
-                # Moving a frozen boundary does not guarantee the next patch
-                # will leave it unsplit. Reserve the final attempt for removing
-                # all such interfaces. Absorb every retained component with a
-                # nonphysical boundary; complete disconnected regions bounded
-                # only by the physical perimeter remain intact. Seed all
-                # interfaces, since rebuilding can expose a mismatch elsewhere.
-                affected = retained_ids[np.unique(interface_owners)]
-                removed = _grow_cavity(keep, original_neighbours, affected, len(joined_t))
-                interface_recovery = True
-                print(f'Final interface recovery{label}: removed={removed}, '
-                      f'retained={np.count_nonzero(keep)}; remeshing components touching the cavity '
-                      'with unchanged quality checks and vertex budget', flush=True)
-                continue
+            if attempt+2 == attempts:
+                final_recovery()
+                if interface_recovery:
+                    continue
             local_faces = np.empty(0, dtype=np.int64)
             if isinstance(exc, InterfaceChanged):
                 local_faces = exc.faces
             elif isinstance(exc, PatchQualityError):
-                local_faces = _quality_interface_faces(fixed, fixed_owners, exc.failures, domain)
+                local_faces = _quality_interface_faces(fixed, owners, exc.failures, domain)
             if len(local_faces):
-                # Both split interfaces and unresolved quality failures can be
-                # caused by retained protrusions. Repeated single-ring growth
-                # can just move the problem to the next row of triangles.
-                # Double the local graph depth on consecutive local retries.
                 affected = retained_ids[local_faces]
-                removed = _grow_cavity(keep, original_neighbours, affected, growth_rings)
+                removed = _grow_cavity(keep, neighbours, affected, growth_rings)
                 print(f'Growing cavity locally{label}: affected={len(affected)}, '
                       f'neighbour_rings={growth_rings}, removed={removed}', flush=True)
-                growth_rings = min(2 * growth_rings, len(joined_t))
+                # Once work can be preserved, avoid the previous 64/128-ring
+                # erosion. Legacy/custom meshers without lineage still use the
+                # original recovery path for compatibility.
+                growth_rings = min(2*growth_rings, 4 if lineage_available else len(joined_t))
                 continue
             growth_rings = 1
             width *= 2
-            keep &= np.concatenate((_retain_mask(vertices_a, triangles_a, bounds_a, axis, seam, width),
-                                    _retain_mask(vertices_b, triangles_b, bounds_b, axis, seam, width)))
-    raise PatchError(f'No valid cavity replacement after {attempt + 1} attempts{label}: {last_error}')
+            keep &= (np.abs(joined_v[joined_t, axis] - seam) >= width).all(axis=1)
+    raise PatchError(f'No valid cavity replacement after {attempt+1} attempts{label}: {last_error}')

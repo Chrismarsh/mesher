@@ -98,21 +98,31 @@ Shape quality is still required at every area. Above ``min_area``, the existing
 numeric/categorical comparisons remain in force. These criteria are shared with
 serial meshing, so both paths receive the correction.
 
-The retained interface is a contract: every retained edge facing the cavity must
-have an exact matching patch edge. If CGAL splits an interface, the candidate is
-discarded and the affected retained faces plus neighbouring rings are absorbed
-into the cavity. The first local retry uses one ring; consecutive local retries
-double the depth (1, 2, 4, 8, ...), stopping at the remaining component boundary.
-This avoids moving an interface mismatch one row at a time until attempts run
-out. Growth cannot cross an already removed cavity into another retained
-component. Unresolved quality failures touching a retained interface trigger
-the same local growth. This removes retained protrusions that leave narrow gaps
-against a physical boundary without widening the entire seam band. A coordinate
-roundoff allowance is used only to locate affected faces; vertices are never
-moved or welded and all acceptance checks still apply. Other recoverable
-failures widen the removal band. Rows and
-columns use the same kernel; the later merge remeshes across earlier seams at
-four-tile intersections. No old internal tile line is kept as a constraint.
+The retained interface is a contract: every internal edge must have an exact
+matching edge on the other side. CGAL's constraint hierarchy tracks each retained
+edge by ID and returns its ordered subdivisions. When an edge splits,
+``meshercxx`` first triangulates the affected parent boundaries in one batch,
+without inserting additional points. Children must preserve the parent footprint
+and pass the same quality criteria. Multiple split sides and multiple inserted
+points are handled together; coordinates are never moved or welded.
+
+If subdivision fails quality, remove the affected parents and adjacent patch
+triangles plus one neighbouring ring. Keep validated generated triangles and
+unaffected original triangles outside this region, and mesh only the missing
+coverage on the next attempt. Later repairs operate on this working mesh.
+Unchanged triangles keep their quality result within this merge, under the same
+raster inputs/settings; there is no persistent quality cache between runs.
+A patch whose own final quality check failed is rejected in full.
+
+Promotion is transactional: validate subdivision footprints and prescribed
+boundaries, then check the retained remainder before changing the private working
+state. Incomplete working states are never published. Fully validated backend
+patches receive one full coverage/overlap check, followed by exact interface and
+hanging-node checks at assembly. Unresolved quality failures touching retained
+interfaces still grow the local cavity, with depth capped at four rings for the
+production backend. Other recoverable failures widen the band. The final
+component recovery remains a last resort. Rows and columns use the same kernel;
+later merges can repair earlier seams at four-tile intersections.
 
 Local growth can keep exposing another edge that refinement splits. If a retry
 is still needed before the final allowed attempt, all retained components with
@@ -144,14 +154,18 @@ explicit; there is no silent fallback to the shared-edge algorithm.
 Backend or validation failures retain a ``cavity-*`` directory whose path is
 reported in the exception. It contains ``domain.json``, ``constraints.json``,
 ``invocation.json`` (the command, working directory and tile/merge identity),
-and the complete ``backend.log``. Successful calls remove their temporary
+``interfaces.json`` and the complete ``backend.log``.
+Subdivision failures preserve a ``repair-*`` directory with parent boundaries,
+invocation and log. ``mesh.json.stats.json`` records backend counters on both
+success and ordinary failure. Successful calls remove their temporary
 directory. Failed-attempt directories can be deleted after diagnosis. The log
 is streamed to disk rather than accumulated in the MPI worker's memory.
 When final quality checks fail, ``mesh.json.quality.json`` records each rejected
 triangle's coordinates, area, minimum angle, constrained edges and failure reason
 (area, angle or raster criterion), with counts by reason. No candidate mesh is
 written. ``Remesh candidate rejected`` reports a failed attempt; it is not a
-terminal merge failure unless recovery is exhausted or a vertex budget is hit.
+terminal merge failure unless recovery is exhausted, a vertex budget is hit, or
+the backend is terminated by a signal. Signal termination stops retries immediately.
 Merge logs identify the tile/group and report the local neighbour-ring depth and
 number of retained faces removed. The final rejected attempt does not announce
 or perform growth that would never be retried. Attempt and vertex limits remain
@@ -167,11 +181,18 @@ rejects failed reads before using their data. Disjoint windows supply no raster
 samples; this does not extend DEM coverage or make out-of-domain geometry valid
 for the final elevation export.
 
-Only validated results are written, followed by metadata containing attempt,
-retained-triangle and replacement-triangle counts, and whether
-``interface_recovery`` was used. Parameters are extracted after
-geometry is finalized. The current MPI smoothing implementation is disabled for
-this path because it does not preserve the checked constraints and criteria.
+Only validated results are written. Metadata records attempts, original triangles
+retained, generated triangles reused, successfully subdivided parents, generated
+patch triangle count, local repair count and ``interface_recovery``. Per-attempt
+records include cavity area, preserved work and rejection reason. Timings cover
+preparation, backend execution, refinement, raster evaluation, validation,
+local repair, stitching and I/O. Backend/refinement/raster timings are nested;
+local repair time includes its backend and validation. They must not all be added
+as independent phases. Backend progress/heartbeats are printed about every ten
+seconds while waiting; counters measure work, not a convergence percentage.
+Parameters are extracted after geometry is finalized. Current MPI smoothing is
+disabled for this path because it does not preserve the checked constraints and
+criteria.
 
 This change addresses seam geometry and correctness. Pairwise stages still load
 the two tile/group arrays, and the final export remains in memory. It does not
@@ -259,3 +280,61 @@ To do the triangulation in parallel, ``mpi_mesh=True`` must be set.
 
 .. |image0-mpi| image:: images/mpi_seam.png
 .. |image1-mpi| image:: images/mpi_seam_large.png
+
+Preservation regressions cover multiple split sides, large coordinates, the
+minimum-area stop, raster failures above that stop, poor-angle children, unchanged
+patch interiors across retries, rollback after a later failure, invalid child
+coverage and backend signal termination.
+
+A reproducible synthetic benchmark compares two tile workers followed by one
+pairwise merge with a historical implementation and a serial whole-domain patch
+reference (not the complete serial CLI preprocessing/export pipeline):
+::
+
+   git show 23b9658:src/mesher/mesher_utls/mpi_remesh.py > /tmp/baseline_mpi_remesh.py
+   PYTHONPATH=src python tests/benchmark_mpi_preservation.py \
+       --backend /path/to/new/meshercxx \
+       --baseline-backend /path/to/old/meshercxx \
+       --baseline-module /tmp/baseline_mpi_remesh.py \
+       --size 1200 --output /tmp/preservation-benchmark.json
+
+Results include wall/CPU time, sampled Linux process-tree PSS, triangle counts
+and repeated cavity work. This is a local regression benchmark, not evidence of
+cluster scaling or production TVC speedup. Real DEM/Hansen inputs and retained
+tile arrays are still needed for that comparison.
+
+One local run (CGAL 6.0.1, GDAL 3.10.3, identical 1200 x 600 synthetic domain,
+maximum area 8, minimum area 0.25, elevation tolerance 1) produced:
+
+.. list-table:: Synthetic preservation benchmark
+   :header-rows: 1
+
+   * - Method
+     - Generation wall time
+     - Merge wall time
+     - Merge attempts
+     - Generated patch triangles
+   * - Previous implementation (23b9658)
+     - 38.77 s
+     - 35.50 s
+     - 11
+     - 357,077
+   * - Preserved work
+     - 6.46 s
+     - 3.36 s
+     - 4
+     - 926
+   * - Serial whole-domain patch reference
+     - 5.67 s
+     - N/A
+     - N/A
+     - N/A
+
+The preserved-work merge retained 135,687 of the initial 135,735 retained
+triangles and reused 967 generated triangles in its final result. It subdivided
+38 parents and did not use broad recovery. Generation was about six times faster
+than the previous MPI strategy, while the serial reference remained faster in
+this case. The final meshes have approximately 137,000 triangles and all pass
+independent coverage/topology checks. Raw CPU, sampled process-tree PSS and
+per-attempt measurements are in ``mpi-preservation-benchmark.json``. Timing is
+machine-dependent and is not a production performance guarantee.
