@@ -26,3 +26,14 @@ class ExtractPointTests(unittest.TestCase):
         vertices = [(-3.5, 1.5), (1.5, 2.5), (2.5, 2.5)]
         mesh = build_mesh_from_arrays(vertices, [(0, 1, 2)], raster, band, None, True, False)
         self.assertEqual([v[2] for v in mesh['mesh']['vertex']], [2.5, 2.0, 3.0])
+        self.assertEqual(mesh['mesh']['neigh'], [[-1, -1, -1]])
+
+    def test_mpi_array_export_includes_reciprocal_neighbours(self):
+        raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
+        raster.SetGeoTransform((0, 1, 0, 3, 0, -1))
+        band = raster.GetRasterBand(1)
+        band.SetNoDataValue(-9999)
+        band.Fill(10)
+        vertices = [(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5)]
+        mesh = build_mesh_from_arrays(vertices, [(0, 1, 2), (0, 2, 3)], raster, band, None, True, False)
+        self.assertEqual(mesh['mesh']['neigh'], [[-1, 1, -1], [-1, -1, 0]])

@@ -41,6 +41,7 @@ from natsort import natsorted
 
 
 from . import mesher_utls
+from .mesh_topology import build_neighbours
 from .mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
@@ -1302,7 +1303,9 @@ def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verb
     mesh = {'mesh': {}}
     mesh['mesh']['vertex'] = []
     mesh['mesh']['elem'] = []
-    mesh['mesh']['neigh'] = []
+    # Reconstruct the global graph after tile vertex IDs have been merged.
+    # Tile-local .neigh files cannot supply cross-tile neighbours.
+    mesh['mesh']['neigh'] = build_neighbours(tris, len(verts_xy), verts_xy).tolist()
     mesh['mesh']['nvertex'] = len(verts_xy)
     mesh['mesh']['nelem'] = len(tris)
     mesh['mesh']['is_geographic'] = is_geographic
