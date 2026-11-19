@@ -1,4 +1,6 @@
 import json
+import io
+from contextlib import redirect_stdout
 import os
 from pathlib import Path
 import tempfile
@@ -10,11 +12,13 @@ import sys
 
 import numpy as np
 from osgeo import gdal, osr
+from shapely import covers, polygons
 from shapely.geometry import box, Polygon, LineString, mapping, shape
 
 from mesher.mesher_utls.mpi_remesh import (
     PatchError, PatchQualityError, merge_cavity, mesh_coverage, remesh_domain,
-    validate_patch, _stitch, _mesher_arguments, _quality_interface_faces)
+    validate_patch, _stitch, _mesher_arguments, _quality_interface_faces,
+    InterfaceChanged, _grow_cavity)
 from mesher.mesh_topology import MeshTopologyError, audit_mesh
 
 gdal.UseExceptions()
@@ -60,13 +64,80 @@ class CavityGeometryTests(unittest.TestCase):
             validate_patch(np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]]), np.array([[0, 1, 2]]), box(0, 0, 2, 2))
 
     def test_split_retained_interface_is_rejected_even_with_exact_coverage(self):
-        v = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]])
+        for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
+            with self.subTest(origin=(x, y)):
+                v = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]) + [x, y, 0]
+                t = np.array([[0, 1, 2], [0, 2, 3]])
+                p = np.array([[1, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0], [1, .5, 0]]) + [x, y, 0]
+                q = np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4]])
+                validate_patch(p, q, box(x+1, y, x+2, y+1))
+                with self.assertRaisesRegex(PatchError, 'retained interface'):
+                    _stitch(v, t, p, q, box(x, y, x+2, y+1))
+
+    def test_boundary_roundoff_allowance_does_not_accept_a_real_gap(self):
+        x, y = -1934381.4845238777, 3429022.4631309444
+        v = np.array([[x, y, 0], [x+1, y, 0], [x+1, y+1-1e-5, 0], [x, y+1-1e-5, 0]])
         t = np.array([[0, 1, 2], [0, 2, 3]])
-        p = np.array([[1, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0], [1, .5, 0]])
-        q = np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4]])
-        validate_patch(p, q, box(1, 0, 2, 1))
-        with self.assertRaisesRegex(PatchError, 'retained interface'):
-            _stitch(v, t, p, q, box(0, 0, 2, 1))
+        with self.assertRaises(InterfaceChanged):
+            _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=int), box(x, y, x+1, y+1))
+
+    def test_local_growth_does_not_cross_existing_cavities(self):
+        # A face chain separated by an already removed face. Even a deep local
+        # expansion must stop at that gap and preserve the other component.
+        neighbours = np.full((20, 3), -1, dtype=int)
+        neighbours[:-1, 0] = np.arange(1, 20)
+        neighbours[1:, 1] = np.arange(19)
+        keep = np.ones(20, dtype=bool)
+        keep[10] = False
+        self.assertEqual(_grow_cavity(keep, neighbours, [0], 100), 10)
+        np.testing.assert_array_equal(np.flatnonzero(keep), np.arange(11, 20))
+
+    def test_repeated_interface_splits_expand_faster_than_one_ring(self):
+        # Each valid finer patch bisects the retained grid's edges. A one-ring
+        # retry keeps moving the mismatch and exhausts eight attempts. Growing
+        # local adjacency depth resolves it while retaining a separate island.
+        a, ta = grid(0, 50, 0, 4)
+        island_v, island_t = grid(0, 4, 10, 14)
+        ta = np.vstack((ta, island_t + len(a)))
+        a = np.vstack((a, island_v))
+        b, tb = grid(50, 100, 0, 4)
+        original_a, original_ta = a.copy(), ta.copy()
+        domain = box(0, 0, 100, 4).union(box(0, 10, 4, 14))
+        fine_v, fine_t = grid(0, 100, 0, 4, .5)
+        fine_polygons = polygons(fine_v[fine_t, :2])
+        calls = []
+        def finer_patch(cavity, constraints, options, directory, fixed):
+            calls.append(cavity.area)
+            selected = fine_t[covers(cavity, fine_polygons)]
+            used, inverse = np.unique(selected, return_inverse=True)
+            return fine_v[used], inverse.reshape((-1, 3))
+        v, t, stats = merge_cavity(a, ta, [0, 0, 50, 14], b, tb, [50, 0, 100, 14], domain, [],
+            {'max_area': .5, 'remesh_band_width': 1, 'remesh_max_attempts': 8}, '.', finer_patch)
+        self.assertGreater(stats['attempts'], 2)
+        self.assertLessEqual(stats['attempts'], 8)
+        self.assertEqual(stats['band_width'], 1)
+        self.assertEqual(stats['retained_triangles'], len(island_t))
+        self.assertTrue(all(second > first for first, second in zip(calls, calls[1:])))
+        np.testing.assert_array_equal(a, original_a)
+        np.testing.assert_array_equal(ta, original_ta)
+        validate_patch(v, t, domain)
+        report = audit(v, t)
+        self.assertTrue(report['valid'], report)
+        self.assertEqual(report['components'], 2)
+
+    def test_last_attempt_does_not_grow_an_untested_cavity(self):
+        a, ta = grid(0, 20, 0, 20, 2)
+        b, tb = grid(20, 40, 0, 20, 2)
+        def changed(*args): raise InterfaceChanged([0])
+        log = io.StringIO()
+        with redirect_stdout(log), patch('mesher.mesher_utls.mpi_remesh._grow_cavity') as grow:
+            with self.assertRaisesRegex(PatchError, 'after 1 attempts.*stage0_r4_c0'):
+                merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], box(0, 0, 40, 20), [],
+                    {'max_area': 8, 'remesh_band_width': 2, 'remesh_max_attempts': 1,
+                     'out_prefix': '/example/stage0_r4_c0'}, '.', changed)
+        grow.assert_not_called()
+        self.assertNotIn('Growing cavity', log.getvalue())
+        self.assertIn('[stage0_r4_c0]', log.getvalue())
 
     def test_unrepresented_physical_constraint_is_rejected(self):
         v, t = grid(0, 2, 0, 2)
@@ -375,6 +446,30 @@ class CgalCavityTests(unittest.TestCase):
                                domain, constraints, self.options, self.work)
         validate_patch(v, t, domain, constraints)
         self.assertTrue(audit(v, t)['valid'])
+
+    def test_refined_sloping_physical_edges_are_not_internal_interfaces(self):
+        from mesher.mesh_topology import build_neighbours
+        x, y = -1934381.4845238777, 3429022.4631309444
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((x-20, .5, 0, y+40, 0, -.5)); ds = None
+        domain = Polygon([(x, y), (x+40.127, y+5.329), (x+40.127, y+36.329), (x, y+30.019)])
+        v, t = self.mesh(domain)
+        neighbours = build_neighbours(t, len(v), v)
+        faces, slots = np.nonzero(neighbours < 0)
+        self.assertTrue(any(not domain.boundary.covers(LineString(v[t[f, [(s+1) % 3, (s+2) % 3]], :2]))
+                            for f, s in zip(faces, slots)))
+        # All these triangles already belong to a conforming valid mesh. A
+        # zero-size patch must not request erosion of its physical perimeter.
+        joined_v, joined_t = _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=int), domain)
+        np.testing.assert_array_equal(joined_v[joined_t], v[t])
+        validate_patch(joined_v, joined_t, domain)
+        self.assertTrue(audit(joined_v, joined_t)['valid'])
+        # Exercise the full merge as well, with two overlapping copies as halos.
+        joined_v, joined_t, stats = merge_cavity(v, t, [x, y, x+20, y+40], v, t,
+            [x+20, y, x+41, y+40], domain, [], self.options, self.work)
+        self.assertGreater(stats['retained_triangles'], 0)
+        validate_patch(joined_v, joined_t, domain)
+        self.assertTrue(audit(joined_v, joined_t)['valid'])
 
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_real_four_rank_pipeline_and_export(self):

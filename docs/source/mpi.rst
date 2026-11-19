@@ -89,8 +89,12 @@ to the MPI stage; it does not repair upstream domain preprocessing choices.
 
 The retained interface is a contract: every retained edge facing the cavity must
 have an exact matching patch edge. If CGAL splits an interface, the candidate is
-discarded and the affected retained faces plus one neighbouring ring are absorbed
-into the cavity. Unresolved quality failures touching a retained interface trigger
+discarded and the affected retained faces plus neighbouring rings are absorbed
+into the cavity. The first local retry uses one ring; consecutive local retries
+double the depth (1, 2, 4, 8, ...), stopping at the remaining component boundary.
+This avoids moving an interface mismatch one row at a time until attempts run
+out. Growth cannot cross an already removed cavity into another retained
+component. Unresolved quality failures touching a retained interface trigger
 the same local growth. This removes retained protrusions that leave narrow gaps
 against a physical boundary without widening the entire seam band. A coordinate
 roundoff allowance is used only to locate affected faces; vertices are never
@@ -98,6 +102,13 @@ moved or welded and all acceptance checks still apply. Other recoverable
 failures widen the removal band. Rows and
 columns use the same kernel; the later merge remeshes across earlier seams at
 four-tile intersections. No old internal tile line is kept as a constraint.
+
+Physical perimeter edges are classified using a roundoff-sized band around the
+domain boundary. The **entire edge** must lie in that band; touching the boundary
+at an endpoint is insufficient. This handles refined points on sloping physical
+edges at large projected coordinates without incorrectly demanding a neighbour
+outside the domain. Internal edges still require exact vertex/edge matching;
+no coordinates are changed. The same classification applies to hole boundaries.
 
 Before acceptance, validation checks numeric degeneracy, indexed topology,
 positive-area overlaps (triangle area versus union area), symmetric difference
@@ -119,6 +130,10 @@ triangle's coordinates, area, minimum angle, constrained edges and failure reaso
 (area, angle or raster criterion), with counts by reason. No candidate mesh is
 written. ``Remesh candidate rejected`` reports a failed attempt; it is not a
 terminal merge failure unless recovery is exhausted or a vertex budget is hit.
+Merge logs identify the tile/group and report the local neighbour-ring depth and
+number of retained faces removed. The final rejected attempt does not announce
+or perform growth that would never be retried. Attempt and vertex limits remain
+hard limits; accelerated local growth does not guarantee every case converges.
 
 The vertex-budget error reports the limit, current/input vertex counts and
 refinement steps. It is distinct from a GDAL allocation or read error. Inspect
@@ -163,6 +178,9 @@ that previously refined exterior faces until the vertex budget was exhausted.
 It also covers local recovery from angle failures near a retained protrusion,
 preservation of unrelated retained faces, and rejection of the same geometry
 when the protrusion is a physical domain boundary that cannot be removed.
+Further regressions cover repeatedly subdivided interfaces, growth stopping at
+existing cavities, and CGAL-refined sloping physical edges at large projected
+coordinates. Genuine gaps and subdivided internal edges remain rejected.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++
