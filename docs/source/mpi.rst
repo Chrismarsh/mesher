@@ -90,7 +90,12 @@ to the MPI stage; it does not repair upstream domain preprocessing choices.
 The retained interface is a contract: every retained edge facing the cavity must
 have an exact matching patch edge. If CGAL splits an interface, the candidate is
 discarded and the affected retained faces plus one neighbouring ring are absorbed
-into the cavity. Other recoverable failures widen the removal band. Rows and
+into the cavity. Unresolved quality failures touching a retained interface trigger
+the same local growth. This removes retained protrusions that leave narrow gaps
+against a physical boundary without widening the entire seam band. A coordinate
+roundoff allowance is used only to locate affected faces; vertices are never
+moved or welded and all acceptance checks still apply. Other recoverable
+failures widen the removal band. Rows and
 columns use the same kernel; the later merge remeshes across earlier seams at
 four-tile intersections. No old internal tile line is kept as a constraint.
 
@@ -109,6 +114,11 @@ reported in the exception. It contains ``domain.json``, ``constraints.json``,
 and the complete ``backend.log``. Successful calls remove their temporary
 directory. Failed-attempt directories can be deleted after diagnosis. The log
 is streamed to disk rather than accumulated in the MPI worker's memory.
+When final quality checks fail, ``mesh.json.quality.json`` records each rejected
+triangle's coordinates, area, minimum angle, constrained edges and failure reason
+(area, angle or raster criterion), with counts by reason. No candidate mesh is
+written. ``Remesh candidate rejected`` reports a failed attempt; it is not a
+terminal merge failure unless recovery is exhausted or a vertex budget is hit.
 
 The vertex-budget error reports the limit, current/input vertex counts and
 refinement steps. It is distinct from a GDAL allocation or read error. Inspect
@@ -150,6 +160,9 @@ windows, rotated geotransforms, large coordinates, valid zeros, NoData,
 failed source reads and the ordering requirements of CGAL's refinement queue.
 The Python integration suite includes a reduced production staircase boundary
 that previously refined exterior faces until the vertex budget was exhausted.
+It also covers local recovery from angle failures near a retained protrusion,
+preservation of unrelated retained faces, and rejection of the same geometry
+when the protrusion is a physical domain boundary that cannot be removed.
 
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++

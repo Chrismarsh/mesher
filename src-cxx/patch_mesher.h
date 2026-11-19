@@ -103,12 +103,49 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
     if (cdt.number_of_vertices() > max_vertices) throw budget_error();
 
     size_t bad = 0, faces = 0;
+    size_t bad_area = 0, bad_angle = 0, bad_raster = 0;
+    std::ofstream quality_report;
+    const std::string report_path = output + ".quality.json";
     auto is_bad = criteria.is_bad_object();
     for (auto f = cdt.finite_faces_begin(); f != cdt.finite_faces_end(); ++f) {
         if (!f->is_in_domain()) continue;
         ++faces;
         Criteria::Quality quality;
-        if (is_bad(f, quality) != CGAL::Mesh_2::NOT_BAD) ++bad;
+        if (is_bad(f, quality) == CGAL::Mesh_2::NOT_BAD) continue;
+        if (!bad) {
+            quality_report.open(report_path + ".tmp");
+            quality_report << std::setprecision(std::numeric_limits<double>::max_digits10)
+                           << "{\"faces\":[";
+        } else quality_report << ',';
+        ++bad;
+        const char* reason = "raster";
+        if (quality.area() > criteria.maxarea()) { reason = "area"; ++bad_area; }
+        else if (quality.sine() < criteria.bound()) { reason = "angle"; ++bad_angle; }
+        else ++bad_raster;
+        const double angle = std::asin(std::sqrt(std::max(0.0, std::min(1.0, quality.sine()))))
+                           * 180 / std::acos(-1.0);
+        quality_report << "{\"reason\":\"" << reason << "\",\"area\":" << quality.area()
+                       << ",\"min_angle_degrees\":" << angle << ",\"vertices\":[";
+        for (int i = 0; i < 3; ++i) {
+            if (i) quality_report << ',';
+            quality_report << '[' << f->vertex(i)->point().x() << ',' << f->vertex(i)->point().y() << ']';
+        }
+        quality_report << "],\"constrained_edges\":[";
+        for (int i = 0; i < 3; ++i) {
+            if (i) quality_report << ',';
+            quality_report << (f->is_constrained(i) ? "true" : "false");
+        }
+        quality_report << "]}";
+        if (bad <= 10)
+            std::cout << "Patch quality failure: reason=" << reason << ", area=" << quality.area()
+                      << ", min_angle_degrees=" << angle << std::endl;
+    }
+    if (bad) {
+        quality_report << "],\"failed_faces\":" << bad << ",\"area_failures\":" << bad_area
+                       << ",\"angle_failures\":" << bad_angle << ",\"raster_failures\":" << bad_raster << "}\n";
+        quality_report.close();
+        if (!quality_report || std::rename((report_path + ".tmp").c_str(), report_path.c_str()) != 0)
+            throw std::runtime_error("Cannot write patch quality diagnostics");
     }
     // Never silently accept quality failures next to a frozen interface. The
     // caller can enlarge the cavity; small physical angles may still fail.

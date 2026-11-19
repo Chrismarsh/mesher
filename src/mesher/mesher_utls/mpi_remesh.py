@@ -16,7 +16,7 @@ import tempfile
 
 import numpy as np
 from osgeo import ogr
-from shapely import from_wkb, polygons, union_all
+from shapely import STRtree, from_wkb, polygons, union_all
 from shapely.geometry import LineString, Polygon, box, mapping
 from shapely.ops import polygonize
 
@@ -27,6 +27,12 @@ ogr.UseExceptions()
 
 class PatchError(MeshTopologyError):
     """A proposed replacement cannot be accepted."""
+
+
+class PatchQualityError(PatchError):
+    def __init__(self, message, failures):
+        self.failures = failures
+        super().__init__(message)
 
 
 class InterfaceChanged(PatchError):
@@ -207,14 +213,22 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
                 log.seek(0, os.SEEK_END)
                 log.seek(max(0, log.tell() - 3000))
                 tail = log.read().decode(errors='replace')
-            raise PatchError(f'C++ patch refinement failed (exit {run.returncode}): ' + tail)
+            message = f'C++ patch refinement failed (exit {run.returncode}): ' + tail
+            quality_path = Path(str(output) + '.quality.json')
+            if quality_path.exists():
+                raise PatchQualityError(message, json.loads(quality_path.read_text())['faces'])
+            raise PatchError(message)
         data = json.loads(output.read_text())
         vertices = np.asarray(data['vertices'], dtype=float)
         triangles = np.asarray(data['triangles'], dtype=np.int64)
         validate_patch(vertices, triangles, domain, constraints)
     except Exception as exc:
         context = options.get('tile_prefix') or options.get('out_prefix') or 'cavity'
-        raise PatchError(f'{context}: {exc}\nReproduction files and full backend log: {work}') from exc
+        message = f'{context}: {exc}\nReproduction files and full backend log: {work}'
+        if isinstance(exc, PatchError):
+            exc.args = (message,)
+            raise
+        raise PatchError(message) from exc
     shutil.rmtree(work)
     return vertices, triangles
 
@@ -236,6 +250,29 @@ def _retain_mask(vertices, triangles, bounds, axis, seam, width):
     # All three vertices must be on the retained side; no centroid clipping.
     away = (np.abs(pts[:, :, axis] - seam) >= width).all(axis=1)
     return inside & away
+
+
+def _quality_interface_faces(fixed_edges, owners, failures, domain):
+    """Locate retained faces touched by bad patch triangles, without welding.
+
+    A small coordinate-roundoff allowance handles refined points on a sloping
+    edge. It is used only to select whole faces for removal, never to accept a
+    candidate, move vertices or alter the physical domain.
+    """
+    if not fixed_edges or not failures:
+        return np.empty(0, dtype=np.int64)
+    tree = STRtree(fixed_edges)
+    scale = max(1.0, *(abs(x) for x in domain.bounds))
+    epsilon = max(1e-10, 64 * np.finfo(float).eps * scale)
+    affected = set()
+    for failure in failures:
+        triangle = Polygon(failure['vertices'])
+        x0, y0, x1, y1 = triangle.bounds
+        candidates = tree.query(box(x0-epsilon, y0-epsilon, x1+epsilon, y1+epsilon))
+        for edge in candidates:
+            if fixed_edges[edge].distance(triangle) <= epsilon:
+                affected.add(owners[edge])
+    return np.asarray(sorted(affected), dtype=np.int64)
 
 
 def _stitch(retained_v, retained_t, patch_v, patch_t, domain):
@@ -311,14 +348,15 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         try:
             # Preserve every retained boundary vertex, including collinear ones
             # which a polygon boolean operation might otherwise discard.
-            fixed = []
+            fixed, fixed_owners = [], []
             if len(retained):
                 neighbours = build_neighbours(retained, len(joined_v), joined_v)
                 faces, slots = np.nonzero(neighbours < 0)
                 for f, s in zip(faces, slots):
                     line = LineString(joined_v[retained[f, [(s + 1) % 3, (s + 2) % 3]], :2])
-                    if cavity.boundary.covers(line):
+                    if cavity.boundary.covers(line) and not domain.boundary.covers(line):
                         fixed.append(line)
+                        fixed_owners.append(f)
             patch_v, patch_t = mesher(cavity, constraints, options, directory, fixed)
             if len(patch_t):
                 validate_patch(patch_v, patch_t, cavity, constraints)
@@ -327,22 +365,27 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             # set difference makes their interiors disjoint by construction.
             return output_v, output_t, {'attempts': attempt + 1, 'band_width': width,
                                        'retained_triangles': len(retained), 'patch_triangles': len(patch_t)}
-        except InterfaceChanged as exc:
-            last_error = exc
-            print(f'Remesh candidate rejected: {exc}', flush=True)
-            # Absorb the faces touched by refinement plus one neighbour ring.
-            # This changes the interface locally instead of repeatedly remeshing
-            # a wider strip along the entire length of a large MPI seam.
-            affected = retained_ids[exc.faces]
-            adjacent = original_neighbours[affected].ravel()
-            keep[affected] = False
-            keep[adjacent[adjacent >= 0]] = False
         except (PatchError, MeshTopologyError) as exc:
             last_error = exc
             print(f'Remesh candidate rejected: {exc}', flush=True)
+            local_faces = np.empty(0, dtype=np.int64)
+            if isinstance(exc, InterfaceChanged):
+                local_faces = exc.faces
+            elif isinstance(exc, PatchQualityError):
+                local_faces = _quality_interface_faces(fixed, fixed_owners, exc.failures, domain)
+            if len(local_faces):
+                # Both split interfaces and unresolved quality failures can be
+                # caused by retained protrusions. Remove the touched faces and
+                # one neighbour ring, leaving unrelated seam regions alone.
+                affected = retained_ids[local_faces]
+                adjacent = original_neighbours[affected].ravel()
+                keep[affected] = False
+                keep[adjacent[adjacent >= 0]] = False
+                print(f'Growing cavity locally at {len(affected)} retained faces plus neighbours', flush=True)
+                continue
             if not len(retained):
                 break
-            if 'budget' in str(exc):
+            if 'Patch vertex budget exceeded' in str(exc):
                 break
             width *= 2
             keep &= np.concatenate((_retain_mask(vertices_a, triangles_a, bounds_a, axis, seam, width),

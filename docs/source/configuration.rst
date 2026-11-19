@@ -577,8 +577,9 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     Initial halo and removal-band width in projected coordinate units. The
     automatic value is the smaller of ``2*sqrt(max_area)`` and 20% of the
     smallest tile dimension. The area/coordinate units must be consistent.
-    Retained faces affected by interface refinement are absorbed locally on
-    retry. Other recoverable failures double the initial removal band.
+    Retained faces affected by interface refinement or adjacent quality failures
+    are absorbed locally on retry. Other recoverable failures double the
+    current removal band. The physical domain and quality thresholds are unchanged.
 
 .. confval:: mpi_remesh_max_attempts
 

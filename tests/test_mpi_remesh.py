@@ -13,8 +13,8 @@ from osgeo import gdal, osr
 from shapely.geometry import box, Polygon, LineString, mapping, shape
 
 from mesher.mesher_utls.mpi_remesh import (
-    PatchError, merge_cavity, mesh_coverage, remesh_domain, validate_patch, _stitch,
-    _mesher_arguments)
+    PatchError, PatchQualityError, merge_cavity, mesh_coverage, remesh_domain,
+    validate_patch, _stitch, _mesher_arguments, _quality_interface_faces)
 from mesher.mesh_topology import MeshTopologyError, audit_mesh
 
 gdal.UseExceptions()
@@ -72,6 +72,34 @@ class CavityGeometryTests(unittest.TestCase):
         v, t = grid(0, 2, 0, 2)
         with self.assertRaisesRegex(PatchError, 'physical constraint'):
             validate_patch(v, t, box(0, 0, 2, 2), [LineString([(0, .3), (2, .3)])])
+
+    def test_quality_failure_selects_only_touching_interface_owners_at_large_coordinates(self):
+        # From the production cavity: a refined point is about 2e-10 m off
+        # the sloping interface after rounding. Selection may tolerate that;
+        # stitching must still require exact, unsplit edges.
+        tip = (-1983662.301079662, 3508355.7468695333)
+        edges = [LineString([(-1982502.0452924795, 3507007.5602487084), tip]),
+                 LineString([tip, (-1984237.619732993, 3506687.2707918254)]),
+                 LineString([(-1990000, 3500000), (-1991000, 3501000)])]
+        failures = [{'vertices': [(-1984335.8080216227, 3508466.0784428404),
+                                 (-1983949.9604063276, 3507521.5088306796),
+                                 (-1984004.6785210543, 3508466.0784428404)]}]
+        domain = box(-2010827, 3434022, -1841287, 3508467)
+        np.testing.assert_array_equal(_quality_interface_faces(edges, [3, 7, 9], failures, domain), [7])
+        failures.append({'vertices': [(-1984004.6785210543, 3508466.0784428404), tip,
+                                     (-1983839.1137707701, 3508466.0784428404)]})
+        np.testing.assert_array_equal(_quality_interface_faces(edges, [3, 7, 9], failures, domain), [3, 7])
+        self.assertEqual(len(_quality_interface_faces([], [], failures, domain)), 0)
+
+    def test_vertex_budget_failure_does_not_retry_a_larger_cavity(self):
+        a, ta = grid(0, 20, 0, 20, 2)
+        b, tb = grid(20, 40, 0, 20, 2)
+        with patch('mesher.mesher_utls.mpi_remesh.remesh_domain',
+                   side_effect=PatchError('Patch vertex budget exceeded: vertices=500000, limit=500000')) as backend:
+            with self.assertRaisesRegex(PatchError, 'after 1 attempts.*vertex budget exceeded'):
+                merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], box(0, 0, 40, 20), [],
+                             {'max_area': 8, 'remesh_band_width': 2}, '.', backend)
+        self.assertEqual(backend.call_count, 1)
 
     def test_mixed_raster_weights_follow_cpp_reader_order(self):
         args = _mesher_arguments({'mesher_path': 'meshercxx', 'max_area': 8, 'min_area': .25,
@@ -140,6 +168,67 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         self.assertEqual(audit(v, t)['components'], 1)
 
+    def notch_options(self):
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((0, 50, 0, 6000, 0, -50)); ds = None
+        return dict(self.options, max_area=6250000, min_area=2500, remesh_band_width=1000)
+
+    def test_quality_report_preserves_locations_and_rejects_bad_mesh(self):
+        options = self.notch_options()
+        notch = Polygon([(1000, 0), (3000, 0), (2000, 3450)])
+        domain = box(0, 0, 8000, 3500).difference(notch)
+        with self.assertRaises(PatchQualityError) as failure:
+            remesh_domain(domain, [], options, self.work)
+        folders = list(self.work.glob('cavity-*'))
+        self.assertEqual(len(folders), 1)
+        self.assertIn(str(folders[0]), str(failure.exception))
+        self.assertFalse((folders[0] / 'mesh.json').exists())
+        report = json.loads((folders[0] / 'mesh.json.quality.json').read_text())
+        self.assertEqual(failure.exception.failures, report['faces'])
+        self.assertGreater(report['failed_faces'], 0)
+        self.assertEqual(report['failed_faces'], report['angle_failures'])
+        self.assertEqual(report['area_failures'] + report['raster_failures'], 0)
+        for face in report['faces']:
+            self.assertEqual(face['reason'], 'angle')
+            self.assertLess(face['min_angle_degrees'], np.degrees(np.arcsin(np.sqrt(.125))))
+            self.assertAlmostEqual(Polygon(face['vertices']).area, face['area'])
+            self.assertEqual(len(face['constrained_edges']), 3)
+        self.assertIn('reason=angle', (folders[0] / 'backend.log').read_text())
+
+    def test_quality_retry_absorbs_protrusion_without_widening_the_entire_band(self):
+        options = self.notch_options()
+        a = np.array([[1000, 0, 0], [3000, 0, 0], [2000, 3450, 0]], dtype=float)
+        b = np.array([[6000, 0, 0], [8000, 0, 0], [8000, 2000, 0]], dtype=float)
+        tris = np.array([[0, 1, 2]])
+        domain = box(0, 0, 8000, 3500)
+        cavities = []
+        def record_cavity(cavity, constraints, args, directory, fixed):
+            cavities.append(cavity)
+            return remesh_domain(cavity, constraints, args, directory, fixed)
+        v, t, stats = merge_cavity(a, tris, [0, 0, 4000, 3500], b, tris, [4000, 0, 8000, 3500],
+                                  domain, [], options, self.work, record_cavity)
+        self.assertEqual(stats['attempts'], 2)
+        self.assertEqual(stats['band_width'], 1000)
+        self.assertEqual(stats['retained_triangles'], 1)
+        self.assertEqual(cavities[1].difference(cavities[0]).symmetric_difference(Polygon(a[:, :2])).area, 0)
+        self.assertEqual(set(map(tuple, v[t[0]])), set(map(tuple, b)))
+        validate_patch(v, t, domain)
+        report = audit(v, t)
+        self.assertTrue(report['valid'], report)
+        self.assertEqual(report['hanging_nodes'], 0)
+
+    def test_quality_retry_cannot_remove_a_physical_notch(self):
+        options = self.notch_options()
+        domain = box(0, 0, 8000, 3500).difference(Polygon([(1000, 0), (3000, 0), (2000, 3450)]))
+        empty_v, empty_t = np.empty((0, 3)), np.empty((0, 3), dtype=int)
+        with self.assertRaisesRegex(PatchError, 'No valid cavity replacement after 1 attempts'):
+            merge_cavity(empty_v, empty_t, [0, 0, 4000, 3500], empty_v, empty_t, [4000, 0, 8000, 3500],
+                         domain, [], options, self.work)
+        folder, = self.work.glob('cavity-*')
+        self.assertFalse((folder / 'mesh.json').exists())
+        supplied = shape(json.loads((folder / 'domain.json').read_text()))
+        self.assertEqual(supplied.symmetric_difference(domain).area, 0)
+
     def test_rounded_exterior_centroid_cannot_start_runaway_refinement(self):
         # Reduced from the production boundary. A nearly collinear exterior
         # CDT face has a rounded centroid which OGR classifies as inside.
@@ -185,7 +274,8 @@ class CgalCavityTests(unittest.TestCase):
         def retry_once(domain, constraints, options, directory, fixed):
             calls.append(domain.area)
             if len(calls) == 1:
-                raise PatchError('Refinement changed a retained interface')
+                # The normal input summary is not a budget-exhaustion error.
+                raise PatchError('Patch input: vertices=20, budget=10000\nPatch has quality failures')
             return remesh_domain(domain, constraints, options, directory, fixed)
         v, t, stats = merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
             box(0, 0, 40, 20), [], self.options, self.work, retry_once)
