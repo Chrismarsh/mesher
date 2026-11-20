@@ -16,6 +16,7 @@ from functools import lru_cache
 from mesher.mesher_utls.mpi_progress import debug_log
 from exactextract import exact_extract
 from exactextract.feature import JSONFeatureSource
+from exactextract.raster import GDALRasterSource
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
@@ -44,11 +45,8 @@ def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
     return x0, y0, x1-x0, y1-y0
 
 
-def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
-
-    if src_offset[2] <= 0 or src_offset[3] <= 0:
-        return float('nan')
-    raster = rds.GetRasterBand(1)
+def _read_valid_samples(raster, src_offset):
+    """Read one window with the same missing-data rules for both samplers."""
     # Integer class rasters cannot hold NaN. Mask raw samples before applying
     # scale/offset so the NoData sentinel cannot become an ordinary value.
     src_array = np.asarray(raster.ReadAsArray(*src_offset), dtype=np.float64).copy()
@@ -58,6 +56,38 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
         valid &= src_array != nodata
     if raster.GetMaskFlags() != gdal.GMF_ALL_VALID:
         valid &= raster.GetMaskBand().ReadAsArray(*src_offset) != 0
+    src_array[~valid] = np.nan
+
+    scale, offset = raster.GetScale(), raster.GetOffset()
+    src_array = src_array * (1.0 if scale is None else scale) + (0.0 if offset is None else offset)
+    src_array[~np.isfinite(src_array)] = np.nan
+    return src_array
+
+
+class _ValidRasterSource(GDALRasterSource):
+    """Give exactextract finite, scaled samples with raw NoData already masked."""
+
+    def read_window(self, x0, y0, nx, ny):
+        return np.ma.masked_invalid(_read_valid_samples(self.band, (x0, y0, nx, ny)), copy=False)
+
+    def nodata_value(self):
+        # The window mask is authoritative, including for scaled rasters.
+        return None
+
+
+def _parameter_value(key, values, classifier=None):
+    """Classify one aggregate per raster, then normalize the output scalar."""
+    output = classifier(*values) if classifier is not None else values[0]
+    if output is None:
+        raise ValueError(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
+    return float('nan') if output == -9999 else float(output)
+
+
+def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
+
+    if src_offset[2] <= 0 or src_offset[3] <= 0:
+        return float('nan')
+    src_array = _read_valid_samples(rds.GetRasterBand(1), src_offset)
 
     driver = gdal.GetDriverByName('MEM')
     mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
@@ -66,11 +96,7 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
     err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
     if err != 0:
         raise RuntimeError('Error rasterizing layer: %s' % err)
-    valid &= mask.ReadAsArray() != 0
-    src_array[~valid] = np.nan
-
-    scale, offset = raster.GetScale(), raster.GetOffset()
-    src_array = src_array * (1.0 if scale is None else scale) + (0.0 if offset is None else offset)
+    src_array[mask.ReadAsArray() == 0] = np.nan
     if not np.isfinite(src_array).any():
         return float('nan')
 
@@ -219,21 +245,8 @@ def do_parameterize(gt, is_geographic, mesh,
         new_gt = (x, raster_gt[1], raster_gt[2], y, raster_gt[4], raster_gt[5])
         output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
-    if 'classifier' in data:
-        fn = cloudpickle.loads(data['classifier'])
-        output = fn(*output)
-    else:
-        # flatten the list for the append below
-        output = output[0] if len(output) else float('nan')
-
-    # we want to write actual NaN to vtu for better displaying
-    if output == -9999:
-        output = float('nan')
-
-    if output is None and 'classifier' in data:
-        raise Exception(f'Error: The user-supplied classifier function for {key} returned None which is not valid.')
-
-    params[key] = float(output)
+    classifier = cloudpickle.loads(data['classifier']) if 'classifier' in data else None
+    params[key] = _parameter_value(key, output or [float('nan')], classifier)
 
     # for key, data in initial_conditions.items():
     #     output = []
@@ -339,7 +352,7 @@ def main(pickle_file: str,
         return stats[method]
 
     # Fast path: compute per-triangle stats once via exactextract. Parameters
-    # with classifiers/custom reducers retain the legacy ALL_TOUCHED sampler.
+    # with custom reducers retain the legacy ALL_TOUCHED sampler.
     # A classifier receives one aggregate per input raster, not individual pixels.
     # exactextract is much faster for zonal stats;
     if use_exactextract:
@@ -359,7 +372,7 @@ def main(pickle_file: str,
             if key == 'area':
                 continue
             methods = data['method'] if isinstance(data['method'], list) else [data['method']]
-            if 'classifier' in data or any(callable(method) for method in methods):
+            if any(callable(method) for method in methods):
                 slow_params[key] = data
             else:
                 exact_params[key] = data
@@ -367,20 +380,28 @@ def main(pickle_file: str,
         for key, data in exact_params.items():
             if len(data) == 0:
                 continue
-            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}')
-            debug_log(log_options, str(data))
+            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}: exactextract aggregation; '
+                      'classifier, if supplied, runs once per triangle after aggregation')
             files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
             methods = data['method'] if isinstance(data['method'], list) else [data['method']]
+            if not files or len(files) != len(methods):
+                raise ValueError(f'{key}: Specify one aggregation method per input raster')
+            classifier = cloudpickle.loads(data['classifier']) if 'classifier' in data else None
             values = []
             for fpath, method in zip(files, methods):
                 stats = stats_for_method(method)
                 debug_log(log_options, str(fpath))
-                result = exact_extract(fpath, features, stats)
-                values.append([row.get('properties').get(stats) for row in result])
+                source = _ValidRasterSource(fpath)
+                result = exact_extract(source, features, stats)
+                # majority/min/max may return None for empty intersections.
+                values.append([float('nan') if row['properties'].get(stats) is None
+                               else float(row['properties'][stats]) for row in result])
+                del source
             for tri_idx in range(mesh['mesh']['nelem']):
-                ret_tri[tri_idx][key] = values[0][tri_idx]
+                ret_tri[tri_idx][key] = _parameter_value(
+                    key, [raster_values[tri_idx] for raster_values in values], classifier)
 
-        # Slow path for classifier-based parameters.
+        # Custom reducers still receive the legacy unweighted pixel array.
         for key, data in slow_params.items():
             debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}: legacy ALL_TOUCHED aggregation; '
                       'classifier, if supplied, runs once per triangle after aggregation')

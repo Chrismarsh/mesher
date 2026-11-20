@@ -117,7 +117,7 @@ class ParameterizeTests(unittest.TestCase):
             os.chdir(previous)
         return result, log.getvalue()
 
-    def test_exact_stats_and_legacy_callbacks_use_requested_methods(self):
+    def test_exact_stats_classifiers_and_custom_reducers_use_requested_methods(self):
         ds = self.raster([[1, 1], [4, 6]], name='values.tif')
         ds = None
         parameters = {method: {'filename': [str(self.work/'values.tif')], 'method': [method]}
@@ -135,6 +135,130 @@ class ParameterizeTests(unittest.TestCase):
                                    'max': 6, 'custom': 106, 'LAI': 6}.items():
                     self.assertEqual(result[0][key], value, key)
 
+    def test_classifiers_use_coverage_weighted_aggregates(self):
+        # Pixel overlap areas are 5/6, 1/2, 1/6. Class 9 wins by area,
+        # although class 1 wins by touched-pixel count. The numeric mean
+        # is 10/3 by area, versus 6 with the legacy sampler.
+        self.mesh['mesh']['vertex'] = [[0., 0., 0.], [3., 0., 0.], [0., 1., 0.]]
+        for name, values, gt in (
+                ('classes.tif', [[9, 1, 1]], (0, 1, 0, 1, 0, -1)),
+                ('numeric.tif', [[0, 6, 12]], (0, 1, 0, 1, 0, -1)),
+                ('coarse.tif', [[7]], (0, 3, 0, 1, 0, -1))):
+            ds = self.raster(values, gt=gt, name=name); ds = None
+        parameters = {
+            'watermask': {'filename': str(self.work/'classes.tif'), 'method': 'mode',
+                          'classifier': cloudpickle.dumps(lambda value: value)},
+            'LAI': {'filename': [str(self.work/'numeric.tif')], 'method': ['mean'],
+                    # A nonlinear callback proves classification occurs after
+                    # averaging, rather than averaging classified pixels.
+                    'classifier': cloudpickle.dumps(lambda value: value**2)},
+            'combined': {'filename': [str(self.work/'classes.tif'), str(self.work/'coarse.tif')],
+                         'method': ['mode', 'mean'],
+                         'classifier': cloudpickle.dumps(lambda water, canopy: 10*water+canopy)},
+            'custom': {'filename': [str(self.work/'classes.tif'), str(self.work/'numeric.tif')],
+                       'method': ['mode', lambda pixels: np.nanmean(pixels)],
+                       'classifier': cloudpickle.dumps(lambda a, b: 10*a+b)}}
+        result, log = self.run_worker(parameters)
+        self.assertEqual(log, '')
+        self.assertEqual(result[0]['watermask'], 9)
+        self.assertAlmostEqual(result[0]['LAI'], (10/3)**2, places=5)
+        self.assertEqual(result[0]['combined'], 97)
+        # If any reducer is callable, all inputs keep legacy weighting.
+        self.assertEqual(result[0]['custom'], 16)
+        parameters['watermask']['filename'] = [str(self.work/'classes.tif')]
+        result, _ = self.run_worker(parameters, exact=False)
+        self.assertEqual(result[0]['watermask'], 1)
+        self.assertEqual(result[0]['LAI'], 36)
+        self.assertEqual(result[0]['combined'], 17)
+
+    def test_exact_classifier_masks_raw_missing_values_before_scaling(self):
+        for nodata, dtype in ((-9999, gdal.GDT_Float32), (1, gdal.GDT_Float32),
+                              (255, gdal.GDT_Byte), (np.nan, gdal.GDT_Float32)):
+            with self.subTest(nodata=nodata):
+                ds = self.raster([[4, nodata], [nodata, nodata]], nodata, dtype, name='valid.tif')
+                band = ds.GetRasterBand(1)
+                # An explicit mask must not override the raw NoData exclusion.
+                band.CreateMaskBand(0)
+                band.GetMaskBand().WriteArray(np.full((2, 2), 255, dtype=np.uint8))
+                band.SetScale(.5); band.SetOffset(1)
+                band = None; ds = None
+                parameters = {method: {'filename': [str(self.work/'valid.tif')], 'method': [method],
+                                       'classifier': cloudpickle.dumps(lambda value: value*10)}
+                              for method in ('mode', 'mean', 'average', 'min', 'max')}
+                result, _ = self.run_worker(parameters)
+                for method in parameters:
+                    self.assertEqual(result[0][method], 30)
+
+        ds = self.raster([[0, np.inf], [np.nan, -np.inf]], name='finite.tif'); ds = None
+        parameters = {method: {'filename': [str(self.work/'finite.tif')], 'method': [method],
+                               'classifier': cloudpickle.dumps(lambda value: value)}
+                      for method in ('mode', 'mean', 'min', 'max')}
+        result, _ = self.run_worker(parameters)
+        for method in parameters:
+            self.assertEqual(result[0][method], 0)
+
+        for scale, expected in ((.5, 3), (0, 1)):
+            ds = self.raster([[0, 0], [4, 4]], name='masked.tif')
+            band = ds.GetRasterBand(1)
+            band.CreateMaskBand(0)
+            band.GetMaskBand().WriteArray(np.array([[0, 0], [255, 255]], dtype=np.uint8))
+            band.SetScale(scale); band.SetOffset(1)
+            band = None; ds = None
+            result, _ = self.run_worker({'value': {'filename': [str(self.work/'masked.tif')],
+                'method': ['mean'], 'classifier': cloudpickle.dumps(lambda value: value)}})
+            self.assertEqual(result[0]['value'], expected)
+
+    def test_exact_missing_aggregates_and_classifier_outputs(self):
+        for name, values in (('missing.tif', [[-9999, -9999], [-9999, -9999]]),
+                             ('valid.tif', [[4, 4], [4, 4]])):
+            ds = self.raster(values, -9999, name=name); ds = None
+        parameters = {}
+        for method in ('mode', 'mean', 'average', 'min', 'max'):
+            data = {'filename': [str(self.work/'missing.tif')], 'method': [method]}
+            parameters[method] = data
+            parameters[method+'_classified'] = dict(data,
+                classifier=cloudpickle.dumps(lambda value: 7 if np.isnan(value) else 18))
+        parameters['partial'] = {'filename': [str(self.work/'missing.tif'), str(self.work/'valid.tif')],
+            'method': ['mode', 'mean'], 'classifier': cloudpickle.dumps(lambda a, b: b if np.isnan(a) else a)}
+        result, _ = self.run_worker(parameters)
+        for method in ('mode', 'mean', 'average', 'min', 'max'):
+            self.assertTrue(np.isnan(result[0][method]))
+            self.assertEqual(result[0][method+'_classified'], 7)
+        self.assertEqual(result[0]['partial'], 4)
+
+        # No overlap has the same missing-data contract as all-NoData pixels.
+        self.mesh['mesh']['vertex'] = (np.array(self.mesh['mesh']['vertex'], dtype=float)+[100, 100, 0]).tolist()
+        result, _ = self.run_worker(parameters)
+        self.assertTrue(np.isnan(result[0]['partial']))
+        for method in ('mode', 'mean', 'average', 'min', 'max'):
+            self.assertTrue(np.isnan(result[0][method]))
+            self.assertEqual(result[0][method+'_classified'], 7)
+        data = {'filename': [str(self.work/'valid.tif')], 'method': ['mean']}
+        for output in (np.nan, -9999):
+            result, _ = self.run_worker({'value': dict(data, classifier=cloudpickle.dumps(lambda value: output))})
+            self.assertTrue(np.isnan(result[0]['value']))
+        with self.assertRaisesRegex(ValueError, 'classifier function for value returned None'):
+            self.run_worker({'value': dict(data, classifier=cloudpickle.dumps(lambda value: None))})
+
+    def test_exact_classifier_runs_once_per_triangle_and_logs_backend(self):
+        self.config.write_text('mesher_debug = True\n')
+        ds = self.raster([[4, 4], [4, 4]], name='values.tif'); ds = None
+        self.mesh['mesh'].update(vertex=[[0., 0., 0.], [2., 0., 0.], [0., 2., 0.], [2., 2., 0.]],
+                                 elem=[[0, 1, 2], [1, 3, 2]], nelem=2, nvertex=4)
+        calls = self.work/'classifier_calls.txt'
+
+        def classify(value):
+            with calls.open('a') as stream:
+                stream.write(f'{value}\n')
+            return value+1
+
+        result, log = self.run_worker({'value': {'filename': [str(self.work/'values.tif')],
+            'method': ['mean'], 'classifier': cloudpickle.dumps(classify)}})
+        self.assertEqual(calls.read_text().splitlines(), ['4.0', '4.0'])
+        self.assertEqual([row['value'] for row in result], [5, 5])
+        self.assertIn('exactextract aggregation', log)
+        self.assertNotIn('legacy ALL_TOUCHED', log)
+
     def test_unknown_exact_method_does_not_silently_compute_mean(self):
         ds = self.raster([[1, 1], [4, 6]], name='values.tif'); ds = None
         with self.assertRaisesRegex(ValueError, 'Unknown data aggregation method'):
@@ -151,17 +275,19 @@ class ParameterizeTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_mpi_callbacks_from_config_and_empty_rank(self):
         self.config.write_text('import numpy as np\nmesher_debug = False\n'
-                               'def classify(value):\n    return 2 if value == 4 else 18\n'
+                               'def classify(water, numeric):\n    return 100*water+numeric\n'
                                'def reduce(pixels):\n    return np.nanmax(pixels)+10\n')
         config = parameterize._load_config(str(self.config))
-        ds = self.raster([[4, 4], [4, -9999]], -9999, name='classes.tif'); ds = None
-        np.save(self.work/'vertices.npy', np.array([[0., 0, 0], [2., 0, 0], [0., 2, 0], [2., 2, 0]]))
+        for name, values in (('classes.tif', [[9, 1, 1]]), ('numeric.tif', [[0, 6, 12]])):
+            ds = self.raster(values, gt=(0, 1, 0, 1, 0, -1), name=name); ds = None
+        np.save(self.work/'vertices.npy', np.array([[0., 0, 0], [3., 0, 0], [0., 1, 0], [3., 1, 0]]))
         np.save(self.work/'triangles.npy', np.array([[0, 1, 2], [1, 3, 2]]))
         prep = {'gt': self.gt, 'is_geographic': False, 'RasterXSize': 2, 'RasterYSize': 2,
                 'srs_proj4': self.srs.ExportToProj4(), 'use_exactextract': True,
                 'verts_path': str(self.work/'vertices.npy'), 'elems_path': str(self.work/'triangles.npy'),
                 'initial_conditions': {}, 'parameter_files': {
-                    'landcover': {'filename': [str(self.work/'classes.tif')], 'method': ['mode'],
+                    'landcover': {'filename': [str(self.work/'classes.tif'), str(self.work/'numeric.tif')],
+                                  'method': ['mode', 'mean'],
                                   'classifier': cloudpickle.dumps(config.classify)},
                     'raw': {'filename': [str(self.work/'classes.tif')], 'method': ['mode']},
                     'custom': {'filename': [str(self.work/'classes.tif')], 'method': [config.reduce]},
@@ -178,7 +304,7 @@ class ParameterizeTests(unittest.TestCase):
         results = [cloudpickle.loads((self.work/f'pickled_param_args_rets_{rank}.pickle').read_bytes())
                    for rank in range(3)]
         self.assertEqual(results[2], [])
-        for result in results[:2]:
-            self.assertEqual(result[0]['landcover'], 2)
-            self.assertEqual(result[0]['raw'], 4)
-            self.assertEqual(result[0]['custom'], 14)
+        for result, water, numeric in zip(results[:2], (9, 1), (10/3, 26/3)):
+            self.assertAlmostEqual(result[0]['landcover'], 100*water+numeric, places=5)
+            self.assertEqual(result[0]['raw'], water)
+            self.assertEqual(result[0]['custom'], 19)
