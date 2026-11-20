@@ -247,6 +247,14 @@ final result; actual acute physical corners still fail quality. With OpenMPI
 available, a four-rank tile/merge/export test runs as well. Without
 ``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
 
+The supplied 463-vertex ``stage0_r3_c1`` cavity is also a regression fixture.
+It reproduces the reported angle failures without raster inputs, verifies that
+recovery selects all three retained tips near the group boundary, and checks a
+controlled local replacement with complete coverage and no overlap. This tests
+the rejection/recovery path; a rejected candidate alone does not mean the MPI
+run failed. Replaying the entire production retry also requires its retained
+triangle connectivity and raster inputs.
+
 The C++ raster sampling and refinement-queue ordering regressions can also be built with
 ``cmake -S . -B build -DBUILD_TESTING=ON`` and ``cmake --build build``; run them
 with ``ctest --test-dir build --output-on-failure``. They cover partial/disjoint

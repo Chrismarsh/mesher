@@ -593,6 +593,57 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(report['valid'], report)
         self.assertEqual(report['hanging_nodes'], 0)
 
+    def test_production_retained_tips_are_selected_and_local_growth_clears_angles(self):
+        from collections import Counter
+        from shapely import union_all
+        # Exact 463-vertex stage0_r3_c1 cavity supplied with six angle failures.
+        # Its two holes are retained mesh, not physical holes. The supplied 459
+        # interfaces are exactly these ring edges (independent of their order).
+        fixture = Path(__file__).parent / 'fixtures' / 'retained_tip_cavity.geojson'
+        cavity = shape(json.loads(fixture.read_text()))
+        def interfaces(domain):
+            return [LineString([a, b]) for h in domain.interiors
+                    for a, b in zip(h.coords[:-1], h.coords[1:])]
+        fixed = interfaces(cavity)
+        self.assertEqual(len(fixed), 459)
+        options = dict(self.options, max_area=6250000, min_area=2500,
+                       max_tolerance=-1, remesh_max_vertices=500000)
+        # No production rasters are required to reproduce these shape failures.
+        with self.assertRaises(PatchQualityError) as failure:
+            remesh_domain(cavity, [], options, self.work, fixed)
+        self.assertIn('vertices=463', str(failure.exception))
+        self.assertTrue(all(f['reason'] == 'angle' for f in failure.exception.failures))
+        selected = _quality_interface_faces(fixed, np.arange(len(fixed)),
+                                             failure.exception.failures, cavity)
+        counts = Counter(p for i in selected for p in fixed[i].coords)
+        tips = {p for p, n in counts.items() if n == 2}
+        self.assertEqual(tips, {(-1841272.9628440002, 3568726.228346006),
+                               (-1841262.2013740074, 3524189.7361516776),
+                               (-1811932.3164176506, 3582881.746913484)})
+        # A controlled local recovery removes just the three retained tips.
+        # Original parent connectivity is unavailable, so this checks the real
+        # selector and the resulting patch, not a replay of the full MPI retry.
+        ears = []
+        for hole in cavity.interiors:
+            ring = list(hole.coords[:-1])
+            for i, p in enumerate(ring):
+                if p in tips:
+                    ears.append(Polygon([ring[i-1], p, ring[(i+1) % len(ring)]]))
+        added = union_all(ears)
+        grown = cavity.union(added)
+        self.assertAlmostEqual(added.area, 663626.2876659185, places=5)
+        self.assertEqual(cavity.difference(grown).area, 0)
+        v, t = remesh_domain(grown, [], options, self.work, interfaces(grown))
+        validate_patch(v, t, grown)
+        self.assertTrue(audit(v, t)['valid'])
+        # Patch plus the remaining retained footprint must exactly cover the
+        # original group box without overlap or a change to its outer boundary.
+        group = Polygon(cavity.exterior)
+        retained = group.difference(grown)
+        coverage = mesh_coverage(v, t)
+        self.assertEqual(coverage.union(retained).symmetric_difference(group).area, 0)
+        self.assertEqual(coverage.intersection(retained).area, 0)
+
     def test_quality_retry_cannot_remove_a_physical_notch(self):
         options = self.notch_options()
         domain = box(0, 0, 8000, 3500).difference(Polygon([(1000, 0), (3000, 0), (2000, 3450)]))
