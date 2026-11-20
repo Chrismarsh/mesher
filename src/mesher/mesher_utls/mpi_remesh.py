@@ -18,7 +18,8 @@ import time
 
 import numpy as np
 from osgeo import ogr
-from shapely import STRtree, from_wkb, polygons, prepare, union_all
+from shapely import (STRtree, box as boxes, covers, distance, from_wkb, get_coordinates,
+                     linestrings, points, polygons, prepare, union_all)
 from shapely.geometry import LineString, Point, Polygon, box, mapping
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize
@@ -75,6 +76,13 @@ class PatchQualityError(PatchError):
     def __init__(self, message, failures):
         self.failures = failures
         super().__init__(message)
+
+
+class PatchPrecisionError(PatchError):
+    def __init__(self, interface_ids, epsilon):
+        self.interface_ids = np.unique(interface_ids)
+        super().__init__(f'Retained interfaces have a nonzero clearance below coordinate precision '
+                         f'({epsilon:.6g}); cavity must grow at {len(self.interface_ids)} edges')
 
 
 class InterfaceChanged(PatchError):
@@ -314,6 +322,52 @@ def _mesher_arguments(options):
     return args
 
 
+def _precision_interface_ids(linework, fixed_edges, epsilon):
+    """Select interfaces at unresolved point/segment gaps, without snapping.
+
+    GEOS can represent a valid cavity whose retained tip almost touches another
+    constraint, but CGAL's inexact refinement constructions cannot resolve the
+    slit. Only the owners of implicated interfaces should be removed. Exact
+    incidences and gaps larger than coordinate roundoff are left alone.
+    Check both directions: a physical vertex can approach a retained edge too.
+    Use the original linework, before noding adds intersection coordinates.
+    """
+    if not fixed_edges:
+        return np.empty(0, dtype=np.int64)
+    coordinates = np.asarray([(a[:2], b[:2]) for geometry in linework for line in line_parts(geometry)
+                              for a, b in zip(line.coords[:-1], line.coords[1:])])
+    if not len(coordinates):
+        return np.empty(0, dtype=np.int64)
+    segments = linestrings(coordinates)
+    fixed_coordinates, owners = [], []
+    for owner, line in enumerate(fixed_edges):
+        for pair in zip(line.coords[:-1], line.coords[1:]):
+            fixed_coordinates.append(pair)
+            owners.append(owner)
+    fixed_coordinates = np.asarray(fixed_coordinates)
+    owners = np.asarray(owners, dtype=np.int64)
+    if not len(owners) or not len(segments):
+        return np.empty(0, dtype=np.int64)
+
+    def near_pairs(vertices, edges):
+        xy = get_coordinates(vertices)
+        # Bounding-box query plus a distance filter also supports Shapely 2
+        # installations built with GEOS < 3.10 (which lack STRtree dwithin).
+        pairs = STRtree(edges).query(boxes(xy[:, 0]-epsilon, xy[:, 1]-epsilon,
+                                          xy[:, 0]+epsilon, xy[:, 1]+epsilon))
+        # Distance can itself round to zero on a sloping edge. Use the exact
+        # topological incidence test rather than treating distance == 0 as safe.
+        selected_edges, selected_vertices = edges[pairs[1]], vertices[pairs[0]]
+        return pairs[:, (~covers(selected_edges, selected_vertices)
+                         & (distance(selected_edges, selected_vertices) <= epsilon))]
+
+    fixed_vertices = points(fixed_coordinates.reshape(-1, 2))
+    forward = near_pairs(fixed_vertices, segments)
+    vertices = points(np.unique(coordinates.reshape(-1, 2), axis=0))
+    reverse = near_pairs(vertices, linestrings(fixed_coordinates))
+    return np.unique(np.concatenate((np.repeat(owners, 2)[forward[0]], owners[reverse[1]])))
+
+
 def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
     """Invoke the real C++ refinement criteria, including raster constraints."""
     started = time.perf_counter()
@@ -343,6 +397,15 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
             'tile': options.get('tile_prefix'), 'merge': options.get('out_prefix'),
             'core_bbox': options.get('core_bbox', options.get('tile_bbox')),
             'domain_bounds': list(domain.bounds), 'domain_area': domain.area}, indent=2))
+        epsilon = _coordinate_tolerance(domain)
+        precision_ids = _precision_interface_ids(linework, fixed_edges, epsilon)
+        if len(precision_ids):
+            error = PatchPrecisionError(precision_ids, epsilon)
+            stats['preparation_seconds'] = time.perf_counter() - started
+            (work / 'precision.json').write_text(json.dumps({
+                'interface_ids': precision_ids.tolist(), 'coordinate_tolerance': epsilon}))
+            (work / 'backend.log').write_text(f'Backend not started: {error}\n')
+            raise error
         preparation_seconds = time.perf_counter() - started
         code, backend_seconds = _run_backend(command, work, options)
         stats_path = Path(str(output) + '.stats.json')
@@ -796,6 +859,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 local_faces = exc.faces
             elif isinstance(exc, PatchQualityError):
                 local_faces = _quality_interface_faces(fixed, owners, exc.failures, domain)
+            elif isinstance(exc, PatchPrecisionError):
+                local_faces = np.unique(np.asarray(owners)[exc.interface_ids])
             if len(local_faces):
                 affected = retained_ids[local_faces]
                 removed = _grow_cavity(keep, neighbours, affected, growth_rings)

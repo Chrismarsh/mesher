@@ -131,6 +131,10 @@ target_compile_features(
         PRIVATE
         cxx_std_14
 )
+# Keep CGAL's structural checks in optimized builds. Near-degenerate input
+# otherwise proceeds past a failed refinement invariant into invalid handles.
+# The patch entry point catches the resulting exception and retains diagnostics.
+target_compile_definitions(meshercxx PRIVATE CGAL_DEBUG)
 target_include_directories(
         meshercxx
         PRIVATE

@@ -17,9 +17,9 @@ from shapely.geometry import box, Polygon, LineString, mapping, shape
 from shapely.affinity import rotate, translate, scale
 
 from mesher.mesher_utls.mpi_remesh import (
-    PatchError, PatchQualityError, merge_cavity, mesh_coverage, remesh_domain,
+    PatchError, PatchQualityError, PatchPrecisionError, merge_cavity, mesh_coverage, remesh_domain,
     validate_patch, _stitch, _mesher_arguments, _quality_interface_faces,
-    InterfaceChanged, _grow_cavity, tile_domain)
+    InterfaceChanged, _grow_cavity, tile_domain, _precision_interface_ids, _coordinate_tolerance)
 from mesher.mesh_topology import MeshTopologyError, audit_mesh
 
 gdal.UseExceptions()
@@ -52,6 +52,21 @@ def buffered_slanted_domain():
 
 
 class CavityGeometryTests(unittest.TestCase):
+    def test_precision_selection_distinguishes_incidence_roundoff_and_resolved_gaps(self):
+        x, y = -1500000., 3400000.
+        boundary = LineString([(x, y), (x+100, y)])
+        epsilon = _coordinate_tolerance(box(x, y, x+100, y+100))
+        for gap, expected in ((0, []), (np.spacing(y), [0]), (10*epsilon, [])):
+            with self.subTest(gap=gap):
+                fixed = [LineString([(x+50, y+gap), (x+50, y+50)])]
+                ids = _precision_interface_ids([boundary, *fixed], fixed, epsilon)
+                self.assertEqual(ids.tolist(), expected)
+        # Reverse direction: the physical vertex approaches the interior of a
+        # retained edge, while neither retained endpoint is near the vertex.
+        physical = LineString([(x+50, y+np.spacing(y)), (x+50, y+50)])
+        self.assertEqual(_precision_interface_ids([physical, boundary], [boundary], epsilon).tolist(), [0])
+        self.assertEqual(_precision_interface_ids([boundary], [], epsilon).tolist(), [])
+
     def test_local_cut_extensions_keep_owned_area_holes_and_physical_boundary(self):
         for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
             with self.subTest(origin=(x, y)):
@@ -643,6 +658,109 @@ class CgalCavityTests(unittest.TestCase):
         coverage = mesh_coverage(v, t)
         self.assertEqual(coverage.union(retained).symmetric_difference(group).area, 0)
         self.assertEqual(coverage.intersection(retained).area, 0)
+
+    def test_production_near_touch_is_rejected_before_backend_and_local_growth_succeeds(self):
+        from collections import Counter
+        from shapely import union_all
+        fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
+        cavity = shape(json.loads(fixture.read_text()))
+        def interfaces(domain):
+            return [LineString([a, b]) for h in domain.interiors
+                    for a, b in zip(h.coords[:-1], h.coords[1:])]
+        fixed = interfaces(cavity)
+        self.assertEqual(sum(len(r.coords)-1 for r in [cavity.exterior, *cavity.interiors]), 288)
+        options = dict(self.options, max_area=6250000, min_area=2500,
+                       max_tolerance=-1, remesh_max_vertices=500000)
+        # Exact production geometry that segfaulted in release CGAL 6.0.1.
+        with patch('mesher.mesher_utls.mpi_remesh._run_backend') as backend:
+            with self.assertRaises(PatchPrecisionError) as failure:
+                remesh_domain(cavity, [], options, self.work, fixed)
+            backend.assert_not_called()
+        self.assertEqual(failure.exception.interface_ids.tolist(), [41, 42])
+        folder, = self.work.glob('cavity-*')
+        self.assertIn('Backend not started', (folder / 'backend.log').read_text())
+        self.assertEqual(json.loads((folder / 'precision.json').read_text())['interface_ids'], [41, 42])
+        self.assertEqual(shape(json.loads((folder / 'domain.json').read_text())), cavity)
+        self.assertFalse((folder / 'mesh.json').exists())
+
+        ring = list(cavity.interiors[0].coords[:-1])
+        ear = Polygon([ring[41], ring[42], ring[43]])
+        grown = cavity.union(ear)
+        # The precision fix must not accept the remaining ordinary angle
+        # failures. These select three more retained tips for local growth.
+        with self.assertRaises(PatchQualityError) as quality:
+            remesh_domain(grown, [], options, self.work, interfaces(grown))
+        self.assertEqual(len(quality.exception.failures), 3)
+        self.assertTrue(all(f['reason'] == 'angle' for f in quality.exception.failures))
+        fixed = interfaces(grown)
+        ids = _quality_interface_faces(fixed, np.arange(len(fixed)), quality.exception.failures, grown)
+        counts = Counter(p for i in ids for p in fixed[i].coords)
+        tips = {p for p, count in counts.items() if count == 2}
+        self.assertEqual(len(tips), 3)
+        ears = []
+        for hole in grown.interiors:
+            ring = list(hole.coords[:-1])
+            ears.extend(Polygon([ring[i-1], p, ring[(i+1) % len(ring)]])
+                        for i, p in enumerate(ring) if p in tips)
+        grown = grown.union(union_all(ears))
+        v, t = remesh_domain(grown, [], options, self.work, interfaces(grown))
+        validate_patch(v, t, grown)
+        self.assertTrue(audit(v, t)['valid'])
+        group = Polygon(cavity.exterior)
+        remaining = group.difference(grown)
+        coverage = mesh_coverage(v, t)
+        self.assertEqual(coverage.union(remaining).symmetric_difference(group).area, 0)
+        self.assertEqual(coverage.intersection(remaining).area, 0)
+
+    def test_precision_retry_keeps_unrelated_original_triangle(self):
+        fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
+        cavity = shape(json.loads(fixture.read_text()))
+        domain = Polygon(cavity.exterior)
+        ring = list(cavity.interiors[0].coords[:-1])
+        b = np.array([(*p, 0) for p in [ring[41], ring[42], ring[43]]])
+        a = np.array([[-1620000, 3390000, 0], [-1619000, 3390000, 0],
+                      [-1619500, 3390866.0254, 0]])
+        tris = np.array([[0, 1, 2]])
+        x0, y0, x1, y1 = domain.bounds
+        seam = (x0+x1)/2
+        options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
+                       remesh_band_width=5000, remesh_max_vertices=500000)
+        v, t, stats = merge_cavity(a, tris, [x0, y0, seam, y1], b, tris, [seam, y0, x1, y1],
+                                  domain, [], options, self.work)
+        self.assertEqual(stats['attempts'], 2)
+        self.assertEqual(stats['band_width'], 5000)
+        self.assertFalse(stats['interface_recovery'])
+        self.assertEqual(stats['original_triangles_retained'], 1)
+        self.assertEqual(set(map(tuple, v[t[0]])), set(map(tuple, a)))
+        validate_patch(v, t, domain)
+        self.assertTrue(audit(v, t)['valid'])
+
+    def test_direct_backend_near_touch_fails_without_signal(self):
+        fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
+        cavity = shape(json.loads(fixture.read_text()))
+        constraints = self.work / 'constraints.json'
+        constraints.write_text(json.dumps({'type': 'FeatureCollection', 'features': [
+            {'type': 'Feature', 'properties': {}, 'geometry': mapping(LineString(r.coords))}
+            for r in [cavity.exterior, *cavity.interiors]]}))
+        interfaces = self.work / 'interfaces.json'
+        interfaces.write_text(json.dumps({'edges': [[a, b] for h in cavity.interiors
+                                                  for a, b in zip(h.coords[:-1], h.coords[1:])]}))
+        output = self.work / 'mesh.json'
+        # Bypass Python preflight to exercise the native release-build safety
+        # net. A future CGAL may resolve the case; success must still be valid.
+        run = subprocess.run([self.options['mesher_path'], '--area', '6250000', '--min-area', '2500',
+            '--domain-file', str(fixture), '--interior-plgs-file', str(constraints),
+            '--patch-interfaces', str(interfaces), '--patch-output', str(output),
+            '--patch-max-vertices', '500000'], text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=30)
+        self.assertIn(run.returncode, (0, 2), run.stdout)
+        self.assertTrue(Path(str(output) + '.stats.json').exists())
+        if run.returncode == 0:
+            data = json.loads(output.read_text())
+            validate_patch(np.asarray(data['vertices']), np.asarray(data['triangles']), cavity)
+        else:
+            self.assertIn('Patch meshing failed', run.stdout)
+            self.assertFalse(output.exists())
 
     def test_quality_retry_cannot_remove_a_physical_notch(self):
         options = self.notch_options()

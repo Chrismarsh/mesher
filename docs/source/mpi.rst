@@ -151,6 +151,22 @@ production backend. Other recoverable failures widen the band. The final
 component recovery remains a last resort. Rows and columns use the same kernel;
 later merges can repair earlier seams at four-tile intersections.
 
+Before invoking CGAL, the merge checks retained interface vertices against all
+constraint segments and constraint vertices against retained interface segments.
+A nonincident point closer than the coordinate-roundoff tolerance can form a
+valid GEOS polygon but an unresolved slit for CGAL's inexact constructions.
+Such a candidate raises ``PatchPrecisionError`` and selects the implicated
+retained owners for the existing local growth path. Exact incidences and
+resolved gaps are left alone. This tolerance only selects whole triangles for
+removal; it never snaps vertices, fills physical holes or relaxes acceptance
+criteria. The physical domain and constraints stay unchanged.
+
+Optimized CMake builds retain CGAL structural assertions (``CGAL_DEBUG``).
+This prevents refinement from continuing with invalid handles after a failed
+invariant: the patch entry point catches the exception and writes diagnostics.
+This native safeguard requires rebuilding ``meshercxx``. Actual backend signal
+termination remains fatal and is not treated as a recoverable geometry failure.
+
 Local growth can keep exposing another edge that refinement splits. If a retry
 is still needed before the final allowed attempt, all retained components with
 a retained/cavity interface are absorbed into that last patch. This removes
@@ -182,6 +198,9 @@ Backend or validation failures retain a ``cavity-*`` directory whose path is
 reported in the exception. It contains ``domain.json``, ``constraints.json``,
 ``invocation.json`` (the command, working directory, tile/merge identity and core bounds),
 ``interfaces.json`` and the complete ``backend.log``.
+For a precision rejection, ``precision.json`` records interface IDs and the
+coordinate tolerance, and ``backend.log`` explicitly says the backend was not
+started. The same reproduction inputs are retained for inspection.
 Subdivision failures preserve a ``repair-*`` directory with parent boundaries,
 invocation and log. ``mesh.json.stats.json`` records backend counters on both
 success and ordinary failure. Successful calls remove their temporary
@@ -254,6 +273,20 @@ controlled local replacement with complete coverage and no overlap. This tests
 the rejection/recovery path; a rejected candidate alone does not mean the MPI
 run failed. Replaying the entire production retry also requires its retained
 triangle connectivity and raster inputs.
+
+The exact 288-vertex ``stage0_r5_c2`` input from ``cavity-55lyskn1`` is committed
+as ``tests/fixtures/retained_near_touch_cavity.geojson``. Without rasters it
+reproduces a release-build segfault in CGAL 6.0.1's edge refinement: a retained
+tip is approximately 1.7e-10 metres from the sloping outer boundary. Preflight
+selects its two incident interfaces before starting C++. A controlled removal
+of that tip exposes three ordinary angle failures; removing those retained
+tips then produces a strictly checked patch with complete coverage and no
+overlap with the remaining retained footprint. A separate complete merge
+test uses the same near-touch triangle and confirms that local recovery keeps
+an unrelated original triangle and does not widen the band. A direct native
+replay bypasses preflight to check that optimized builds report failure without
+a signal. These regressions do not require production rasters, but do not
+replay the complete production MPI run or its original retained connectivity.
 
 The C++ raster sampling and refinement-queue ordering regressions can also be built with
 ``cmake -S . -B build -DBUILD_TESTING=ON`` and ``cmake --build build``; run them
