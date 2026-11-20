@@ -67,7 +67,16 @@ results. A shared-boundary NPZ cannot be reused as a remesh result. Subsequent
 ``reuse_mesh=True`` runs may reuse a completed remesh result to regenerate
 parameters; changing geometry criteria requires fresh tiles.
 
-Each tile is meshed with a halo. At a merge, only whole triangles inside each
+Each tile is meshed with a halo. Only connected portions of that halo which
+intersect the tile core with positive area are meshed. A core with no domain
+area produces an empty tile, even when its halo catches a boundary fragment.
+This avoids unnecessary angle failures where a simplified/buffered boundary
+clips the halo into an acute triangle. The global domain remains unchanged;
+the owning tiles and subsequent merges cover those fragments. Point or line
+contact does not count as ownership, and no small-area cutoff is applied.
+Owned fragments still have to satisfy all shape requirements.
+
+At a merge, only whole triangles inside each
 tile's nonoverlapping core and outside the removal band are retained. The
 cavity is the intended polygonal domain **minus the coverage of those retained
 triangles**. It is not a rectangle filled over existing triangles, and triangles

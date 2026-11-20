@@ -258,12 +258,15 @@ def compute_band_mask(verts, tris, tile_bbox, band_width):
 
 def mesh_tile(args):
     if args.get('merge_method') == 'remesh':
-        from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, box
+        from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, tile_domain
         tile_bbox = args['tile_bbox']
         band = args['band_width']
-        domain = load_domain(args['outer_polygon_shp']).intersection(box(
-            tile_bbox[0] - band, tile_bbox[1] - band, tile_bbox[2] + band, tile_bbox[3] + band))
-        verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
+        domain = tile_domain(load_domain(args['outer_polygon_shp']), tile_bbox, band)
+        if domain.is_empty:
+            print(f'Tile core owns no domain area; skipping halo meshing [{args["tile_prefix"]}]', flush=True)
+            verts, tris = np.empty((0, 3)), np.empty((0, 3), dtype=np.int64)
+        else:
+            verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
         prefix = args['base_dir'] + args['tile_prefix']
         np.savez(prefix + '.npz', verts=verts, tris=tris, band_tri_mask=np.zeros(len(tris), dtype=bool))
         with open(prefix + '.json', 'w') as stream:

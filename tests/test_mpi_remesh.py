@@ -18,7 +18,7 @@ from shapely.geometry import box, Polygon, LineString, mapping, shape
 from mesher.mesher_utls.mpi_remesh import (
     PatchError, PatchQualityError, merge_cavity, mesh_coverage, remesh_domain,
     validate_patch, _stitch, _mesher_arguments, _quality_interface_faces,
-    InterfaceChanged, _grow_cavity)
+    InterfaceChanged, _grow_cavity, tile_domain)
 from mesher.mesh_topology import MeshTopologyError, audit_mesh
 
 gdal.UseExceptions()
@@ -43,6 +43,30 @@ def audit(vertices, triangles):
 
 
 class CavityGeometryTests(unittest.TestCase):
+    def test_halo_point_or_line_contact_does_not_own_core_area(self):
+        for domain in (box(-2, 2, -1, 3), box(-2, 2, 0, 3), box(-2, -2, 0, 0)):
+            with self.subTest(domain=domain.wkt):
+                self.assertTrue(tile_domain(domain, [0, 0, 10, 10], 3).is_empty)
+
+    def test_tile_keeps_owned_halo_and_holes_but_omits_unowned_components(self):
+        owned = box(-1, -1, 4, 4).difference(box(1, 1, 2, 2))
+        outside = box(11, 1, 13, 2)
+        touching = box(-1, 6, 0, 7)
+        domain = owned.union(outside).union(touching)
+        result = tile_domain(domain, [0, 0, 10, 10], 2)
+        self.assertEqual(result.symmetric_difference(owned).area, 0)
+        self.assertEqual(len(result.interiors), 1)
+        # Dropped components remain in the unchanged global domain.
+        self.assertTrue(domain.covers(outside.union(touching)))
+
+    def test_arbitrarily_thin_owned_component_keeps_its_full_halo(self):
+        main = box(1, 1, 3, 3)
+        thin = box(-1, 6, 1e-9, 7)
+        domain = main.union(thin)
+        result = tile_domain(domain, [0, 0, 10, 10], 2)
+        self.assertGreater(thin.intersection(box(0, 0, 10, 10)).area, 0)
+        self.assertEqual(result.symmetric_difference(domain).area, 0)
+
     def test_directed_coverage_preserves_hole_and_disconnected_component(self):
         v, t = grid(0, 5, 0, 5)
         centers = v[t, :2].mean(axis=1)
@@ -256,6 +280,60 @@ class CgalCavityTests(unittest.TestCase):
 
     def mesh(self, domain, constraints=()):
         return remesh_domain(domain, constraints, self.options, self.work)
+
+    def test_buffered_halo_only_triangle_does_not_abort_empty_core_tile(self):
+        from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
+        angle = np.deg2rad(19.2648)
+        height = np.sqrt(2*3338810*np.sin(angle)*np.cos(angle))
+        p = np.array([-5000+height, 10000])
+        u = 6000*np.array([-np.cos(angle), np.sin(angle)])
+        w = 10000*np.array([-np.sin(angle), -np.cos(angle)])
+        raw = Polygon([p, p+u, p+u+w, p+w]).buffer(200, join_style=2)
+        domain = raw.simplify(10, preserve_topology=True).buffer(-200)
+        halo_fragment = domain.intersection(box(-5000, -5000, 25000, 25000))
+        self.assertEqual(len(halo_fragment.exterior.coords)-1, 3)
+        self.assertAlmostEqual(halo_fragment.area, 3338810)
+        self.assertEqual(domain.intersection(box(0, 0, 20000, 20000)).area, 0)
+        options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
+                       remesh_band_width=5000, remesh_max_vertices=500000)
+        with self.assertRaises(PatchQualityError) as failure:
+            remesh_domain(halo_fragment, [], options, self.work)
+        self.assertIn('vertices=3', str(failure.exception))
+        self.assertTrue(any(f['reason'] == 'angle' and abs(f['min_angle_degrees']-19.2648) < 1e-4
+                            for f in failure.exception.failures))
+        domain_file = self.work / 'buffered.geojson'
+        domain_file.write_text(json.dumps(mapping(domain)))
+        args = dict(options, merge_method='remesh', tile_bbox=[0, 0, 20000, 20000],
+                    band_width=5000, outer_polygon_shp=str(domain_file), constraints=[],
+                    base_dir=str(self.work)+'/', tile_prefix='unowned')
+        mesh_tile(args)
+        metadata = json.loads((self.work / 'unowned.json').read_text())
+        self.assertTrue(metadata['empty_tile'])
+        self.assertEqual(metadata['core_bbox'], args['tile_bbox'])
+        with np.load(self.work / 'unowned.npz') as empty:
+            self.assertEqual(empty['verts'].shape, (0, 3))
+            self.assertEqual(empty['tris'].shape, (0, 3))
+            # The neighbour owns the real domain. Omitting redundant halo work
+            # must not omit any of that domain from the eventual merged mesh.
+            owner_args = dict(args, tile_bbox=[-20000, 0, 0, 20000], tile_prefix='owner')
+            mesh_tile(owner_args)
+            with np.load(self.work / 'owner.npz') as owner:
+                v, t, _ = merge_cavity(owner['verts'], owner['tris'], owner_args['tile_bbox'],
+                    empty['verts'], empty['tris'], args['tile_bbox'], domain, [], options, self.work)
+        validate_patch(v, t, domain)
+        self.assertTrue(audit(v, t)['valid'])
+
+    def test_owned_acute_physical_corner_still_fails_tile_quality(self):
+        from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
+        domain_file = self.work / 'acute.geojson'
+        domain_file.write_text(json.dumps(mapping(Polygon([(1, 1), (15, 1), (1, 3)]))))
+        args = dict(self.options, merge_method='remesh', tile_bbox=[0, 0, 20, 20], band_width=2,
+                    outer_polygon_shp=str(domain_file), constraints=[], base_dir=str(self.work)+'/',
+                    tile_prefix='owned', max_area=100, min_area=100, max_tolerance=-1)
+        with self.assertRaises(PatchQualityError):
+            mesh_tile(args)
+        self.assertFalse((self.work / 'owned.npz').exists())
+        self.assertFalse((self.work / 'owned.json').exists())
 
     def test_batched_subdivision_multiple_sides_at_large_coordinates(self):
         from mesher.mesher_utls.mpi_remesh import subdivide_parents

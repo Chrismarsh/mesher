@@ -102,6 +102,25 @@ def load_domain(path):
     return polygon_domain(union_all(pieces))
 
 
+def tile_domain(domain, bounds, halo_width):
+    """Keep halo components only when they contain domain area owned by this tile.
+
+    Halo-only fragments cannot supply retained core triangles. Meshing them can
+    introduce impossible input angles where a buffered boundary meets the halo
+    box. Their actual owning tiles and the unchanged global domain still cover
+    them. Use strictly positive area, never a small-area cutoff: thin owned
+    pieces must not be silently removed. Point/line contact owns no area.
+    """
+    core = domain.intersection(box(*bounds))
+    if core.area == 0:
+        return Polygon()
+    halo = polygon_domain(domain.intersection(box(bounds[0]-halo_width, bounds[1]-halo_width,
+                                                  bounds[2]+halo_width, bounds[3]+halo_width)))
+    parts = [halo] if halo.geom_type == 'Polygon' else list(halo.geoms)
+    owned = [part for part in parts if part.intersection(core).area > 0]
+    return polygon_domain(union_all(owned))
+
+
 def load_constraints(paths):
     lines = []
     for path in paths:
