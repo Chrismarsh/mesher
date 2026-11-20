@@ -101,6 +101,23 @@ class MpiTilingTests(unittest.TestCase):
                 self.assertLessEqual(rows * cols, count)
         self.assertEqual(compute_tile_grid(7, 1, 1), (2, 3))
 
+    def test_explicit_tile_count_is_exact_and_independent_of_ranks(self):
+        for ranks in (1, 8, 96):
+            with self.subTest(ranks=ranks):
+                self.assertEqual(compute_tile_grid(ranks, 616655, 521105, num_tiles=96), (8, 12))
+                self.assertEqual(compute_tile_grid(ranks, 1, 4, num_tiles=16), (8, 2))
+                self.assertEqual(compute_tile_grid(ranks, 1, 1, num_tiles=7), (1, 7))
+                self.assertEqual(compute_tile_grid(ranks, 1, 1, num_tiles=1), (1, 1))
+        for value in (0, -1, True, 1.5):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'mpi_num_tiles'):
+                compute_tile_grid(2, 1, 1, num_tiles=value)
+
+    def test_launcher_mismatch_fails_before_workers_read_inputs(self):
+        from mesher.mesher_utls import MPI_mesh_tiles, MPI_merge_tiles, MPI_regularize_inputs
+        for module in (MPI_mesh_tiles, MPI_merge_tiles, MPI_regularize_inputs):
+            with self.subTest(module=module.__name__), self.assertRaisesRegex(ValueError, 'MPI_nworkers='):
+                module.main('missing.pickle', False, module.MPI.COMM_WORLD.size + 1)
+
     def test_invalid_grid_inputs_fail_before_mpi_launch(self):
         for args in ((0, 1, 1), (-1, 1, 1), (True, 1, 1), (2.5, 1, 1),
                      (4, 0, 1), (4, 1, float('nan')), (4, float('inf'), 1)):

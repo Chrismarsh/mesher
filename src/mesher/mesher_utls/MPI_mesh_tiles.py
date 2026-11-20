@@ -1,10 +1,10 @@
 import os
 import sys
 try:
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 ensure_mesher_on_path()
 import json
 import cloudpickle
@@ -39,7 +39,8 @@ def mesh_tile(args):
                    'empty_tile': len(tris) == 0, 'merge_method': 'remesh'}, stream)
 
 
-def main(pickle_file: str, disconnect: bool):
+def main(pickle_file: str, disconnect: bool, expected_workers=None):
+    check_worker_count(MPI.COMM_WORLD.size, expected_workers)
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
 

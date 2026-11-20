@@ -1174,14 +1174,15 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(joined_v, joined_t)['valid'])
 
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
-    def test_real_four_and_six_rank_pipeline_and_export(self):
+    def test_real_mpi_pipeline_and_export_with_independent_tile_count(self):
         from mesher.mesher_cli import run_mpi_meshing, build_mesh_from_arrays, compute_mpi_final_npz_path
         domain_file = self.work / 'domain.geojson'
         domain_file.write_text(json.dumps({'type': 'Polygon', 'coordinates':
             [[[0, 0], [40, 0], [40, 20], [0, 20], [0, 0]]]}))
-        # Six ranks exercise a rectangular 2x3 grid with an unpaired column.
-        for ranks in (4, 6):
-            with self.subTest(ranks=ranks):
+        # Re-run the same six-tile grid with two ranks processing three tiles each.
+        for ranks, num_tiles in ((4, None), (6, None), (2, 6)):
+            expected_tiles = num_tiles or ranks
+            with self.subTest(ranks=ranks, num_tiles=num_tiles):
                 work = self.work / f'ranks-{ranks}'
                 work.mkdir()
                 shutil.copyfile(self.dem, work / 'case_projected.tif')
@@ -1194,19 +1195,22 @@ class CgalCavityTests(unittest.TestCase):
                             self.options['mesher_path'], str(domain_file), {}, {}, {},
                             8, .25, 1, 'rmse', False, 1, 0, False,
                             f'mpirun --oversubscribe -n {ranks} {sys.executable}', ranks,
-                            remesh_options={'remesh_band_width': 2,
+                            num_tiles=num_tiles, remesh_options={'remesh_band_width': 2,
                                             'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
                 finally:
                     os.chdir(cwd)
-                self.assertIn(f'MPI tiles: {ranks}/{ranks}', progress_log.getvalue())
+                self.assertIn(f'MPI tiles: {expected_tiles}/{expected_tiles}', progress_log.getvalue())
                 completed = [line for line in progress_log.getvalue().splitlines()
                              if line.startswith('MPI merge ') and line.endswith(' | complete')]
-                self.assertEqual(sum(int(line.split(': ')[1].split('/')[0]) for line in completed), ranks-1)
+                self.assertEqual(sum(int(line.split(': ')[1].split('/')[0]) for line in completed), expected_tiles-1)
                 self.assertNotIn('\r', progress_log.getvalue())
                 self.assertFalse(list(work.glob('.mesher-progress-*')))
                 self.assertEqual(compute_mpi_final_npz_path(str(work), 'case', 95), final)
                 layout = json.loads((work / 'case_mpi_layout.json').read_text())
-                self.assertEqual(layout['rows'] * layout['cols'], ranks)
+                self.assertEqual(layout['mpi_nworkers'], ranks)
+                self.assertEqual(layout['num_tiles'], expected_tiles)
+                self.assertEqual(layout['rows'] * layout['cols'], expected_tiles)
+                self.assertEqual(len(list(work.glob('case_mpi_tile_*.npz'))), expected_tiles)
                 with np.load(final) as result:
                     v, t = result['verts'], result['tris']
                 validate_patch(v, t, box(0, 0, 40, 20))

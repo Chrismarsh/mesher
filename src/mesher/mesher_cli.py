@@ -38,7 +38,7 @@ import glob
 
 
 from . import mesher_utls
-from .mesh_store import (batches, disk_array, copy_array, open_mesh_arrays,
+from .mesh_store import (BATCH_SIZE, batches, disk_array, copy_array, open_mesh_arrays,
                          check_boundary_geometry, dump_json, write_vtu)
 from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
                             boundary_subdivisions)
@@ -79,6 +79,11 @@ def main():
     ########################################################
 
     mpi_remesh_options = mpi_remesh_options_from_config(X) if mpi_mesh else None
+    num_tiles = getattr(X, 'mpi_num_tiles', None) if mpi_mesh else None
+    if num_tiles is not None:
+        _positive_integer(num_tiles, 'mpi_num_tiles')
+    parameter_batch_size = _positive_integer(getattr(X, 'mpi_parameter_batch_size', BATCH_SIZE),
+                                             'mpi_parameter_batch_size')
     gdal_prefix = find_gdal_prefix()
 
     base_name = os.path.basename(dem_filename)
@@ -538,7 +543,8 @@ def main():
                                              initial_conditions, max_area, min_area, max_tolerance,
                                              errormetric, use_weights, topo_weight,
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                                             mesher_debug=mesher_debug, remesh_options=mpi_remesh_options)
+                                             mesher_debug=mesher_debug, remesh_options=mpi_remesh_options,
+                                             num_tiles=num_tiles)
         else:
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                       (mesher_path,
@@ -629,6 +635,7 @@ def main():
             'RasterYSize': src_ds.RasterYSize,
             'srs_proj4': srs_out.ExportToProj4(),
             'use_exactextract': use_exactextract,
+            'batch_size': parameter_batch_size,
         }
         params = run_parameterization(mesh, parameter_args, base_dir,
                                       MPI_exec_str, MPI_nworkers, configfile,
@@ -1012,6 +1019,7 @@ def read_config(configfile):
     elif not hasattr(X, 'MPI_nworkers') and MPI_exec_str:
         raise RuntimeError('If MPI_exec_str is provided, then MPI_nworkers must also be provided')
 
+    _positive_integer(MPI_nworkers, 'MPI_nworkers')
     mpi_vendor = MPI.get_vendor()[0]
     print(f'Detected MPI = {mpi_vendor}')
 
@@ -1056,7 +1064,7 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
     MPI_regularize_path = os.path.join(os.path.dirname(mesher_utls.__file__),
                                                       'MPI_regularize_inputs.py')
     if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_regularize_path} pickled_param_args.pickle False"""
+        exec_str = f"""{MPI_exec_str} {MPI_regularize_path} pickled_param_args.pickle False {MPI_nworkers}"""
         print(exec_str)
         subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
     else:
@@ -1148,18 +1156,32 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def compute_tile_grid(nranks, width, height):
+def _positive_integer(value, name):
+    if type(value) is not int or value < 1:
+        raise ValueError(f'{name} must be a positive integer')
+    return value
+
+
+def compute_tile_grid(nranks, width, height, *, num_tiles=None):
     """Balance worker utilization with the physical perimeter of each tile.
 
     A square tile has shape cost 1. Multiply that cost by ranks/tiles so a
     slightly rectangular grid can use more workers without choosing long thin
     strips just to fill a prime-sized allocation. This is a geometry heuristic,
-    not an estimate of raster-dependent refinement work.
+    not an estimate of raster-dependent refinement work. An explicit num_tiles
+    chooses the best-shaped exact grid independently of the worker count.
     """
-    if not isinstance(nranks, int) or isinstance(nranks, bool) or nranks < 1:
-        raise ValueError('MPI_nworkers must be a positive integer')
+    _positive_integer(nranks, 'MPI_nworkers')
     if not all(np.isfinite(v) and v > 0 for v in (width, height)):
         raise ValueError('MPI domain width and height must be positive and finite')
+    if num_tiles is not None:
+        _positive_integer(num_tiles, 'mpi_num_tiles')
+        # An explicit count must be exact. Of its factor pairs, find the
+        # grid with the most nearly square physical tiles.
+        candidates = ((short, num_tiles // short) if width >= height else (num_tiles // short, short)
+                      for short in range(1, math.isqrt(num_tiles) + 1) if num_tiles % short == 0)
+        return min(candidates, key=lambda grid: abs(math.log(width / grid[1]) - math.log(height / grid[0])))
+
     best = None
     for rows in range(1, nranks + 1):
         for cols in range(1, nranks // rows + 1):
@@ -1267,14 +1289,14 @@ def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
         with open(arguments, 'wb') as stream:
             cloudpickle.dump(progress.tasks, stream)
         if MPI_exec_str is not None:
-            exec_str = f'{MPI_exec_str} {shlex.quote(worker_path)} {shlex.quote(arguments)} False'
+            exec_str = f'{MPI_exec_str} {shlex.quote(worker_path)} {shlex.quote(arguments)} False {MPI_nworkers}'
             if debug:
                 print(exec_str, flush=True)
             subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
         else:
             comm = MPI.COMM_SELF.Spawn(sys.executable,
                                        args=[worker_path, arguments, 'True'],
-                                       maxprocs=MPI_nworkers)
+                                       maxprocs=min(MPI_nworkers, len(tasks)))
             comm.Disconnect()
 
 
@@ -1328,7 +1350,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
                     max_tolerance, errormetric, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                    mesher_debug=False, remesh_options=None):
+                    mesher_debug=False, remesh_options=None, *, num_tiles=None):
     remesh_options = dict(remesh_options or {})
     if remesh_options.setdefault('merge_method', 'remesh') != 'remesh':
         raise ValueError('Only mpi_merge_method="remesh" is supported; shared-edge meshing has been retired')
@@ -1339,7 +1361,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         value = remesh_options.get(key, default)
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
-    rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin)
+    rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin, num_tiles=num_tiles)
     layout_rows, layout_cols = rows, cols
 
     tile_width = (xmax - xmin) / cols
@@ -1354,16 +1376,16 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
     min_edge_threshold = 1.25 * band_width
     if min_edge <= min_edge_threshold:
         msg = (
-            f'MPI_nworkers={MPI_nworkers} yields tiles {rows}x{cols} '
+            f'The {rows}x{cols} MPI tile grid has tiles '
             f'with min edge {min_edge:.3f} <= threshold {min_edge_threshold:.3f}. '
             'The remesh band is too wide relative to the tiles. '
-            'Reduce MPI_nworkers or choose a more square grid.'
+            'Use fewer tiles or reduce mpi_remesh_band_width.'
         )
         raise RuntimeError(msg)
 
     tile_count = rows * cols
     print(f'MPI tile grid: {rows} rows x {cols} columns; '
-          f'{tile_count}/{MPI_nworkers} ranks assigned tiles; '
+          f'{tile_count} tiles, up to {min(tile_count, MPI_nworkers)} active tile workers; '
           f'tile dimensions={tile_width:.6g} x {tile_height:.6g}', flush=True)
 
 
@@ -1374,18 +1396,17 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
     # neighbouring core boxes and making ownership an exact geometric contract.
     x_edges = np.linspace(xmin, xmax, cols + 1)
     y_edges = np.linspace(ymin, ymax, rows + 1)
-    for rank in range(tile_count):
-        row = rank // cols
-        col = rank % cols
+    for tile_id in range(tile_count):
+        row, col = divmod(tile_id, cols)
 
         tile_xmin, tile_xmax = x_edges[col:col + 2]
         tile_ymin, tile_ymax = y_edges[rows - row - 1:rows - row + 1]
 
         tile_bbox = [tile_xmin, tile_ymin, tile_xmax, tile_ymax]
-        tile_prefix = f"{base_name}_mpi_tile_{rank}"
+        tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
 
         tile_args.append({
-            'tile_id': rank,
+            'tile_id': tile_id,
             'tile_bbox': tile_bbox,
             'band_width': band_width,
             'base_dir': base_dir,
@@ -1549,7 +1570,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
     temporary = layout_path + '.tmp'
     with open(temporary, 'w') as stream:
         json.dump({'version': 1, 'rows': layout_rows, 'cols': layout_cols,
-                   'mpi_nworkers': MPI_nworkers, 'bounds': [xmin, ymin, xmax, ymax],
+                   'mpi_nworkers': MPI_nworkers, 'num_tiles': tile_count, 'bounds': [xmin, ymin, xmax, ymax],
                    'final_npz': os.path.basename(final_path)}, stream)
     os.replace(temporary, layout_path)
     return final_path

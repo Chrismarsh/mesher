@@ -4,10 +4,10 @@ import os
 import tempfile
 import sys
 try:
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 ensure_mesher_on_path()
 import cloudpickle
 from mpi4py import MPI
@@ -126,7 +126,8 @@ def regularize_inputs(args):
 
 
 def main(pickle_file: str,
-         disconnect: bool):
+         disconnect: bool, expected_workers=None):
+    check_worker_count(MPI.COMM_WORLD.size, expected_workers)
     # if called from SLURM, etc, these cli are coming in as strings
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)

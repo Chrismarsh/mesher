@@ -578,7 +578,42 @@ By default Mesher will use MPI to launch the Mesher backend tasks.
     :type: int
     :default: Number of cores on machine (e.g., 4, 8, 10, etc)
 
-    Set this to limit the number of processors used.
+    Number of MPI workers. Each worker processes one tile or one merge at a time.
+    For an external launcher, set its rank count to the same value.
+
+.. confval:: mpi_num_tiles
+
+    :type: int or None
+    :default: None
+
+    Exact number of spatial tiles for a fresh MPI mesh. Mesher factors this count
+    into rows and columns to make tiles as close to square as the projected
+    domain permits. A prime count gives a single row or column. With the
+    default, the existing grid selection uses the available worker count.
+
+    For example, this meshes 96 tiles with at most eight active tile workers.
+    Each worker finishes one tile before starting its next. Completed tiles are
+    stored on disk and pairwise merge jobs use the same worker limit.
+
+    .. code-block:: python
+
+        mpi_mesh = True
+        MPI_nworkers = 8
+        mpi_num_tiles = 96
+
+    Increase the tile count to reduce the initial area per meshing task.
+    More tiles add seams, merge jobs and intermediate files. Peak job memory
+    also includes DEM preprocessing, the active seam geometry and raster caches.
+
+.. confval:: mpi_parameter_batch_size
+
+    :type: int
+    :default: 32768
+
+    Maximum number of faces a parameter worker processes per batch. Set this
+    independently of the spatial tile count, including when using
+    ``reuse_mesh=True``. Smaller batches can reduce per-worker memory during
+    raster aggregation at the cost of more batch setup.
 
 If Mesher is used on a cluster to process a large domain, the use of a job scheduler, such as SLURM, may be optimal.
 
@@ -754,7 +789,7 @@ single-worker measurements are not estimates of whole-domain MPI speedup.
 MPI pitfalls and guards
 -----------------------
 
-MPI tiling balances worker utilization with physical tile shape using the
+With ``mpi_num_tiles=None``, tiling balances worker utilization with physical tile shape using the
 projected domain width and height. It does not round the rank count down to a
 perfect square. For a square domain, 95 ranks produce a 9-by-10 grid and 96
 ranks produce an 8-by-12 grid. Some allocations can still leave ranks unused
@@ -762,8 +797,8 @@ when filling them would create long thin tiles. This is a geometric heuristic;
 it does not predict terrain-dependent refinement cost.
 
 Before launching MPI work, the smallest tile edge must exceed 1.25 times the
-remesh band width. Reduce ``MPI_nworkers`` or ``mpi_remesh_band_width`` if an
-explicit band is too wide. Small positive-area domain fragments are retained;
+remesh band width. If an explicit band is too wide, reduce the tile count
+or ``mpi_remesh_band_width``. Small positive-area domain fragments are retained;
 they are not discarded to improve utilization.
 
 A completed run writes ``<base_name>_mpi_layout.json`` with its chosen grid and
@@ -792,7 +827,8 @@ NPZ meshes (including compressed archives) are extracted incrementally, so
 ``reuse_mesh=True`` does not require loading their arrays into the Python heap.
 Serial Triangle files are read row by row into the same representation.
 
-Parameter workers process at most 32,768 faces per batch and write disjoint
+Parameter workers process up to ``mpi_parameter_batch_size`` faces per batch
+(32,768 by default) and write disjoint
 ranges of shared parameter columns. The parent validates rank completion and
 IDs without gathering triangle dictionaries. JSON retains the CHM schema;
 VTU uses one piece with streamed binary arrays and global point IDs. Shapefile
