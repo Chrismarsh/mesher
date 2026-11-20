@@ -21,7 +21,6 @@ import re
 import json
 import os
 import numpy as np
-from operator import itemgetter
 import math
 
 import sys
@@ -29,14 +28,12 @@ import shutil
 import importlib
 import vtk
 import warnings
-import uuid
 import cloudpickle
 
 import time
 from mpi4py import MPI
 import glob
 
-import inspect
 from natsort import natsorted
 
 
@@ -647,14 +644,8 @@ def main():
 
     gt = src_ds.GetGeoTransform()
 
-    tris = range(mesh['mesh']['nelem'])
-
     ret_tri = []
     ret_tri_ic = []
-
-    csize = len(tris) // nworkers
-    if csize < 1:
-        csize = 1
 
     print('Computing parameters and initial conditions')
 
@@ -1047,10 +1038,6 @@ def read_config(configfile):
     if hasattr(X, 'mpi_mesh'):
         mpi_mesh = X.mpi_mesh
 
-    mpi_merge_snap_tol = None
-    if hasattr(X, 'mpi_merge_snap_tol'):
-        mpi_merge_snap_tol = X.mpi_merge_snap_tol
-
     mpi_global_lloyd = 0
     if hasattr(X, 'mpi_global_lloyd'):
         mpi_global_lloyd = X.mpi_global_lloyd
@@ -1081,9 +1068,6 @@ def read_config(configfile):
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
         mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file, \
         mpi_shared_edge_spacing
-
-
-
 
 
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
@@ -1146,62 +1130,6 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
     return total_weights, use_weights
 
 
-
-
-
-# Print iterations progress
-# http://stackoverflow.com/a/34325723/410074
-def printProgress(iteration, total, prefix='', suffix='', decimals=2, barLength=100):
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        iterations  - Required  : current iteration (Int)
-        total       - Required  : total iterations (Int)
-        prefix      - Optional  : prefix string (Str)
-        suffix      - Optional  : suffix string (Str)
-    """
-    filledLength = int(round(barLength * iteration / float(total)))
-    percents = round(100.00 * (iteration / float(total)), decimals)
-    bar = '#' * filledLength + '-' * (barLength - filledLength)
-    sys.stdout.write('%s [%s] %s%s %s\r' % (prefix, bar, percents, '%', suffix)),
-    sys.stdout.flush()
-    if iteration == total:
-        print("\n")
-
-
-# Zonal stats from here https://gist.github.com/perrygeo/5667173
-def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
-    originX = gt[0]
-    originY = gt[3]
-    pixel_width = gt[1]
-    pixel_height = gt[5]
-    x1 = int((bbox[0] - originX) / pixel_width)
-    x2 = int((bbox[1] - originX) / pixel_width) + 1
-
-    y1 = int((bbox[3] - originY) / pixel_height)
-    y2 = int((bbox[2] - originY) / pixel_height) + 1
-
-    xsize = x2 - x1
-    ysize = y2 - y1
-
-    # only apply this correction if we are touching the underlying raster.
-    if x1 < rasterXsize and y1 < rasterYsize:
-        # deal with small out of bounds
-        if x1 < 0:
-            x1 = 0
-
-        if y1 < 0:
-            y1 = 0
-
-        if x1 + xsize > rasterXsize:
-            xsize = rasterXsize - x1
-
-        if y1 + ysize > rasterYsize:
-            ysize = rasterYsize - y1
-
-    return x1, y1, xsize, ysize
-
-
 def extract_point(raster, mx, my):
     # Convert from map to pixel coordinates.
     # Only works for geotransforms with no rotation.
@@ -1259,22 +1187,6 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def compute_tile_grid(nranks):
-    best_rows = 1
-    best_cols = nranks
-    best_diff = abs(best_cols - best_rows)
-    for rows in range(1, nranks + 1):
-        if nranks % rows != 0:
-            continue
-        cols = nranks // rows
-        diff = abs(cols - rows)
-        if diff < best_diff:
-            best_rows = rows
-            best_cols = cols
-            best_diff = diff
-    return best_rows, best_cols
-
-
 def compute_tile_grid_allow_unused(nranks):
     # Prefer near-square grids and allow unused ranks to avoid skinny tiles.
     best_rows = 1
@@ -1293,25 +1205,6 @@ def compute_tile_grid_allow_unused(nranks):
                 best_diff = diff
                 best_tiles = tiles
     return best_rows, best_cols
-
-
-def expand_bbox(bbox, buffer_dist):
-    return [
-        bbox[0] - buffer_dist,
-        bbox[1] - buffer_dist,
-        bbox[2] + buffer_dist,
-        bbox[3] + buffer_dist
-    ]
-
-
-def bbox_intersection(a, b):
-    xmin = max(a[0], b[0])
-    ymin = max(a[1], b[1])
-    xmax = min(a[2], b[2])
-    ymax = min(a[3], b[3])
-    if xmin >= xmax or ymin >= ymax:
-        return None
-    return [xmin, ymin, xmax, ymax]
 
 
 def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
@@ -1603,7 +1496,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             raise ValueError('mpi_remesh_band_width must be positive and finite')
         remesh_options['remesh_band_width'] = float(band_width)
     min_edge_threshold = 1.25 * band_width
-    # min_edge_threshold=1
     if min_edge <= min_edge_threshold:
         msg = (
             f'MPI_nworkers={MPI_nworkers} yields tiles {rows}x{cols} '
@@ -1747,7 +1639,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': not remesh,
                             **remesh_options
                         })
                         new_row.append({
@@ -1804,7 +1695,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'outer_polygon_shp': outer_polygon_shp,
                             'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': not remesh,
                             **remesh_options
                         })
                         merged_row.append({
@@ -1887,78 +1777,6 @@ def compute_mpi_final_npz_path(base_dir, base_name, mpi_nworkers):
             stage += 1
 
     return tile_grid[0][0]['npz']
-
-
-def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
-    raster = rds.GetRasterBand(1)
-    src_array = raster.ReadAsArray(*src_offset)
-
-    # Rasterize it
-    driver = gdal.GetDriverByName('MEM')
-    mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
-    mask.SetGeoTransform(new_gt)
-    mask.SetProjection(srs.ExportToWkt())
-    err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
-    if err != 0:
-        raise Exception("Error rasterizing layer: %s" % err)
-
-    # holds a mask of where the triangle is on the raster
-    mask_arr = mask.ReadAsArray()
-
-    # Mask the source data array with our current feature
-    src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
-
-    output = -9999.0
-
-    if callable(aggMethod):
-        output = float(aggMethod(src_array))
-        if np.isnan(output):
-            output = raster.GetNoDataValue()
-    else:
-        if aggMethod == 'mode':
-            vals, counts = np.unique( src_array[~np.isnan(src_array)], return_counts=True)
-            output = float(vals[np.argmax(counts)])
-
-        elif aggMethod == 'mean':
-            output = float(np.nanmean(src_array))
-        elif aggMethod == 'max':
-            output = float(np.nanmax(src_array))
-        elif aggMethod == 'min':
-            output = float(np.nanmin(src_array))
-        else:
-            print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
-            exit(-1)
-
-    # feature.SetField(key, output)
-
-    # testing code
-    # if output < 0:
-    #     print "Found < 0"
-    #
-    #     # testing code
-    #     tri_id = str(feature.GetField('triangle'))
-    #     print "Tri ID = " + tri_id
-    #
-    #     print masked
-    #
-    #     mem_drv = ogr.GetDriverByName('ESRI Shapefile')
-    #     mem_ds = mem_drv.CreateDataSource(tri_id+'.shp')
-    #     mem_layer = mem_ds.CreateLayer('poly', srs, ogr.wkbPolygon)
-    #     mem_layer.CreateFeature(feature.Clone())
-    #
-    #     driver = gdal.GetDriverByName('GTiff')
-    #     rvds = driver.Create(tri_id+'.tiff', src_offset[2], src_offset[3], 1, gdal.GDT_Float32)
-    #     rvds.SetGeoTransform(new_gt)
-    #     rvds.SetProjection(wkt)
-    #     outband = rvds.GetRasterBand(1)
-    #     outband.WriteArray(src_array)
-    #     # gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
-    #
-    #     rvds = None
-    #     mem_layer = None
-    #     exit(1)
-
-    return output
 
 
 # To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the

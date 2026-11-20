@@ -91,7 +91,7 @@ def merge_tiles(args):
         with tempfile.NamedTemporaryFile(dir=os.path.dirname(prefix) or '.', suffix='.npz', delete=False) as stream:
             temporary = stream.name
         try:
-            np.savez(temporary, verts=verts, tris=tris, band_tri_mask=np.zeros(len(tris), dtype=bool))
+            np.savez(temporary, verts=verts, tris=tris)
             os.replace(temporary, prefix + '.npz')
         finally:
             if os.path.exists(temporary): os.unlink(temporary)
@@ -110,8 +110,7 @@ def merge_tiles(args):
         if meta_a.get('empty_tile') and meta_b.get('empty_tile'):
             verts = np.zeros((0, 3), dtype=float)
             tris = np.zeros((0, 3), dtype=int)
-            band_mask = np.zeros((0,), dtype=bool)
-            np.savez(out_npz, verts=verts, tris=tris, band_tri_mask=band_mask)
+            np.savez(out_npz, verts=verts, tris=tris)
             with open(out_meta, 'w') as f:
                 json.dump({
                     'tile_bbox': meta_a.get('tile_bbox', meta_b.get('tile_bbox')),
@@ -160,11 +159,10 @@ def merge_tiles(args):
 
     verts_out = np.asarray(verts_out, dtype=float)
     tris_out = np.asarray(tris_out, dtype=int)
-    band_mask = np.zeros(len(tris_out), dtype=bool)
 
     out_prefix = args['out_prefix']
     npz_path = out_prefix + '.npz'
-    np.savez(npz_path, verts=verts_out, tris=tris_out, band_tri_mask=band_mask)
+    np.savez(npz_path, verts=verts_out, tris=tris_out)
 
     meta_path = out_prefix + '.json'
     bbox_a = meta_a.get('tile_bbox', meta_a.get('core_bbox'))

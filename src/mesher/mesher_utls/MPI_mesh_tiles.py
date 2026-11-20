@@ -233,29 +233,6 @@ def build_mesher_exec_str(args, poly_file, interior_plgs):
     return execstr
 
 
-def compute_band_mask(verts, tris, tile_bbox, band_width):
-    interior_bbox = [
-        tile_bbox[0] + band_width,
-        tile_bbox[1] + band_width,
-        tile_bbox[2] - band_width,
-        tile_bbox[3] - band_width
-    ]
-
-    if interior_bbox[0] >= interior_bbox[2] or interior_bbox[1] >= interior_bbox[3]:
-        return np.ones(len(tris), dtype=bool)
-
-    tri_pts = verts[tris][:, :, :2]
-    centroids = np.mean(tri_pts, axis=1)
-
-    inside = (
-        (centroids[:, 0] >= interior_bbox[0]) &
-        (centroids[:, 0] <= interior_bbox[2]) &
-        (centroids[:, 1] >= interior_bbox[1]) &
-        (centroids[:, 1] <= interior_bbox[3])
-    )
-    return ~inside
-
-
 def mesh_tile(args):
     if args.get('merge_method') == 'remesh':
         from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, tile_domain
@@ -268,7 +245,7 @@ def mesh_tile(args):
         else:
             verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
         prefix = args['base_dir'] + args['tile_prefix']
-        np.savez(prefix + '.npz', verts=verts, tris=tris, band_tri_mask=np.zeros(len(tris), dtype=bool))
+        np.savez(prefix + '.npz', verts=verts, tris=tris)
         with open(prefix + '.json', 'w') as stream:
             json.dump({'tile_bbox': tile_bbox, 'core_bbox': tile_bbox, 'band_width': band,
                        'empty_tile': len(tris) == 0, 'merge_method': 'remesh'}, stream)
@@ -293,8 +270,6 @@ def mesh_tile(args):
     if dem_ds is None:
         raise RuntimeError('Unable to open DEM for tile meshing')
 
-    srs_wkt = dem_ds.GetProjection()
-
     bbox_poly = bbox_to_polygon_geom(band_bbox)
     outer_poly = load_polygon_geom(args['outer_polygon_shp'])
     tile_poly = normalize_polygon(outer_poly.Intersection(bbox_poly))
@@ -303,9 +278,8 @@ def mesh_tile(args):
     if tile_poly.IsEmpty():
         verts = np.zeros((0, 3), dtype=float)
         tris = np.zeros((0, 3), dtype=int)
-        band_mask = np.zeros((0,), dtype=bool)
         npz_path = base_dir + tile_prefix + '.npz'
-        np.savez(npz_path, verts=verts, tris=tris, band_tri_mask=band_mask)
+        np.savez(npz_path, verts=verts, tris=tris)
         meta_path = base_dir + tile_prefix + '.json'
         with open(meta_path, 'w') as f:
             json.dump({
@@ -390,10 +364,9 @@ def mesh_tile(args):
 
     verts = np.asarray(verts, dtype=float)
     tris = np.asarray(tris, dtype=int)
-    band_mask = compute_band_mask(verts, tris, tile_bbox, band_width)
 
     npz_path = base_dir + tile_prefix + '.npz'
-    np.savez(npz_path, verts=verts, tris=tris, band_tri_mask=band_mask)
+    np.savez(npz_path, verts=verts, tris=tris)
 
     meta_path = base_dir + tile_prefix + '.json'
     with open(meta_path, 'w') as f:
