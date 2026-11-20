@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 import cloudpickle
 import numpy as np
@@ -263,6 +264,37 @@ class ParameterizeTests(unittest.TestCase):
         ds = self.raster([[1, 1], [4, 6]], name='values.tif'); ds = None
         with self.assertRaisesRegex(ValueError, 'Unknown data aggregation method'):
             self.run_worker({'value': {'filename': [str(self.work/'values.tif')], 'method': ['typo']}})
+
+    def test_shared_raster_statistics_are_batched_and_reused_only_within_run(self):
+        for name, values in (('shared.tif', [[1, 1], [4, 6]]), ('other.tif', [[10, 10], [10, 10]])):
+            ds = self.raster(values, name=name); ds = None
+        shared, other = str(self.work/'shared.tif'), str(self.work/'other.tif')
+        parameters = {
+            'mean': {'filename': [shared], 'method': ['mean']},
+            'other': {'filename': [other], 'method': ['mean']},
+            'combined': {'filename': [shared, other, shared], 'method': ['average', 'max', 'mode'],
+                         'classifier': cloudpickle.dumps(lambda a, b, c: 100*a+10*b+c)},
+            'repeat': {'filename': [shared, shared], 'method': ['mean', 'average'],
+                       'classifier': cloudpickle.dumps(lambda a, b: a+b)}}
+        original = parameterize.exact_extract
+        calls = []
+
+        def extract(source, features, stats):
+            calls.append((source.ds.GetDescription(), stats))
+            return original(source, features, stats)
+
+        with patch.object(parameterize, 'exact_extract', extract):
+            result, _ = self.run_worker(parameters)
+            self.assertEqual(result[0]['mean'], 3)
+            self.assertEqual(result[0]['combined'], 401)
+            self.assertEqual(result[0]['repeat'], 6)
+            self.assertEqual(calls, [(shared, ['mean', 'majority']), (other, ['mean', 'max'])])
+            ds = self.raster([[2, 2], [2, 2]], name='shared.tif'); ds = None
+            result, _ = self.run_worker(parameters)
+            self.assertEqual(result[0]['mean'], 2)
+            self.assertEqual(result[0]['combined'], 302)
+            self.assertEqual(result[0]['repeat'], 4)
+            self.assertEqual(len(calls), 4)
 
     def test_configuration_is_loaded_once_for_all_triangles(self):
         self.config.write_text('from pathlib import Path\np = Path(__file__).with_suffix(".count")\n'

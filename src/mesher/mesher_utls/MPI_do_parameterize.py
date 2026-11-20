@@ -13,6 +13,7 @@ from osgeo import gdal, ogr, osr
 import importlib.util
 import importlib.machinery
 from functools import lru_cache
+from collections import Counter
 from mesher.mesher_utls.mpi_progress import debug_log
 from exactextract import exact_extract
 from exactextract.feature import JSONFeatureSource
@@ -377,29 +378,50 @@ def main(pickle_file: str,
             else:
                 exact_params[key] = data
 
+        # Batch all requested statistics for each raster. Keep only numeric
+        # columns, scoped to this worker invocation, until their last consumer.
+        planned = {}
+        requested = {}
+        remaining = Counter()
         for key, data in exact_params.items():
-            if len(data) == 0:
-                continue
-            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}: exactextract aggregation; '
-                      'classifier, if supplied, runs once per triangle after aggregation')
             files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
             methods = data['method'] if isinstance(data['method'], list) else [data['method']]
             if not files or len(files) != len(methods):
                 raise ValueError(f'{key}: Specify one aggregation method per input raster')
+            inputs = [(os.fspath(path), stats_for_method(method)) for path, method in zip(files, methods)]
+            planned[key] = inputs
+            remaining.update(inputs)
+            for path, stat in inputs:
+                requested.setdefault(path, {})[stat] = None
+
+        cached = {}
+        for key, inputs in planned.items():
+            data = exact_params[key]
+            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}: exactextract aggregation; '
+                      'classifier, if supplied, runs once per triangle after aggregation')
             classifier = cloudpickle.loads(data['classifier']) if 'classifier' in data else None
             values = []
-            for fpath, method in zip(files, methods):
-                stats = stats_for_method(method)
-                debug_log(log_options, str(fpath))
-                source = _ValidRasterSource(fpath)
-                result = exact_extract(source, features, stats)
-                # majority/min/max may return None for empty intersections.
-                values.append([float('nan') if row['properties'].get(stats) is None
-                               else float(row['properties'][stats]) for row in result])
-                del source
+            for fpath, stat in inputs:
+                if (fpath, stat) not in cached:
+                    debug_log(log_options, f'{fpath}: {", ".join(requested[fpath])}')
+                    source = _ValidRasterSource(fpath)
+                    result = exact_extract(source, features, list(requested[fpath]))
+                    for name in requested[fpath]:
+                        # majority/min/max may return None for empty intersections.
+                        cached[fpath, name] = np.fromiter(
+                            (float('nan') if row['properties'].get(name) is None
+                             else row['properties'][name] for row in result),
+                            dtype=float, count=mesh['mesh']['nelem'])
+                    del result, source
+                values.append(cached[fpath, stat])
             for tri_idx in range(mesh['mesh']['nelem']):
                 ret_tri[tri_idx][key] = _parameter_value(
-                    key, [raster_values[tri_idx] for raster_values in values], classifier)
+                    key, [float(raster_values[tri_idx]) for raster_values in values], classifier)
+            del values
+            for pair in inputs:
+                remaining[pair] -= 1
+                if not remaining[pair]:
+                    del cached[pair]
 
         # Custom reducers still receive the legacy unweighted pixel array.
         for key, data in slow_params.items():

@@ -680,6 +680,10 @@ as a compatibility no-op. Serial ``lloyd_itr`` remains available.
     including mode tie handling. Every sampler uses each parameter raster's
     own grid and NoData metadata.
 
+    Each rank extracts all requested built-in statistics for a given raster in
+    one pass and reuses those aggregates across parameters. Numeric results are
+    released after their last consumer; nothing is cached across runs.
+
     Earlier versions always used the legacy sampler for classifier parameters.
     With the default setting, those parameters now use coverage weighting;
     values can change near class boundaries and for small triangles. Existing
