@@ -644,13 +644,23 @@ as a compatibility no-op. Serial ``lloyd_itr`` remains available.
 MPI pitfalls and guards
 -----------------------
 
-MPI tiling can produce skinny tiles that cause instability. Mesher now applies
-preflight checks that will fail fast before launching MPI work:
+MPI tiling balances worker utilization with physical tile shape using the
+projected domain width and height. It does not round the rank count down to a
+perfect square. For a square domain, 95 ranks produce a 9-by-10 grid and 96
+ranks produce an 8-by-12 grid. Some allocations can still leave ranks unused
+when filling them would create long thin tiles. This is a geometric heuristic;
+it does not predict terrain-dependent refinement cost.
 
-- Tile size guard: ensures the smallest tile edge is not too small relative to `min_area`.
+Before launching MPI work, the smallest tile edge must exceed 1.25 times the
+remesh band width. Reduce ``MPI_nworkers`` or ``mpi_remesh_band_width`` if an
+explicit band is too wide. Small positive-area domain fragments are retained;
+they are not discarded to improve utilization.
 
-If you hit these guards, reduce `MPI_nworkers` or choose a more square grid (Mesher may leave some ranks idle
-to preserve square tiles).
+A completed run writes ``<base_name>_mpi_layout.json`` with its chosen grid and
+final mesh filename. Reuse reads that manifest, so the number of workers can
+change when regenerating parameters. Older completed runs without a manifest
+still use the original square-grid naming rule and require their original
+``MPI_nworkers`` value.
 
 
 

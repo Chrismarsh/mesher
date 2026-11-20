@@ -1002,27 +1002,35 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(joined_v, joined_t)['valid'])
 
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
-    def test_real_four_rank_pipeline_and_export(self):
-        from mesher.mesher_cli import run_mpi_meshing, build_mesh_from_arrays
+    def test_real_four_and_six_rank_pipeline_and_export(self):
+        from mesher.mesher_cli import run_mpi_meshing, build_mesh_from_arrays, compute_mpi_final_npz_path
         domain_file = self.work / 'domain.geojson'
         domain_file.write_text(json.dumps({'type': 'Polygon', 'coordinates':
             [[[0, 0], [40, 0], [40, 20], [0, 20], [0, 0]]]}))
-        shutil.copyfile(self.dem, self.work / 'case_projected.tif')
-        cwd = os.getcwd()
-        try:
-            os.chdir(self.work)
-            final = run_mpi_meshing(str(self.work) + '/', 'case', 0, 0, 40, 20,
-                self.options['mesher_path'], str(domain_file), {}, {}, {},
-                8, .25, 1, 'rmse', False, 1, 0, False,
-                f'mpirun --oversubscribe -n 4 {sys.executable}', 4,
-                remesh_options={'remesh_band_width': 2,
-                                'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
-        finally:
-            os.chdir(cwd)
-        with np.load(final) as result:
-            v, t = result['verts'], result['tris']
-        validate_patch(v, t, box(0, 0, 40, 20))
-        ds = gdal.Open(str(self.dem)); srs = osr.SpatialReference(); srs.ImportFromEPSG(32608)
-        exported = build_mesh_from_arrays(v, t, ds, ds.GetRasterBand(1), srs, False, False)
-        self.assertTrue(audit_mesh(exported)[0]['valid'])
-        self.assertEqual(exported['mesh']['nelem'], len(t))
+        # Six ranks exercise a rectangular 2x3 grid with an unpaired column.
+        for ranks in (4, 6):
+            with self.subTest(ranks=ranks):
+                work = self.work / f'ranks-{ranks}'
+                work.mkdir()
+                shutil.copyfile(self.dem, work / 'case_projected.tif')
+                cwd = os.getcwd()
+                try:
+                    os.chdir(work)
+                    final = run_mpi_meshing(str(work) + '/', 'case', 0, 0, 40, 20,
+                        self.options['mesher_path'], str(domain_file), {}, {}, {},
+                        8, .25, 1, 'rmse', False, 1, 0, False,
+                        f'mpirun --oversubscribe -n {ranks} {sys.executable}', ranks,
+                        remesh_options={'remesh_band_width': 2,
+                                        'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
+                finally:
+                    os.chdir(cwd)
+                self.assertEqual(compute_mpi_final_npz_path(str(work), 'case', 95), final)
+                layout = json.loads((work / 'case_mpi_layout.json').read_text())
+                self.assertEqual(layout['rows'] * layout['cols'], ranks)
+                with np.load(final) as result:
+                    v, t = result['verts'], result['tris']
+                validate_patch(v, t, box(0, 0, 40, 20))
+                ds = gdal.Open(str(self.dem)); srs = osr.SpatialReference(); srs.ImportFromEPSG(32608)
+                exported = build_mesh_from_arrays(v, t, ds, ds.GetRasterBand(1), srs, False, False)
+                self.assertTrue(audit_mesh(exported)[0]['valid'])
+                self.assertEqual(exported['mesh']['nelem'], len(t))

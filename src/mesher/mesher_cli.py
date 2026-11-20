@@ -519,7 +519,7 @@ def main():
         if not os.path.exists(final_npz_path):
             raise RuntimeError(
                 f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
-                'Ensure the previous MPI mesh run completed and used the same MPI_nworkers.'
+                'Ensure the previous MPI mesh run completed; legacy outputs without a layout manifest require the original MPI_nworkers.'
             )
         validate_mpi_mesh_metadata(final_npz_path)
 
@@ -1133,24 +1133,37 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def compute_tile_grid_allow_unused(nranks):
-    # Prefer near-square grids and allow unused ranks to avoid skinny tiles.
-    best_rows = 1
-    best_cols = 1
-    best_diff = None
-    best_tiles = 0
+def compute_tile_grid(nranks, width, height):
+    """Balance worker utilization with the physical perimeter of each tile.
+
+    A square tile has shape cost 1. Multiply that cost by ranks/tiles so a
+    slightly rectangular grid can use more workers without choosing long thin
+    strips just to fill a prime-sized allocation. This is a geometry heuristic,
+    not an estimate of raster-dependent refinement work.
+    """
+    if not isinstance(nranks, int) or isinstance(nranks, bool) or nranks < 1:
+        raise ValueError('MPI_nworkers must be a positive integer')
+    if not all(np.isfinite(v) and v > 0 for v in (width, height)):
+        raise ValueError('MPI domain width and height must be positive and finite')
+    best = None
     for rows in range(1, nranks + 1):
-        for cols in range(1, nranks + 1):
-            tiles = rows * cols
-            if tiles > nranks:
-                continue
-            diff = abs(cols - rows)
-            if best_diff is None or diff < best_diff or (diff == best_diff and tiles > best_tiles):
-                best_rows = rows
-                best_cols = cols
-                best_diff = diff
-                best_tiles = tiles
-    return best_rows, best_cols
+        for cols in range(1, nranks // rows + 1):
+            count = rows * cols
+            aspect = (width / cols) / (height / rows)
+            shape_cost = (math.sqrt(aspect) + 1 / math.sqrt(aspect)) / 2
+            score = shape_cost * nranks / count
+            candidate = (score, -count, abs(rows-cols), rows, cols)
+            if best is None or candidate < best:
+                best = candidate
+    _, _, _, rows, cols = best
+    return rows, cols
+
+
+def mpi_final_npz_name(base_name, rows, cols):
+    # Pairwise stages halve columns and rows in turn, carrying odd groups.
+    stages = (cols - 1).bit_length() + (rows - 1).bit_length()
+    suffix = f'stage{stages-1}_r0_c0' if stages else 'tile_0'
+    return f'{base_name}_mpi_{suffix}.npz'
 
 
 def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
@@ -1427,7 +1440,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         value = remesh_options.get(key, default)
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
-    rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
+    rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin)
+    layout_rows, layout_cols = rows, cols
 
     tile_width = (xmax - xmin) / cols
     tile_height = (ymax - ymin) / rows
@@ -1449,8 +1463,9 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         raise RuntimeError(msg)
 
     tile_count = rows * cols
-    if tile_count < MPI_nworkers:
-        print(f'Warning: using {tile_count} tiles for {MPI_nworkers} MPI ranks to keep the grid square.')
+    print(f'MPI tile grid: {rows} rows x {cols} columns; '
+          f'{tile_count}/{MPI_nworkers} ranks assigned tiles; '
+          f'tile dimensions={tile_width:.6g} x {tile_height:.6g}', flush=True)
 
 
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
@@ -1646,64 +1661,38 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             rows = len(tile_grid)
             stage += 1
 
-    return tile_grid[0][0]['npz']
+    final_path = tile_grid[0][0]['npz']
+    layout_path = os.path.join(base_dir, base_name + '_mpi_layout.json')
+    temporary = layout_path + '.tmp'
+    with open(temporary, 'w') as stream:
+        json.dump({'version': 1, 'rows': layout_rows, 'cols': layout_cols,
+                   'mpi_nworkers': MPI_nworkers, 'bounds': [xmin, ymin, xmax, ymax],
+                   'final_npz': os.path.basename(final_path)}, stream)
+    os.replace(temporary, layout_path)
+    return final_path
 
 
 def compute_mpi_final_npz_path(base_dir, base_name, mpi_nworkers):
-    rows, cols = compute_tile_grid_allow_unused(mpi_nworkers)
-    tile_grid = []
-    for row in range(rows):
-        row_tiles = []
-        for col in range(cols):
-            tile_id = row * cols + col
-            tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
-            row_tiles.append({
-                'npz': base_dir + tile_prefix + '.npz'
-            })
-        tile_grid.append(row_tiles)
-
-    stage = 0
-    while rows > 1 or cols > 1:
-        if cols > 1:
-            new_grid = []
-            for row in range(rows):
-                new_row = []
-                col = 0
-                while col < cols:
-                    if col + 1 < cols:
-                        out_prefix = f"{base_name}_mpi_stage{stage}_r{row}_c{col // 2}"
-                        new_row.append({'npz': base_dir + out_prefix + '.npz'})
-                        col += 2
-                    else:
-                        new_row.append(tile_grid[row][col])
-                        col += 1
-                new_grid.append(new_row)
-            tile_grid = new_grid
-            cols = len(tile_grid[0])
-            stage += 1
-
-        if rows > 1:
-            new_grid = []
-            row = 0
-            new_row_idx = 0
-            while row < rows:
-                if row + 1 < rows:
-                    merged_row = []
-                    for col in range(cols):
-                        out_prefix = f"{base_name}_mpi_stage{stage}_r{new_row_idx}_c{col}"
-                        merged_row.append({'npz': base_dir + out_prefix + '.npz'})
-                    new_grid.append(merged_row)
-                    row += 2
-                    new_row_idx += 1
-                else:
-                    new_grid.append(tile_grid[row])
-                    row += 1
-                    new_row_idx += 1
-            tile_grid = new_grid
-            rows = len(tile_grid)
-            stage += 1
-
-    return tile_grid[0][0]['npz']
+    """Locate the completed layout, with compatibility for pre-manifest runs."""
+    layout_path = os.path.join(base_dir, base_name + '_mpi_layout.json')
+    if os.path.exists(layout_path):
+        try:
+            with open(layout_path) as stream:
+                layout = json.load(stream)
+            rows, cols = layout['rows'], layout['cols']
+            if (layout.get('version') != 1 or any(type(v) is not int or v < 1 for v in (rows, cols))
+                    or layout['final_npz'] != mpi_final_npz_name(base_name, rows, cols)):
+                raise ValueError('Invalid layout fields')
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f'Cannot read completed MPI layout {layout_path}; '
+                             'regenerate with reuse_mesh=False') from exc
+        return os.path.join(base_dir, layout['final_npz'])
+    # Older versions always selected the largest square grid <= the rank count.
+    # Use their naming rule only for old cached outputs, never for fresh meshing.
+    if not isinstance(mpi_nworkers, int) or isinstance(mpi_nworkers, bool) or mpi_nworkers < 1:
+        raise ValueError('MPI_nworkers must be a positive integer')
+    side = math.isqrt(mpi_nworkers)
+    return os.path.join(base_dir, mpi_final_npz_name(base_name, side, side))
 
 
 # To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the

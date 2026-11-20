@@ -254,7 +254,8 @@ tests reproduce both unowned three-vertex fragments and owned five-vertex acute
 cuts, including at large projected coordinates. A complete tile/group merge
 checks that local halo extensions preserve the domain and disappear from the
 final result; actual acute physical corners still fail quality. With OpenMPI
-available, a four-rank tile/merge/export test runs as well. Without
+available, a four- and six-rank tile/merge/export tests run as well, including a rectangular
+grid with an odd number of columns. Without
 ``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
 
 The supplied 463-vertex ``stage0_r3_c1`` cavity is also a regression fixture.
@@ -316,8 +317,10 @@ still present, set the following in the original configuration and run Mesher:
    mpi_mesh = True
    reuse_mesh = True
 
-Keep the original DEM/output paths and ``MPI_nworkers`` so the saved stitched
-file can be located. Only a completed cavity-remesh run with matching metadata
+Keep the original DEM/output paths. New runs record their grid and final mesh
+filename in ``<base_name>_mpi_layout.json``; reuse reads that completed layout
+even if ``MPI_nworkers`` has changed. For older runs without this manifest,
+keep the original ``MPI_nworkers`` so the saved stitched file can be located. Only a completed cavity-remesh run with matching metadata
 is eligible. Mesher skips tile triangulation, validates the loaded topology,
 and regenerates the exported mesh and face parameters. The stored
 stitched NPZ is not modified. This workflow requires the original raster inputs
