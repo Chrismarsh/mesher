@@ -659,6 +659,84 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(coverage.union(retained).symmetric_difference(group).area, 0)
         self.assertEqual(coverage.intersection(retained).area, 0)
 
+    def test_96_rank_production_tip_rejection_and_controlled_recovery(self):
+        # Exact stage0_r2_c1 files supplied from the 96-rank (then 81-tile) run.
+        # The supplied constraints are the cavity boundary, with no extra streams.
+        # Reproduce shape failures without requiring the production raster files.
+        fixtures = Path(__file__).parent / 'fixtures'
+        cavity = shape(json.loads((fixtures / 'retained_tip_96_rank_cavity.geojson').read_text()))
+        fixed = [LineString(edge) for edge in json.loads(
+            (fixtures / 'retained_tip_96_rank_interfaces.json').read_text())['edges']]
+        options = dict(self.options, max_area=6250000, min_area=2500,
+                       max_tolerance=-1, remesh_max_vertices=500000)
+        with self.assertRaises(PatchQualityError) as failure:
+            remesh_domain(cavity, [], options, self.work, fixed)
+        self.assertIn('vertices=287', str(failure.exception))
+        faces = sorted(failure.exception.failures, key=lambda f: f['area'])
+        self.assertEqual(len(faces), 2)
+        for face, area, angle in zip(faces, [172.26259115514745, 1081.066388135949],
+                                    [10.281353831886987, 4.7294415356002952]):
+            self.assertEqual(face['reason'], 'angle')
+            self.assertAlmostEqual(face['area'], area)
+            self.assertAlmostEqual(face['min_angle_degrees'], angle)
+        selected = _quality_interface_faces(fixed, np.arange(len(fixed)), faces, cavity)
+        self.assertEqual(selected.tolist(), [281, 282])
+        tip = (-1798664.728450245, 3632549.068582979)
+        self.assertIn(tip, set(fixed[281].coords) & set(fixed[282].coords))
+        self.assertAlmostEqual(tip[1] - cavity.bounds[1], 10.297953645232, places=6)
+        for hole in cavity.interiors:
+            ring = list(hole.coords[:-1])
+            if tip in ring:
+                index = ring.index(tip)
+                ear = Polygon([ring[index-1], tip, ring[(index+1) % len(ring)]])
+                break
+        grown = cavity.union(ear)
+        self.assertAlmostEqual(grown.area - cavity.area, 920115.4222841263, places=4)
+        new_interfaces = [LineString([a, b]) for hole in grown.interiors
+                          for a, b in zip(hole.coords[:-1], hole.coords[1:])]
+        v, t = remesh_domain(grown, [], options, self.work, new_interfaces)
+        validate_patch(v, t, grown)
+        self.assertTrue(audit(v, t)['valid'])
+        group = Polygon(cavity.exterior)
+        remaining = group.difference(grown)
+        coverage = mesh_coverage(v, t)
+        self.assertEqual(coverage.union(remaining).symmetric_difference(group).area, 0)
+        self.assertEqual(coverage.intersection(remaining).area, 0)
+
+    def test_96_rank_tip_full_merge_recovers_locally_and_preserves_original_work(self):
+        # Use the exact reported tip in a complete merge, with a controlled
+        # surrounding mesh because production retained connectivity is unavailable.
+        fixture = Path(__file__).parent / 'fixtures' / 'retained_tip_96_rank_cavity.geojson'
+        cavity = shape(json.loads(fixture.read_text()))
+        tip = (-1798664.728450245, 3632549.068582979)
+        for hole in cavity.interiors:
+            ring = list(hole.coords[:-1])
+            if tip in ring:
+                index = ring.index(tip)
+                ear = [ring[index-1], tip, ring[(index+1) % len(ring)]]
+                break
+        x0, y0, x1, y1 = cavity.bounds
+        middle = (x0+x1)/2
+        a = np.array([[x0+10000, y0+10000, 0], [x0+11000, y0+10000, 0],
+                      [x0+10500, y0+11000, 0]])
+        b = np.column_stack((ear, np.zeros(3)))
+        triangles = np.array([[0, 1, 2]])
+        before_a, before_b = a.copy(), b.copy()
+        options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
+                       remesh_band_width=5000, remesh_max_vertices=500000)
+        v, t, stats = merge_cavity(a, triangles, [x0, y0, middle, y1],
+            b, triangles, [middle, y0, x1, y1], box(x0, y0, x1, y1), [], options, self.work)
+        self.assertEqual(stats['attempts'], 2)
+        self.assertEqual(stats['original_triangles_retained'], 1)
+        self.assertEqual(stats['band_width'], 5000)
+        self.assertFalse(stats['interface_recovery'])
+        self.assertIn('reason=angle', stats['attempt_stats'][0]['rejection'])
+        np.testing.assert_array_equal(a, before_a)
+        np.testing.assert_array_equal(b, before_b)
+        self.assertEqual(set(map(tuple, v[t[0]])), set(map(tuple, a)))
+        validate_patch(v, t, box(x0, y0, x1, y1))
+        self.assertTrue(audit(v, t)['valid'])
+
     def test_production_near_touch_is_rejected_before_backend_and_local_growth_succeeds(self):
         from collections import Counter
         from shapely import union_all

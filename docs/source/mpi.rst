@@ -266,6 +266,23 @@ the rejection/recovery path; a rejected candidate alone does not mean the MPI
 run failed. Replaying the entire production retry also requires its retained
 triangle connectivity and raster inputs.
 
+The exact 287-vertex ``stage0_r2_c1`` cavity from the 96-rank run is committed
+with its 283 retained interfaces. A raster-free replay reproduces the two
+reported angle failures (10.2814 and 4.72944 degrees). Recovery selects the two
+interfaces incident to a retained tip 10.298 m above the lower group boundary.
+A controlled tip removal yields a patch with zero coverage error and no overlap
+with the remaining retained footprint. A separate complete merge with that tip
+and controlled surrounding connectivity finishes in two attempts, preserves an
+unrelated original triangle, and keeps the 5,000 m band unchanged. Small faces
+still must satisfy the shape criterion even below ``min_area``.
+
+These files belong to ``stage0_r2_c1``, not the separate 17-vertex
+``stage0_r0_c0`` input reported with a CGAL ``n == zone.fh`` assertion. That
+17-vertex geometry and its invocation have not been supplied, so this regression
+does not establish a fix for that assertion. It remains a backend error, never
+an accepted mesh. A candidate rejection followed by successful local recovery
+is expected; a terminal traceback or exhausted retries indicates failure.
+
 The exact 288-vertex ``stage0_r5_c2`` input from ``cavity-55lyskn1`` is committed
 as ``tests/fixtures/retained_near_touch_cavity.geojson``. Without rasters it
 reproduces a release-build segfault in CGAL 6.0.1's edge refinement: a retained
