@@ -299,7 +299,7 @@ class CavityGeometryTests(unittest.TestCase):
                  patch('mesher.mesher_utls.mpi_remesh.merge_cavity', side_effect=PatchError('bad candidate')):
                 with self.assertRaisesRegex(PatchError, 'bad candidate'):
                     merge_tiles({'tile_a': inputs[0], 'tile_b': inputs[1], 'merge_method': 'remesh',
-                                 'outer_polygon_shp': 'unused', 'constraints': [], 'out_prefix': str(work / 'joined')})
+                                 'outer_polygon_shp': 'unused', 'constraints': [], 'max_area': 1, 'out_prefix': str(work / 'joined')})
             self.assertEqual((work / 'joined.npz').read_bytes(), b'previous mesh')
             self.assertEqual((work / 'joined.json').read_bytes(), b'previous metadata')
 

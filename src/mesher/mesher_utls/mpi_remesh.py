@@ -695,7 +695,8 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
 
 
 def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bounds_b,
-                 domain, constraints, options, directory, mesher=remesh_domain):
+                 domain, constraints, options, directory, mesher=remesh_domain,
+                 *, prepared_domain=None, initial_keep=None):
     """Repair a private working mesh; publish only a conforming complete result."""
     started = time.perf_counter()
     axis, seam = _shared_interface(bounds_a, bounds_b)
@@ -710,15 +711,19 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     core_area = domain.intersection(box(*bounds)).area
     # Intermediate group boxes can recreate the same acute cuts as initial
     # tiles. Give only those corners local halos; ownership boxes never change.
-    domain = _clipped_domain(domain, bounds, 0, width/2, context, options.get('mesher_debug', False))
+    domain = (prepared_domain if prepared_domain is not None else
+              _clipped_domain(domain, bounds, 0, width/2, context, options.get('mesher_debug', False)))
     if domain.is_empty:
         return np.empty((0, 3)), np.empty((0, 3), dtype=np.int64), {'attempts': 0}
     options = dict(options, core_bbox=bounds)
     joined_v = np.vstack((vertices_a, vertices_b))
     joined_t = np.vstack((triangles_a, triangles_b + len(vertices_a)))
     sources = np.arange(len(joined_t))  # Nonnegative: unchanged original; negative: generation.
-    keep = np.concatenate((_retain_mask(vertices_a, triangles_a, bounds_a, axis, seam, width),
-                           _retain_mask(vertices_b, triangles_b, bounds_b, axis, seam, width)))
+    keep = (np.asarray(initial_keep, dtype=bool).copy() if initial_keep is not None else
+            np.concatenate((_retain_mask(vertices_a, triangles_a, bounds_a, axis, seam, width),
+                            _retain_mask(vertices_b, triangles_b, bounds_b, axis, seam, width))))
+    if keep.shape != (len(joined_t),):
+        raise PatchError('Initial cavity selection does not match the working faces')
     neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
     physical_boundary = _physical_boundary_band(domain)
     growth_rings, interface_recovery = 1, False
@@ -762,6 +767,9 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         return v, t, stats
 
     for attempt in range(attempts):
+        if prepared_domain is not None and len(joined_t) > options.get('remesh_max_active_faces', 2000000):
+            raise PatchError('Seam active-face budget exceeded during local repair; '
+                             'increase mpi_remesh_max_active_faces only if memory permits')
         record = {'attempt': attempt+1}
         history.append(record)
         prepare_started = time.perf_counter()
@@ -894,4 +902,4 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             growth_rings = 1
             width *= 2
             keep &= (np.abs(joined_v[joined_t, axis] - seam) >= width).all(axis=1)
-    raise PatchError(f'No valid cavity replacement after {attempt+1} attempts{label}: {last_error}')
+    raise PatchError(f'No valid cavity replacement after {attempt+1} attempts{label}: {last_error}') from last_error

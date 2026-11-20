@@ -1308,7 +1308,8 @@ def mpi_remesh_options_from_config(config):
     return {'merge_method': 'remesh',
             'remesh_band_width': getattr(config, 'mpi_remesh_band_width', None),
             'remesh_max_attempts': getattr(config, 'mpi_remesh_max_attempts', 12),
-            'remesh_max_vertices': getattr(config, 'mpi_remesh_max_vertices', 500000)}
+            'remesh_max_vertices': getattr(config, 'mpi_remesh_max_vertices', 500000),
+            'remesh_max_active_faces': getattr(config, 'mpi_remesh_max_active_faces', 2000000)}
 
 
 def validate_mpi_mesh_metadata(npz_path):
@@ -1333,7 +1334,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         raise ValueError('Only mpi_merge_method="remesh" is supported; shared-edge meshing has been retired')
     if is_geographic:
         raise ValueError('MPI cavity remeshing requires a projected working CRS')
-    for key, minimum, default in (('remesh_max_attempts', 1, 12), ('remesh_max_vertices', 3, 500000)):
+    for key, minimum, default in (('remesh_max_attempts', 1, 12), ('remesh_max_vertices', 3, 500000),
+                                  ('remesh_max_active_faces', 1, 2000000)):
         value = remesh_options.get(key, default)
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f'mpi_{key} must be an integer >= {minimum}')

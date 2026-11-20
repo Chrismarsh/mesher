@@ -647,13 +647,13 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: int
     :default: 12
 
-    Maximum cavity attempts per merge, including final interface recovery.
-    If a retry is still required before the last attempt, retained components
-    with artificial cavity interfaces are absorbed in full. This can remesh
-    most or all of the current merge group; complete disconnected regions with
-    only physical boundary edges are preserved. The vertex budget and quality
-    checks still apply. A value of 1 allows no recovery attempt. Exhaustion
-    fails the merge without accepting a nonconforming candidate.
+    Maximum cavity attempts within one loaded seam region, including final
+    interface recovery, and maximum expansions of that region. Recovery absorbs
+    connected retained components only inside the loaded region. A changed
+    interface with a disk-backed interior loads additional neighbouring faces;
+    a completed local result is reused during that expansion. The vertex and
+    active-face budgets and all quality checks still apply. A value of 1 allows
+    no recovery or expansion. Exhaustion fails without publishing a candidate.
 
 .. confval:: mpi_remesh_max_vertices
 
@@ -662,7 +662,19 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
 
     CGAL vertex budget per tile or cavity invocation. Refinement fails when
     the budget is reached. This does not cap memory used by retained tile
-    arrays, graph construction, or GEOS validation.
+    arrays, graph construction, or GEOS validation. See the separate active-face
+    budget below.
+
+.. confval:: mpi_remesh_max_active_faces
+
+    :type: int
+    :default: 2000000
+
+    Limit on faces loaded into an in-memory seam region. Checked before loading
+    input faces and between local repair attempts. If expansion exceeds this
+    limit, the merge fails without publishing; increase it only when memory
+    permits. This is not a byte limit: native refinement, candidate arrays,
+    boundary geometry and GEOS validation also allocate memory.
 
 The distributed MPI smoother has also been retired because it did not preserve
 validated mesh criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
@@ -791,3 +803,37 @@ and temporary topology indexes. Memory-mapped pages are reclaimable file cache;
 RSS can include those pages. Native patch meshing, raster caches and boundary
 geometry still have their own memory requirements. Temporary preparation files
 are removed when export completes or raises an exception.
+
+Seam-region merging
+-------------------
+
+Each hierarchical merge, including the final merge, maps its input arrays from
+disk. A strip around the seam and a four-ring triangle collar are loaded for
+native refinement and parent repair. All other faces remain immutable on disk.
+The cavity is the exact target domain minus their coverage. An outer-interface
+check requires identical edge endpoints before joining the local result to the
+interiors; no approximate welding or relaxed quality criteria are used.
+
+If that check finds a split edge, the owning outside faces and neighbours are
+loaded. Valid local work is retained for the next attempt. Strict failures may
+require a larger region; the active-face limit prevents an unbounded fallback
+to loading the whole model. Physical holes, constraints and disconnected pieces
+remain part of the same coverage checks.
+
+Global topology checks and final compaction still make sequential passes over
+the mesh, using disk-backed tables and bounded edge-sorting runs. NPZ output is
+still readable by existing tools and old completed NPZ meshes can be reused.
+This reduces heap memory at the cost of temporary disk space and additional IO;
+it does not eliminate full-dataset disk reads/writes. Boundary geometry scales
+with boundary complexity, and the loaded region scales with seam complexity.
+
+Merge metadata reports ``disk_interior_faces``, ``peak_loaded_faces`` (input
+region size, excluding subsequently generated candidates), ``seam_attempts``
+and ``seam_work_reused`` (faces carried into expansion attempts, not unique final
+faces). Existing refinement counters describe the final local repair, with
+prior successful local reports under ``seam_attempt_reports``.
+
+``tests/benchmark_streaming.py`` measures export heap allocations separately
+from process RSS. In a synthetic 100,000 versus 1,000,000-face export, traced
+Python/NumPy peak allocations were about 2.97 MB in both cases. This excludes
+native meshing and is not a whole-pipeline memory or production timing claim.

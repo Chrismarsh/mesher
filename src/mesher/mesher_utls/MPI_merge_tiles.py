@@ -51,32 +51,19 @@ def merge_tiles(args):
         if meta.get("merge_method") != "remesh":
             raise ValueError("Cannot merge old shared-edge tiles; regenerate with reuse_mesh=False")
 
-    from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, merge_cavity
-    import tempfile
+    from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints
+    from mesher.mesher_utls.disk_merge import merge_disk_cavity
     bounds_a, bounds_b = meta_a['core_bbox'], meta_b['core_bbox']
-    with np.load(tile_a['npz']) as a, np.load(tile_b['npz']) as b:
-        av, at, bv, bt = a['verts'], a['tris'], b['verts'], b['tris']
-        input_seconds = time.perf_counter() - t0
-        verts, tris, report = merge_cavity(av, at, bounds_a,
-            bv, bt, bounds_b, load_domain(args['outer_polygon_shp']),
-            load_constraints(args['constraints']), args, os.path.dirname(args['out_prefix']) or '.')
-    # All checks completed before publishing either file. Metadata is the
-    # completion marker and is written last; failed candidates stay temporary.
-    report['input_seconds'] = input_seconds
-    write_started = time.perf_counter()
     prefix = args['out_prefix']
-    with tempfile.NamedTemporaryFile(dir=os.path.dirname(prefix) or '.', suffix='.npz', delete=False) as stream:
-        temporary = stream.name
-    try:
-        np.savez(temporary, verts=verts, tris=tris)
-        os.replace(temporary, prefix + '.npz')
-    finally:
-        if os.path.exists(temporary): os.unlink(temporary)
-    report['output_npz_seconds'] = time.perf_counter() - write_started
+    report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
+        load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
+        args, prefix + '.npz')
+    # Geometry and disk-facing interfaces passed before the archive was published.
+    # Metadata remains the completion marker and is written last.
     with open(prefix + '.json.tmp', 'w') as stream:
         json.dump({'core_bbox': bbox_union(bounds_a, bounds_b),
                    'tile_bbox': bbox_union(bounds_a, bounds_b), 'band_width': 0,
-                   'empty_tile': len(tris) == 0, 'merge_method': 'remesh', 'remesh_report': report}, stream)
+                   'empty_tile': report['output_faces'] == 0, 'merge_method': 'remesh', 'remesh_report': report}, stream)
     os.replace(prefix + '.json.tmp', prefix + '.json')
 
 
