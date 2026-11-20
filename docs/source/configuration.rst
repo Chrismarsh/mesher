@@ -712,6 +712,33 @@ as a compatibility no-op. Serial ``lloyd_itr`` remains available.
     instead of a single `<output>.param` file. This reduces memory pressure
     for very large meshes.
 
+Timing output
+-------------
+
+Mesher reports preprocessing, meshing (or mesh reuse), mesh preparation,
+parameterization and export separately. Mesh preparation includes topology
+validation and elevation sampling. Parameterization also reports shared-input
+writing, MPI worker execution (including launch overhead) and result collection.
+Those three times are included in the overall parameterization duration.
+
+``Total run took`` covers configuration loading through completed exports.
+The older ``Total time took`` message measured only parameterization and should
+not be compared directly with the new total-run duration. Compare it with
+``Parameterization took`` instead.
+
+For a reproducible local worker benchmark against the pre-optimization code,
+run ``PYTHONPATH=src python tests/benchmark_parameterization.py --repeats 3``
+from a source checkout. ``--case batched-stats`` exercises different statistics
+from one raster; the default shares one mean across three classifiers. The
+benchmark verifies identical outputs but does not measure MPI startup, input
+preparation, full-domain meshing or production-filesystem performance.
+
+Recorded medians over three runs on 20,000 synthetic triangles were 8.27 s to
+1.78 s when three classifiers shared a raster mean (4.65x), and 11.42 s to
+2.85 s when requesting mean/min/max together (4.01x). Outputs matched exactly
+in both cases. Raw timings are in ``parameterization-benchmark.json``; these
+single-worker measurements are not estimates of whole-domain MPI speedup.
+
 MPI pitfalls and guards
 -----------------------
 

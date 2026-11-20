@@ -62,6 +62,7 @@ def main():
         print('ERROR: meshgen.py requires one argument [configuration file] (i.e. meshgen.py Bow.py)')
         return
 
+    run_started = time.perf_counter()
     # Get name of configuration file/module
     configfile = sys.argv[-1]
 
@@ -515,6 +516,8 @@ def main():
 
         f.write('0\n')
 
+    print(f'Preprocessing took {time.perf_counter() - run_started:.2f} s')
+    meshing_started = time.perf_counter()
     final_npz_path = None
     if mpi_mesh and reuse_mesh:
         final_npz_path = compute_mpi_final_npz_path(base_dir, base_name, MPI_nworkers)
@@ -536,7 +539,6 @@ def main():
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
                                              mesher_debug=mesher_debug, remesh_options=mpi_remesh_options)
         else:
-            start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                       (mesher_path,
                        base_dir + poly_file,
@@ -579,7 +581,10 @@ def main():
 
             print(execstr)
             subprocess.check_call(execstr, shell=True)
-            print('Meshing took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
+    mesh_action = 'Mesh reuse' if reuse_mesh else 'Meshing'
+    print(f'{mesh_action} took {time.perf_counter() - meshing_started:.2f} s')
+    mesh_preparation_started = time.perf_counter()
 
     # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
     # remove them
@@ -602,6 +607,7 @@ def main():
     else:
         mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
 
+    print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
     # holds parameters and initial conditions for CHM
     params = {}
     ics = {}
@@ -654,8 +660,9 @@ def main():
 
     mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
 
-    print('Total time took %s s' % str(round(time.perf_counter() - start_time, 2)))
+    print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
 
+    export_started = time.perf_counter()
     output_name = base_name + '_mpi' if mpi_mesh else base_name
 
     if output_write_vtu:
@@ -686,6 +693,8 @@ def main():
     print('Saving initial conditions  to file ' + output_name + '.ic')
     with open(user_output_dir + output_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
+    print(f'Export took {time.perf_counter() - export_started:.2f} s')
+    print(f'Total run took {time.perf_counter() - run_started:.2f} s')
     print('Done')
 
 
@@ -697,6 +706,7 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
     configfile = os.path.abspath(configfile)
     if nranks < 1:
         raise ValueError('Parameterization requires at least one MPI rank')
+    input_started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix='mesher-parameters-', dir=os.path.abspath(base_dir)) as work:
         verts_path = os.path.join(work, 'vertices.npy')
         elems_path = os.path.join(work, 'elements.npy')
@@ -708,6 +718,8 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
         with open(inputs, 'wb') as stream:
             cloudpickle.dump(manifest, stream)
 
+        inputs_seconds = time.perf_counter() - input_started
+        workers_started = time.perf_counter()
         if exec_str is not None:
             command = f'{exec_str} {shlex.join([worker, inputs, "False", configfile])}'
             print(command, flush=True)
@@ -717,6 +729,8 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
                                        maxprocs=nranks)
             comm.Disconnect()
 
+        workers_seconds = time.perf_counter() - workers_started
+        collection_started = time.perf_counter()
         result = []
         nfaces = len(mesh['mesh']['elem'])
         for rank in range(nranks):
@@ -728,6 +742,9 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
                     or any(row['id'] != index for index, row in enumerate(batch['triangles'], start))):
                 raise ValueError(f'Invalid parameterization results for rank {rank}')
             result.extend(batch['triangles'])
+        print(f'Parameter inputs: {inputs_seconds:.2f} s; '
+              f'MPI workers: {workers_seconds:.2f} s; '
+              f'result collection: {time.perf_counter() - collection_started:.2f} s', flush=True)
         return result
 
 
