@@ -130,6 +130,13 @@ Unchanged triangles keep their quality result within this merge, under the same
 raster inputs/settings; there is no persistent quality cache between runs.
 A patch whose own final quality check failed is rejected in full.
 
+If the assembled candidate still has unmatched internal edges after subdivision,
+recovery selects faces from that candidate and its adjacency, including generated
+faces and subdivision children. Those face numbers cannot be looked up in the
+older retained-face array. The affected faces plus one neighbouring ring are
+removed, the remainder is validated, and the next attempt fills only the missing
+coverage. Unaffected original and generated triangles remain available for reuse.
+
 Promotion is transactional: validate subdivision footprints and prescribed
 boundaries, then check the retained remainder before changing the private working
 state. Incomplete working states are never published. Fully validated backend
@@ -186,7 +193,11 @@ explicit; there is no silent fallback to the shared-edge algorithm.
 Backend or validation failures retain a ``cavity-*`` directory whose path is
 reported in the exception. It contains ``domain.json``, ``constraints.json``,
 ``invocation.json`` (the command, working directory, tile/merge identity and core bounds),
-``interfaces.json`` and the complete ``backend.log``.
+``interfaces.json`` and the complete ``backend.log`` for that backend invocation.
+Python merge/retry messages and tracebacks remain in the MPI job's stdout/stderr
+(or the scheduler job log). Output from different ranks can be interleaved;
+match the tile/merge label and ``invocation.json`` before associating a cavity
+folder with a later traceback.
 For a precision rejection, ``precision.json`` records interface IDs and the
 coordinate tolerance, and ``backend.log`` explicitly says the backend was not
 started. The same reproduction inputs are retained for inspection.
@@ -219,6 +230,8 @@ for the final elevation export.
 Only validated results are written. Metadata records attempts, original triangles
 retained, generated triangles reused, successfully subdivided parents, generated
 patch triangle count, local repair count and ``interface_recovery``.
+``candidate_interface_faces`` counts affected faces recovered from assembled
+candidates; the per-attempt count also appears in ``Preserving patch work``.
 ``boundary_halo_area`` records temporary area outside an intermediate group's
 core; it is zero for the completed whole-domain merge. Per-attempt
 records include cavity area, preserved work and rejection reason. Timings cover
@@ -349,7 +362,11 @@ and will refuse a mesh containing hanging nodes.
 Preservation regressions cover multiple split sides, large coordinates, the
 minimum-area stop, raster failures above that stop, poor-angle children, unchanged
 patch interiors across retries, rollback after a later failure, invalid child
-coverage and backend signal termination.
+coverage and backend signal termination. A native-backend regression also
+creates a controlled gap after accepted subdivision, reproducing candidate face
+numbers larger than the old retained-face array. It checks local recovery,
+unchanged triangles, complete coverage/topology and rollback on a later budget
+failure.
 
 A reproducible synthetic benchmark compares two tile workers followed by one
 pairwise merge with a historical implementation and a serial whole-domain patch

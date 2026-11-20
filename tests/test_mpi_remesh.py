@@ -519,6 +519,85 @@ class CgalCavityTests(unittest.TestCase):
         for actual, expected in zip((a, ta, b, tb), originals):
             np.testing.assert_array_equal(actual, expected)
 
+    def test_candidate_interface_recovery_uses_candidate_faces_and_preserves_work(self):
+        from mesher.mesher_utls import mpi_remesh
+        from mesher.mesh_topology import build_neighbours
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        xx, yy = np.meshgrid(-20+(np.arange(160)+.5)*.5, 40-(np.arange(120)+.5)*.5)
+        ds.GetRasterBand(1).WriteArray(10+30*np.exp(-((xx-20)**2+(yy-10)**2)/20)); ds = None
+        domain = box(0, 0, 40, 20)
+        a, ta = self.mesh(box(0, 0, 23, 20)); b, tb = self.mesh(box(17, 0, 40, 20))
+        originals = [x.copy() for x in (a, ta, b, tb)]
+        repair_candidate = mpi_remesh._repair_candidate
+
+        for budget_failure in (False, True):
+            with self.subTest(budget_failure=budget_failure):
+                injected, next_cavities = [], []
+
+                def leave_gap(*args):
+                    # Use real CGAL patches and subdivisions. Remove one interior
+                    # face from an otherwise accepted candidate to make its final
+                    # stitch report genuine unmatched edges in the NEW face array.
+                    result = repair_candidate(*args)
+                    if result is None or injected:
+                        return result
+                    v, t, sources, keep, neighbours, stats, accepted, failed = result
+                    if failed:
+                        return result
+                    old_count = len(args[1])
+                    candidates = np.flatnonzero((neighbours >= 0).all(axis=1) &
+                                                (neighbours >= old_count).any(axis=1))
+                    self.assertGreater(len(candidates), 0)
+                    omitted = int(candidates[-1])
+                    gap = Polygon(v[t[omitted], :2])
+                    mask = np.arange(len(t)) != omitted
+                    t, sources, keep = t[mask], sources[mask], keep[mask]
+                    neighbours = build_neighbours(t, len(v), v)
+                    with self.assertRaises(InterfaceChanged) as failure:
+                        _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=np.int64), domain,
+                                retained_neighbours=neighbours, result_neighbours=neighbours)
+                    self.assertGreaterEqual(max(failure.exception.faces), old_count)
+                    injected.append((v.copy(), t.copy(), sources.copy(), gap))
+                    return v, t, sources, keep, neighbours, stats, accepted, failed
+
+                def capture(cavity, *args):
+                    if injected:
+                        next_cavities.append(cavity)
+                        if budget_failure:
+                            raise PatchError('Patch vertex budget exceeded after candidate interface repair')
+                    return remesh_domain(cavity, *args)
+
+                with patch.object(mpi_remesh, '_repair_candidate', side_effect=leave_gap):
+                    args = (a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
+                            domain, [], self.options, self.work, capture)
+                    if budget_failure:
+                        with self.assertRaisesRegex(PatchError, 'budget exceeded after candidate interface repair'):
+                            merge_cavity(*args)
+                        self.assertEqual(len(next_cavities), 1)
+                    else:
+                        v, t, report = merge_cavity(*args)
+                        validate_patch(v, t, domain)
+                        self.assertTrue(audit(v, t)['valid'])
+                        self.assertGreater(report['candidate_interface_faces'], 0)
+                        self.assertEqual(report['band_width'], self.options['remesh_band_width'])
+                        self.assertFalse(report['interface_recovery'])
+                        self.assertGreater(report['original_triangles_retained'], 0)
+                        self.assertGreater(report['generated_triangles_reused'], 0)
+                        cv, ct, sources, _ = injected[0]
+                        final = {tuple(sorted(map(tuple, face))) for face in v[t]}
+                        for original in (False, True):
+                            untouched = [face for face, source in zip(cv[ct], sources)
+                                         if (source >= 0) == original and all(
+                                             Polygon(face[:, :2]).disjoint(cavity) for cavity in next_cavities)]
+                            self.assertGreater(len(untouched), 0)
+                            self.assertTrue({tuple(sorted(map(tuple, face))) for face in untouched}.issubset(final))
+                self.assertEqual(len(injected), 1)
+                self.assertGreater(len(next_cavities), 0)
+                self.assertLess(injected[0][3].difference(next_cavities[0]).area, 1e-8)
+                self.assertLess(next_cavities[0].area, domain.area/5)
+                for actual, expected in zip((a, ta, b, tb), originals):
+                    np.testing.assert_array_equal(actual, expected)
+
     def test_backend_signal_stops_retry_and_keeps_diagnostics(self):
         from mesher.mesher_utls.mpi_remesh import BackendTerminated
         executable = self.work / 'terminated-backend'

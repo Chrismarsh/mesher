@@ -86,6 +86,7 @@ class PatchPrecisionError(PatchError):
 
 
 class InterfaceChanged(PatchError):
+    """Face IDs index the retained_t argument of the failing _stitch call."""
     def __init__(self, faces):
         self.faces = np.unique(faces)
         super().__init__(f'Refinement changed a retained interface at {len(self.faces)} faces; cavity must grow')
@@ -723,7 +724,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     history = []
     lineage_available = mesher is remesh_domain
     totals = {'subdivided_parents': 0, 'local_repairs': 0, 'patch_triangles_generated': 0,
-              'failed_subdivision_parents': 0}
+              'failed_subdivision_parents': 0, 'candidate_interface_faces': 0}
 
     def final_recovery():
         nonlocal interface_recovery
@@ -804,38 +805,54 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 v, t, provenance, selection, candidate_neighbours, repair_stats, accepted, failed = repair
                 for key, value in repair_stats.items():
                     record[key] = record.get(key, 0) + value
-                if failed:
-                    if attempt+1 == attempts:
-                        raise PatchError(f'{failed} parent subdivisions require another local repair')
-                    # Validate the staged remainder BEFORE promoting it. Every
-                    # preserved generated triangle passed backend quality; all
-                    # children passed both quality and exact footprint checks.
-                    remaining = t[selection]
-                    remaining_neighbours = _retained_neighbours(candidate_neighbours, selection)
-                    remainder = mesh_coverage(v, remaining, remaining_neighbours)
-                    if remainder.difference(domain).area > area_tolerance(domain):
-                        raise PatchError('Staged repair extends beyond the domain')
-                    coincident, hanging = boundary_subdivisions(v, remaining, remaining_neighbours, 1e-8)
-                    if coincident or next(hanging, None) is not None:
-                        raise PatchError('Staged repair has unresolved hanging nodes')
-                    joined_v, joined_t, sources, keep = v, t, provenance, selection
-                    neighbours = candidate_neighbours
-                    totals['local_repairs'] += 1
-                    preserved = int(np.count_nonzero((sources < 0) & keep))
-                    totals['subdivided_parents'] += accepted
-                    totals['failed_subdivision_parents'] += failed
-                    print(f'Preserving patch work{label}: generated={preserved}, '
-                          f'failed_parents={failed}, removed={np.count_nonzero(~keep)}', flush=True)
-                    record.update(stitch_seconds=time.perf_counter()-stitch_started,
-                                  generated_preserved=preserved, failed_subdivisions=failed)
-                    if attempt+2 == attempts:
-                        final_recovery()
-                    continue
+                changed_faces = np.empty(0, dtype=np.int64)
+                if not failed:
+                    try:
+                        output_v, output_t = _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=np.int64),
+                            domain, physical_boundary, candidate_neighbours, candidate_neighbours)
+                    except InterfaceChanged as exc:
+                        # These IDs belong to t, which includes generated faces
+                        # and replaces subdivided parents. They MUST NOT reach
+                        # the outer handler, whose retained_ids index the earlier
+                        # working mesh. Remove only affected candidate faces and
+                        # their neighbours, then validate before promotion.
+                        changed_faces = exc.faces
+                        if attempt+1 == attempts:
+                            raise PatchError(f'{len(changed_faces)} candidate interface faces require another local repair') from exc
+                        _grow_cavity(selection, candidate_neighbours, changed_faces, 1)
+                    else:
+                        totals['subdivided_parents'] += accepted
+                        record['stitch_seconds'] = time.perf_counter()-stitch_started
+                        return finish(output_v, output_t, provenance, attempt, len(patch_t))
+                if attempt+1 == attempts:
+                    raise PatchError(f'{failed} parent subdivisions require another local repair')
+                # Validate the staged remainder BEFORE promoting it. Every
+                # preserved generated triangle passed backend quality; all
+                # children passed both quality and exact footprint checks.
+                remaining = t[selection]
+                remaining_neighbours = _retained_neighbours(candidate_neighbours, selection)
+                remainder = mesh_coverage(v, remaining, remaining_neighbours)
+                if remainder.difference(domain).area > area_tolerance(domain):
+                    raise PatchError('Staged repair extends beyond the domain')
+                coincident, hanging = boundary_subdivisions(v, remaining, remaining_neighbours, 1e-8)
+                if coincident or next(hanging, None) is not None:
+                    raise PatchError('Staged repair has unresolved hanging nodes')
+                joined_v, joined_t, sources, keep = v, t, provenance, selection
+                neighbours = candidate_neighbours
+                totals['local_repairs'] += 1
+                preserved = int(np.count_nonzero((sources < 0) & keep))
                 totals['subdivided_parents'] += accepted
-                output_v, output_t = _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=np.int64),
-                                            domain, physical_boundary, candidate_neighbours, candidate_neighbours)
-                record['stitch_seconds'] = time.perf_counter()-stitch_started
-                return finish(output_v, output_t, provenance, attempt, len(patch_t))
+                totals['failed_subdivision_parents'] += failed
+                totals['candidate_interface_faces'] += len(changed_faces)
+                print(f'Preserving patch work{label}: generated={preserved}, '
+                      f'failed_parents={failed}, candidate_interface_faces={len(changed_faces)}, '
+                      f'removed={np.count_nonzero(~keep)}', flush=True)
+                record.update(stitch_seconds=time.perf_counter()-stitch_started,
+                              generated_preserved=preserved, failed_subdivisions=failed,
+                              candidate_interface_faces=len(changed_faces))
+                if attempt+2 == attempts:
+                    final_recovery()
+                continue
             output_v, output_t = _stitch(joined_v, retained, patch_v, patch_t, domain, physical_boundary,
                                          retained_neighbours=adjacency)
             record['stitch_seconds'] = time.perf_counter()-stitch_started
