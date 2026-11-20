@@ -25,6 +25,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize
 
 from mesher.mesh_topology import MeshTopologyError, build_neighbours, boundary_subdivisions
+from mesher.mesher_utls.mpi_progress import debug_log
 
 ogr.UseExceptions()
 
@@ -59,6 +60,8 @@ def _run_backend(command, work, options):
                     code = process.wait(timeout=10)
                     break
                 except subprocess.TimeoutExpired:
+                    if not options.get('mesher_debug', False):
+                        continue
                     with (work / 'backend.log').open('rb') as progress:
                         progress.seek(0, os.SEEK_END)
                         progress.seek(max(0, progress.tell() - 512))
@@ -140,7 +143,7 @@ def _acute_clip_corners(clipped, domain):
             if not (physical.covers(LineString([a, p])) and physical.covers(LineString([p, b])))]
 
 
-def _clipped_domain(domain, bounds, padding, corner_radius, context=None):
+def _clipped_domain(domain, bounds, padding, corner_radius, context=None, mesher_debug=False):
     """Cover the entire owned core, extending only artificial acute clipping tips.
 
     A disk centred on a cut/physical-edge intersection makes the new cut meet
@@ -175,16 +178,16 @@ def _clipped_domain(domain, bounds, padding, corner_radius, context=None):
             break
         expanded += len(disks)
         clipped = candidate
-    if expanded:
+    if expanded and mesher_debug:
         label = f' [{Path(context).name}]' if context else ''
         print(f'Extended artificial clipping corners{label}: corners={expanded}, '
               f'added_halo_area={clipped.area-initial_area:.6g}', flush=True)
     return clipped
 
 
-def tile_domain(domain, bounds, halo_width, context=None):
+def tile_domain(domain, bounds, halo_width, context=None, mesher_debug=False):
     """Mesh owned halo components without introducing unavoidable cut angles."""
-    return _clipped_domain(domain, bounds, halo_width, halo_width/2, context)
+    return _clipped_domain(domain, bounds, halo_width, halo_width/2, context, mesher_debug)
 
 
 def load_constraints(paths):
@@ -707,7 +710,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     core_area = domain.intersection(box(*bounds)).area
     # Intermediate group boxes can recreate the same acute cuts as initial
     # tiles. Give only those corners local halos; ownership boxes never change.
-    domain = _clipped_domain(domain, bounds, 0, width/2, context)
+    domain = _clipped_domain(domain, bounds, 0, width/2, context, options.get('mesher_debug', False))
     if domain.is_empty:
         return np.empty((0, 3)), np.empty((0, 3), dtype=np.int64), {'attempts': 0}
     options = dict(options, core_bbox=bounds)
@@ -739,8 +742,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         if owners:
             removed = _grow_cavity(keep, neighbours, retained_ids[np.unique(owners)], len(joined_t))
             interface_recovery = True
-            print(f'Final interface recovery{label}: removed={removed}, retained={np.count_nonzero(keep)}; '
-                  'remeshing components touching the cavity with unchanged quality checks and vertex budget', flush=True)
+            debug_log(options, f'Final interface recovery{label}: removed={removed}, retained={np.count_nonzero(keep)}; '
+                      'remeshing components touching the cavity with unchanged quality checks and vertex budget')
 
     def finish(v, t, provenance, attempt, patch_count):
         stats = dict(totals, attempts=attempt+1, band_width=width, patch_triangles=patch_count,
@@ -753,9 +756,9 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         for key in ('backend_seconds', 'preparation_seconds', 'validation_seconds', 'stitch_seconds',
                     'io_seconds', 'repair_seconds', 'refinement_seconds', 'refinement_steps', 'raster_seconds', 'raster_evaluations'):
             stats[key] = sum(record.get(key, 0) for record in history)
-        print(f'Merge complete{label}: original_retained={stats["original_triangles_retained"]}, '
-              f'generated_reused={stats["generated_triangles_reused"]}, '
-              f'subdivided={stats["subdivided_parents"]}, elapsed={stats["elapsed_seconds"]:.2f}s', flush=True)
+        debug_log(options, f'Merge complete{label}: original_retained={stats["original_triangles_retained"]}, '
+                  f'generated_reused={stats["generated_triangles_reused"]}, '
+                  f'subdivided={stats["subdivided_parents"]}, elapsed={stats["elapsed_seconds"]:.2f}s')
         return v, t, stats
 
     for attempt in range(attempts):
@@ -770,7 +773,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             raise PatchError('Retained triangles extend outside the intended domain')
         cavity = polygon_domain(domain.difference(coverage))
         record.update(cavity_area=cavity.area, retained_triangles=len(retained))
-        print(f'Remesh attempt {attempt+1}{label}: width={width:g}, retained={len(retained)}, cavity_area={cavity.area:g}', flush=True)
+        debug_log(options, f'Remesh attempt {attempt+1}{label}: width={width:g}, retained={len(retained)}, cavity_area={cavity.area:g}')
         fixed, owners = [], []
         if len(retained):
             faces, slots = np.nonzero(adjacency < 0)
@@ -844,9 +847,9 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 totals['subdivided_parents'] += accepted
                 totals['failed_subdivision_parents'] += failed
                 totals['candidate_interface_faces'] += len(changed_faces)
-                print(f'Preserving patch work{label}: generated={preserved}, '
-                      f'failed_parents={failed}, candidate_interface_faces={len(changed_faces)}, '
-                      f'removed={np.count_nonzero(~keep)}', flush=True)
+                debug_log(options, f'Preserving patch work{label}: generated={preserved}, '
+                          f'failed_parents={failed}, candidate_interface_faces={len(changed_faces)}, '
+                          f'removed={np.count_nonzero(~keep)}')
                 record.update(stitch_seconds=time.perf_counter()-stitch_started,
                               generated_preserved=preserved, failed_subdivisions=failed,
                               candidate_interface_faces=len(changed_faces))
@@ -863,7 +866,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             for key, value in getattr(exc, 'stats', {}).items():
                 record[key] = record.get(key, 0) + value
             record['rejection'] = str(exc)
-            print(f'Remesh candidate rejected{label}: {exc}', flush=True)
+            debug_log(options, f'Remesh candidate rejected{label}: {exc}')
             if (attempt+1 == attempts or not len(retained) or isinstance(exc, BackendTerminated)
                     or 'Patch vertex budget exceeded' in str(exc)):
                 break
@@ -881,8 +884,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             if len(local_faces):
                 affected = retained_ids[local_faces]
                 removed = _grow_cavity(keep, neighbours, affected, growth_rings)
-                print(f'Growing cavity locally{label}: affected={len(affected)}, '
-                      f'neighbour_rings={growth_rings}, removed={removed}', flush=True)
+                debug_log(options, f'Growing cavity locally{label}: affected={len(affected)}, '
+                          f'neighbour_rings={growth_rings}, removed={removed}')
                 # Once work can be preserved, avoid the previous 64/128-ring
                 # erosion. Legacy/custom meshers without lineage still use the
                 # original recovery path for compatibility.

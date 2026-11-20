@@ -20,6 +20,7 @@ import subprocess
 import re
 import json
 import os
+import shlex
 import numpy as np
 import math
 
@@ -41,6 +42,7 @@ from . import mesher_utls
 from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
                             boundary_subdivisions)
 from .mesher_utls.raster_utils import fill_nodata
+from .mesher_utls.mpi_progress import StageProgress
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -1366,33 +1368,39 @@ def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geogra
     return mesh
 
 
-def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None):
-    if len(tasks) == 0:
+def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
+    if not tasks:
         return
-    if stage_label is not None:
+    debug = any(task.get('mesher_debug', False) for task in tasks)
+    worker_path = os.path.join(os.path.dirname(mesher_utls.__file__), worker)
+    with StageProgress(tasks, label, debug=debug) as progress:
+        arguments = str(progress.directory / 'tasks.pickle')
+        with open(arguments, 'wb') as stream:
+            cloudpickle.dump(progress.tasks, stream)
+        if MPI_exec_str is not None:
+            exec_str = f'{MPI_exec_str} {shlex.quote(worker_path)} {shlex.quote(arguments)} False'
+            if debug:
+                print(exec_str, flush=True)
+            subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+        else:
+            comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                       args=[worker_path, arguments, 'True'],
+                                       maxprocs=MPI_nworkers)
+            comm.Disconnect()
+
+
+def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None):
+    if not tasks:
+        return
+    if stage_label is not None and any(task.get('mesher_debug', False) for task in tasks):
         remaining = total_merges - len(tasks) if total_merges is not None else None
         if remaining is not None:
             print(f'MPI merge {stage_label}: {len(tasks)} merges (remaining after stage: {remaining})')
         else:
             print(f'MPI merge {stage_label}: {len(tasks)} merges')
 
-    with open('pickled_mesh_merge_args.pickle', 'wb') as f:
-        cloudpickle.dump(tasks, f)
-
-    MPI_merge_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                  'MPI_merge_tiles.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_merge_path} pickled_mesh_merge_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_merge_path,
-                                         'pickled_mesh_merge_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_mesh_merge_args.pickle')
+    _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, 'MPI_merge_tiles.py',
+                        f'MPI merge {stage_label}' if stage_label else 'MPI merge')
 
 
 def mpi_remesh_options_from_config(config):
@@ -1510,23 +1518,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             **remesh_options
         })
 
-    with open('pickled_mesh_tile_args.pickle', 'wb') as f:
-        cloudpickle.dump(tile_args, f)
-
-    MPI_mesh_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                 'MPI_mesh_tiles.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_mesh_path} pickled_mesh_tile_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_mesh_path,
-                                         'pickled_mesh_tile_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_mesh_tile_args.pickle')
+    _run_mpi_mesh_tasks(tile_args, MPI_exec_str, MPI_nworkers, 'MPI_mesh_tiles.py', 'MPI tiles')
 
     tile_grid = []
     for row in range(rows):

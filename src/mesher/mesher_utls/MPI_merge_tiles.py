@@ -11,6 +11,7 @@ import time
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
+from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
 def str2bool(s: str) -> bool:
@@ -35,7 +36,7 @@ def merge_tiles(args):
 
     def log_step(msg):
         dt = time.perf_counter() - t0
-        print(f'[{dt:.2f}s] {msg}', flush=True)
+        debug_log(args, f'[{dt:.2f}s] {msg}')
 
     tile_a = args['tile_a']
     tile_b = args['tile_b']
@@ -90,6 +91,7 @@ def main(pickle_file: str, disconnect: bool):
 
     for args in param_args_split[MPI.COMM_WORLD.rank]:
         merge_tiles(args)
+        complete_task(args)
 
     if disconnect:
         comm = MPI.Comm.Get_parent()

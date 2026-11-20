@@ -37,6 +37,46 @@ or parameters. It preserves triangle count, connectivity and XY coordinates;
 it rejects hanging nodes and coincident boundary vertices instead of trying to
 repair the geometry after quality validation.
 
+Progress and diagnostic output
+++++++++++++++++++++++++++++++
+
+The default ``mesher_debug=False`` shows compact progress for tile generation
+and each merge stage. A terminal updates one line with a bar, completed tasks
+and elapsed time. Redirected output (including PBS logs) uses plain start/end
+lines and a heartbeat every 30 seconds, even if no task has finished recently::
+
+   MPI tiles: 37/96 | elapsed 00:12:30
+   MPI merge stage0 cols: 16/48 | elapsed 00:00:30
+
+Task counts advance only after workers write their mesh and completion metadata.
+Empty tiles count as completed tasks. A percentage of completed tasks is not
+a time estimate: tile costs vary, and later merges can be much larger. A
+failed stage is labelled ``failed`` and retains its actual completed count.
+
+Set this in the configuration to restore detailed worker output::
+
+   mesher_debug = True
+
+This prints rejected candidates, cavity growth, preserved work, clipping
+extensions, per-merge timings and backend heartbeats, and enables the existing
+C++ debug output. Debug mode uses plain progress lines to avoid overwriting
+diagnostic messages. The separate ``verbose`` option does not control these
+MPI diagnostics.
+
+Recoverable patch rejections are quiet by default. Fatal exceptions and their
+reproduction-folder paths are always reported. Failed backend attempts keep
+their inputs, quality reports and complete ``backend.log`` in either mode;
+successful temporary backend directories are removed as before. Merge metadata
+still records per-attempt timings, rejection reasons and preservation counts.
+
+Progress uses a private temporary directory on the same shared working
+filesystem as MPI task arguments. Each worker writes one small completion
+marker per task; the parent reads the directory once per second. It makes no
+scheduler queries and introduces no MPI barriers or MPI calls from threads.
+Markers and task arguments are removed when the stage ends; backend diagnostic
+folders are separate and remain available after failed attempts. Both
+``MPI_exec_str`` and ``MPI.COMM_SELF.Spawn`` use the same progress display.
+
 Local cavity remeshing
 ++++++++++++++++++++++
 
@@ -168,7 +208,7 @@ is still needed before the final allowed attempt, all retained components with
 a retained/cavity interface are absorbed into that last patch. This removes
 every artificial interface rather than spending the last attempt on another
 finite ring expansion. Complete disconnected regions bounded only by the
-physical perimeter are preserved. The log reports ``Final interface recovery``
+physical perimeter are preserved. Debug output reports ``Final interface recovery``
 and the number of removed and retained faces. This can remesh most or all of the
 current merge group and increase time and memory use. The same vertex budget,
 raster/shape criteria, coverage and topology checks still apply. A budget
@@ -231,7 +271,7 @@ Only validated results are written. Metadata records attempts, original triangle
 retained, generated triangles reused, successfully subdivided parents, generated
 patch triangle count, local repair count and ``interface_recovery``.
 ``candidate_interface_faces`` counts affected faces recovered from assembled
-candidates; the per-attempt count also appears in ``Preserving patch work``.
+candidates; the per-attempt count also appears in debug ``Preserving patch work`` output.
 ``boundary_halo_area`` records temporary area outside an intermediate group's
 core; it is zero for the completed whole-domain merge. Per-attempt
 records include cavity area, preserved work and rejection reason. Timings cover

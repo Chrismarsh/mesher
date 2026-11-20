@@ -1,6 +1,6 @@
 import json
 import io
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import os
 from pathlib import Path
 import tempfile
@@ -234,7 +234,7 @@ class CavityGeometryTests(unittest.TestCase):
             with self.assertRaisesRegex(PatchError, 'after 1 attempts.*stage0_r4_c0'):
                 merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20], box(0, 0, 40, 20), [],
                     {'max_area': 8, 'remesh_band_width': 2, 'remesh_max_attempts': 1,
-                     'out_prefix': '/example/stage0_r4_c0'}, '.', changed)
+                     'out_prefix': '/example/stage0_r4_c0', 'mesher_debug': True}, '.', changed)
         grow.assert_not_called()
         self.assertNotIn('Growing cavity', log.getvalue())
         self.assertIn('[stage0_r4_c0]', log.getvalue())
@@ -671,21 +671,36 @@ class CgalCavityTests(unittest.TestCase):
         b = np.array([[6000, 0, 0], [8000, 0, 0], [8000, 2000, 0]], dtype=float)
         tris = np.array([[0, 1, 2]])
         domain = box(0, 0, 8000, 3500)
-        cavities = []
-        def record_cavity(cavity, constraints, args, directory, fixed):
-            cavities.append(cavity)
-            return remesh_domain(cavity, constraints, args, directory, fixed)
-        v, t, stats = merge_cavity(a, tris, [0, 0, 4000, 3500], b, tris, [4000, 0, 8000, 3500],
-                                  domain, [], options, self.work, record_cavity)
-        self.assertEqual(stats['attempts'], 2)
-        self.assertEqual(stats['band_width'], 1000)
-        self.assertEqual(stats['retained_triangles'], 1)
-        self.assertEqual(cavities[1].difference(cavities[0]).symmetric_difference(Polygon(a[:, :2])).area, 0)
-        self.assertEqual(set(map(tuple, v[t[0]])), set(map(tuple, b)))
-        validate_patch(v, t, domain)
-        report = audit(v, t)
-        self.assertTrue(report['valid'], report)
-        self.assertEqual(report['hanging_nodes'], 0)
+        for debug in (False, True):
+            with self.subTest(debug=debug):
+                log = io.StringIO()
+                cavities = []
+                def record_cavity(cavity, constraints, args, directory, fixed):
+                    cavities.append(cavity)
+                    return remesh_domain(cavity, constraints, args, directory, fixed)
+                with redirect_stdout(log):
+                    v, t, stats = merge_cavity(a, tris, [0, 0, 4000, 3500], b, tris, [4000, 0, 8000, 3500],
+                                          domain, [], dict(options, mesher_debug=debug), self.work, record_cavity)
+                self.assertEqual(stats['attempts'], 2)
+                self.assertEqual(stats['band_width'], 1000)
+                self.assertEqual(stats['retained_triangles'], 1)
+                self.assertEqual(cavities[1].difference(cavities[0]).symmetric_difference(Polygon(a[:, :2])).area, 0)
+                self.assertEqual(set(map(tuple, v[t[0]])), set(map(tuple, b)))
+                validate_patch(v, t, domain)
+                report = audit(v, t)
+                self.assertTrue(report['valid'], report)
+                self.assertEqual(report['hanging_nodes'], 0)
+                if debug:
+                    self.assertIn('Remesh candidate rejected', log.getvalue())
+                    self.assertIn('Growing cavity locally', log.getvalue())
+                    self.assertIn('Merge complete', log.getvalue())
+                    np.testing.assert_array_equal(v, quiet_v)
+                    np.testing.assert_array_equal(t, quiet_t)
+                else:
+                    self.assertEqual(log.getvalue(), '')
+                    quiet_v, quiet_t = v.copy(), t.copy()
+                folder = sorted(self.work.glob('cavity-*'))[-1]
+                self.assertIn('reason=angle', (folder / 'backend.log').read_text())
 
     def test_production_retained_tips_are_selected_and_local_growth_clears_angles(self):
         from collections import Counter
@@ -1171,16 +1186,24 @@ class CgalCavityTests(unittest.TestCase):
                 work.mkdir()
                 shutil.copyfile(self.dem, work / 'case_projected.tif')
                 cwd = os.getcwd()
+                progress_log = io.StringIO()
                 try:
                     os.chdir(work)
-                    final = run_mpi_meshing(str(work) + '/', 'case', 0, 0, 40, 20,
-                        self.options['mesher_path'], str(domain_file), {}, {}, {},
-                        8, .25, 1, 'rmse', False, 1, 0, False,
-                        f'mpirun --oversubscribe -n {ranks} {sys.executable}', ranks,
-                        remesh_options={'remesh_band_width': 2,
-                                        'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
+                    with redirect_stderr(progress_log):
+                        final = run_mpi_meshing(str(work) + '/', 'case', 0, 0, 40, 20,
+                            self.options['mesher_path'], str(domain_file), {}, {}, {},
+                            8, .25, 1, 'rmse', False, 1, 0, False,
+                            f'mpirun --oversubscribe -n {ranks} {sys.executable}', ranks,
+                            remesh_options={'remesh_band_width': 2,
+                                            'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
                 finally:
                     os.chdir(cwd)
+                self.assertIn(f'MPI tiles: {ranks}/{ranks}', progress_log.getvalue())
+                completed = [line for line in progress_log.getvalue().splitlines()
+                             if line.startswith('MPI merge ') and line.endswith(' | complete')]
+                self.assertEqual(sum(int(line.split(': ')[1].split('/')[0]) for line in completed), ranks-1)
+                self.assertNotIn('\r', progress_log.getvalue())
+                self.assertFalse(list(work.glob('.mesher-progress-*')))
                 self.assertEqual(compute_mpi_final_npz_path(str(work), 'case', 95), final)
                 layout = json.loads((work / 'case_mpi_layout.json').read_text())
                 self.assertEqual(layout['rows'] * layout['cols'], ranks)

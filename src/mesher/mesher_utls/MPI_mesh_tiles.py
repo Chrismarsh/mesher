@@ -10,6 +10,7 @@ import json
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
+from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
 def str2bool(s: str) -> bool:
@@ -24,9 +25,10 @@ def mesh_tile(args):
     from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, tile_domain
     tile_bbox = args['tile_bbox']
     band = args['band_width']
-    domain = tile_domain(load_domain(args['outer_polygon_shp']), tile_bbox, band, args['tile_prefix'])
+    domain = tile_domain(load_domain(args['outer_polygon_shp']), tile_bbox, band, args['tile_prefix'],
+                         mesher_debug=args.get('mesher_debug', False))
     if domain.is_empty:
-        print(f'Tile core owns no domain area; skipping halo meshing [{args["tile_prefix"]}]', flush=True)
+        debug_log(args, f'Tile core owns no domain area; skipping halo meshing [{args["tile_prefix"]}]')
         verts, tris = np.empty((0, 3)), np.empty((0, 3), dtype=np.int64)
     else:
         verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
@@ -48,6 +50,7 @@ def main(pickle_file: str, disconnect: bool):
 
     for args in param_args_split[MPI.COMM_WORLD.rank]:
         mesh_tile(args)
+        complete_task(args)
 
     if disconnect:
         comm = MPI.Comm.Get_parent()

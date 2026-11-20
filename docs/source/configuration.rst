@@ -171,6 +171,22 @@ Enables *n* Lloyd iterations for serial meshing. MPI cavity remeshing requires `
 
 Enables verbose output
 
+.. confval:: mesher_debug
+
+   :type: boolean
+   :default: False
+
+Enables detailed MPI meshing diagnostics: backend heartbeats, rejected patch
+attempts, local cavity growth, preserved-work counts, clipping extensions and
+per-merge timings. Also enables the existing C++ backend debug option.
+
+By default MPI tile generation and each merge stage show compact completion
+counts and elapsed time. Terminals update one progress line; redirected/PBS
+logs receive start/end lines and a heartbeat every 30 seconds. Counts represent
+completed tasks, not triangle counts or estimated remaining time. Fatal errors
+and reproduction-folder paths remain visible with debug disabled. Failed
+backend attempts retain their inputs and full ``backend.log`` in either mode.
+
 Outputs
 ========
 .. confval:: user_output_dir
