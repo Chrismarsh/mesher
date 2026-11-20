@@ -19,7 +19,8 @@ import time
 import numpy as np
 from osgeo import ogr
 from shapely import STRtree, from_wkb, polygons, prepare, union_all
-from shapely.geometry import LineString, Polygon, box, mapping
+from shapely.geometry import LineString, Point, Polygon, box, mapping
+from shapely.geometry.polygon import orient
 from shapely.ops import polygonize
 
 from mesher.mesh_topology import MeshTopologyError, build_neighbours, boundary_subdivisions
@@ -102,23 +103,79 @@ def load_domain(path):
     return polygon_domain(union_all(pieces))
 
 
-def tile_domain(domain, bounds, halo_width):
-    """Keep halo components only when they contain domain area owned by this tile.
+def _acute_clip_corners(clipped, domain):
+    """Find convex corners below the backend shape bound with an artificial edge."""
+    candidates = []
+    parts = [clipped] if clipped.geom_type == 'Polygon' else clipped.geoms
+    for part in parts:
+        part = orient(part)  # Domain interior lies to the left of every ring.
+        for ring in [part.exterior, *part.interiors]:
+            points = np.asarray(ring.coords[:-1])
+            a, b = np.roll(points, 1, axis=0), np.roll(points, -1, axis=0)
+            u, v = a-points, b-points
+            lengths = np.linalg.norm(u, axis=1), np.linalg.norm(v, axis=1)
+            cross = u[:, 0]*v[:, 1] - u[:, 1]*v[:, 0]
+            # Same squared-sine bound as Criteria(0.125, ...) in meshercxx.
+            with np.errstate(divide='ignore', invalid='ignore'):
+                acute = (cross < 0) & (np.sum(u*v, axis=1) > 0) & ((cross / lengths[0] / lengths[1])**2 < .125)
+            candidates.extend((points[i], a[i], b[i], min(lengths[0][i], lengths[1][i])/4)
+                              for i in np.flatnonzero(acute))
+    if not candidates:
+        return []
+    epsilon = _coordinate_tolerance(domain)
+    x0, y0, x1, y1 = clipped.bounds
+    # Buffer only nearby physical linework, not the complete large domain.
+    physical = domain.boundary.intersection(box(x0-epsilon, y0-epsilon, x1+epsilon, y1+epsilon)).buffer(epsilon)
+    prepare(physical)
+    return [(p, radius) for p, a, b, radius in candidates
+            if not (physical.covers(LineString([a, p])) and physical.covers(LineString([p, b])))]
 
-    Halo-only fragments cannot supply retained core triangles. Meshing them can
-    introduce impossible input angles where a buffered boundary meets the halo
-    box. Their actual owning tiles and the unchanged global domain still cover
-    them. Use strictly positive area, never a small-area cutoff: thin owned
-    pieces must not be silently removed. Point/line contact owns no area.
+
+def _clipped_domain(domain, bounds, padding, corner_radius, context=None):
+    """Cover the entire owned core, extending only artificial acute clipping tips.
+
+    A disk centred on a cut/physical-edge intersection makes the new cut meet
+    that edge roughly perpendicularly. Only the clipping window grows; the
+    physical domain, holes and every positive-area owned piece remain intact.
+    The final group contains the whole domain and needs no artificial cuts.
     """
-    core = domain.intersection(box(*bounds))
-    if core.area == 0:
+    core = box(*bounds)
+    if domain.intersection(core).area == 0:
         return Polygon()
-    halo = polygon_domain(domain.intersection(box(bounds[0]-halo_width, bounds[1]-halo_width,
-                                                  bounds[2]+halo_width, bounds[3]+halo_width)))
-    parts = [halo] if halo.geom_type == 'Polygon' else list(halo.geoms)
-    owned = [part for part in parts if part.intersection(core).area > 0]
-    return polygon_domain(union_all(owned))
+    window = box(bounds[0]-padding, bounds[1]-padding, bounds[2]+padding, bounds[3]+padding)
+
+    def owned_parts(window):
+        clipped = polygon_domain(domain.intersection(window))
+        parts = [clipped] if clipped.geom_type == 'Polygon' else clipped.geoms
+        # Point/line-only contact owns nothing. Never apply a small-area cutoff.
+        return polygon_domain(union_all([p for p in parts if p.intersection(core).area > 0]))
+
+    clipped = owned_parts(window)
+    initial_area, expanded = clipped.area, 0
+    # Bounded, local geometry work; unresolved physical/constraint angles still
+    # go through strict backend validation and preserve its reproduction files.
+    for _ in range(4):
+        corners = _acute_clip_corners(clipped, domain)
+        disks = [Point(p).buffer(min(corner_radius, radius), quad_segs=4)
+                 for p, radius in corners if min(corner_radius, radius) > _coordinate_tolerance(domain)]
+        if not disks:
+            break
+        window = union_all([window, *disks])
+        candidate = owned_parts(window)
+        if candidate.equals(clipped):
+            break
+        expanded += len(disks)
+        clipped = candidate
+    if expanded:
+        label = f' [{Path(context).name}]' if context else ''
+        print(f'Extended artificial clipping corners{label}: corners={expanded}, '
+              f'added_halo_area={clipped.area-initial_area:.6g}', flush=True)
+    return clipped
+
+
+def tile_domain(domain, bounds, halo_width, context=None):
+    """Mesh owned halo components without introducing unavoidable cut angles."""
+    return _clipped_domain(domain, bounds, halo_width, halo_width/2, context)
 
 
 def load_constraints(paths):
@@ -284,6 +341,7 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
                    '--patch-interfaces', str(work / 'interfaces.json')]
         (work / 'invocation.json').write_text(json.dumps({'command': command, 'cwd': os.getcwd(),
             'tile': options.get('tile_prefix'), 'merge': options.get('out_prefix'),
+            'core_bbox': options.get('core_bbox', options.get('tile_bbox')),
             'domain_bounds': list(domain.bounds), 'domain_area': domain.area}, indent=2))
         preparation_seconds = time.perf_counter() - started
         code, backend_seconds = _run_backend(command, work, options)
@@ -576,14 +634,19 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     axis, seam = _shared_interface(bounds_a, bounds_b)
     bounds = [min(bounds_a[0], bounds_b[0]), min(bounds_a[1], bounds_b[1]),
               max(bounds_a[2], bounds_b[2]), max(bounds_a[3], bounds_b[3])]
-    domain = polygon_domain(domain.intersection(box(*bounds)))
-    if domain.is_empty:
-        return np.empty((0, 3)), np.empty((0, 3), dtype=np.int64), {'attempts': 0}
     supplied_width = options.get('remesh_band_width')
     width = float(2 * math.sqrt(options['max_area']) if supplied_width is None else supplied_width)
     attempts = int(options.get('remesh_max_attempts', 12))
     if not np.isfinite(width) or width <= 0 or attempts < 1:
         raise PatchError('Remesh band width and attempt count must be positive')
+    context = options.get('out_prefix') or options.get('tile_prefix')
+    core_area = domain.intersection(box(*bounds)).area
+    # Intermediate group boxes can recreate the same acute cuts as initial
+    # tiles. Give only those corners local halos; ownership boxes never change.
+    domain = _clipped_domain(domain, bounds, 0, width/2, context)
+    if domain.is_empty:
+        return np.empty((0, 3)), np.empty((0, 3), dtype=np.int64), {'attempts': 0}
+    options = dict(options, core_bbox=bounds)
     joined_v = np.vstack((vertices_a, vertices_b))
     joined_t = np.vstack((triangles_a, triangles_b + len(vertices_a)))
     sources = np.arange(len(joined_t))  # Nonnegative: unchanged original; negative: generation.
@@ -592,7 +655,6 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
     physical_boundary = _physical_boundary_band(domain)
     growth_rings, interface_recovery = 1, False
-    context = options.get('out_prefix') or options.get('tile_prefix')
     label = f' [{Path(context).name}]' if context else ''
     last_error = None
     history = []
@@ -618,6 +680,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
 
     def finish(v, t, provenance, attempt, patch_count):
         stats = dict(totals, attempts=attempt+1, band_width=width, patch_triangles=patch_count,
+                     boundary_halo_area=domain.area-core_area,
                      retained_triangles=int(np.count_nonzero(provenance > -(attempt+1))),
                      original_triangles_retained=int(np.count_nonzero(provenance >= 0)),
                      generated_triangles_reused=int(np.count_nonzero((provenance < 0) & (provenance > -(attempt+1)))),

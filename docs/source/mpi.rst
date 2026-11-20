@@ -76,8 +76,26 @@ the owning tiles and subsequent merges cover those fragments. Point or line
 contact does not count as ownership, and no small-area cutoff is applied.
 Owned fragments still have to satisfy all shape requirements.
 
-At a merge, only whole triangles inside each
-tile's nonoverlapping core and outside the removal band are retained. The
+An owned component can also have an acute corner created by the rectangular
+cut. Refinement cannot remove an input angle below the shape bound. At such
+corners, extend the clipping window locally with a small polygonal disk so its
+new edge meets the physical boundary at a wider angle. Intersect that enlarged
+window with the unchanged physical domain. This preserves all owned core area,
+holes and physical corners; it does not trim slivers or relax angle checks.
+The disk radius is bounded by half the halo/band width and a quarter of either
+incident edge length. At most four geometry passes are made before the normal
+strict backend checks. Logs report the number of extensions and added halo area.
+
+Intermediate merge groups use the same local extension where their core box
+would recreate an acute cut. Their rectangular ownership boxes stay unchanged.
+These temporary halo triangles are subject to normal whole-triangle ownership
+at the next merge. The final group covers the complete physical domain, so no
+artificial outer cuts or extra halo area remain. This clipping correction is
+Python-only; it does not need a further C++ rebuild after the preserved-work
+backend has been installed.
+
+At a merge, only whole triangles inside each tile's nonoverlapping core and
+outside the removal band are retained. The
 cavity is the intended polygonal domain **minus the coverage of those retained
 triangles**. It is not a rectangle filled over existing triangles, and triangles
 are never selected by centroid ownership. This set difference is central to
@@ -162,7 +180,7 @@ explicit; there is no silent fallback to the shared-edge algorithm.
 
 Backend or validation failures retain a ``cavity-*`` directory whose path is
 reported in the exception. It contains ``domain.json``, ``constraints.json``,
-``invocation.json`` (the command, working directory and tile/merge identity),
+``invocation.json`` (the command, working directory, tile/merge identity and core bounds),
 ``interfaces.json`` and the complete ``backend.log``.
 Subdivision failures preserve a ``repair-*`` directory with parent boundaries,
 invocation and log. ``mesh.json.stats.json`` records backend counters on both
@@ -192,7 +210,9 @@ for the final elevation export.
 
 Only validated results are written. Metadata records attempts, original triangles
 retained, generated triangles reused, successfully subdivided parents, generated
-patch triangle count, local repair count and ``interface_recovery``. Per-attempt
+patch triangle count, local repair count and ``interface_recovery``.
+``boundary_halo_area`` records temporary area outside an intermediate group's
+core; it is zero for the completed whole-domain merge. Per-attempt
 records include cavity area, preserved work and rejection reason. Timings cover
 preparation, backend execution, refinement, raster evaluation, validation,
 local repair, stitching and I/O. Backend/refinement/raster timings are nested;
@@ -219,7 +239,11 @@ Build the C++ binary, then run:
 
 The C++ tests cover overlapping tiles, a shifted seam on sloping terrain, rugged
 terrain, holes, disconnected components, crossing physical constraints, a
-four-tile junction, retry exhaustion and the vertex budget. With OpenMPI
+four-tile junction, retry exhaustion and the vertex budget. Buffered boundary
+tests reproduce both unowned three-vertex fragments and owned five-vertex acute
+cuts, including at large projected coordinates. A complete tile/group merge
+checks that local halo extensions preserve the domain and disappear from the
+final result; actual acute physical corners still fail quality. With OpenMPI
 available, a four-rank tile/merge/export test runs as well. Without
 ``MESHER_TEST_EXE``, C++ integration tests are explicitly skipped.
 

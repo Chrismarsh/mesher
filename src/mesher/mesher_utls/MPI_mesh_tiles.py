@@ -261,7 +261,7 @@ def mesh_tile(args):
         from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints, remesh_domain, tile_domain
         tile_bbox = args['tile_bbox']
         band = args['band_width']
-        domain = tile_domain(load_domain(args['outer_polygon_shp']), tile_bbox, band)
+        domain = tile_domain(load_domain(args['outer_polygon_shp']), tile_bbox, band, args['tile_prefix'])
         if domain.is_empty:
             print(f'Tile core owns no domain area; skipping halo meshing [{args["tile_prefix"]}]', flush=True)
             verts, tris = np.empty((0, 3)), np.empty((0, 3), dtype=np.int64)

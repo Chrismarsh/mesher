@@ -14,6 +14,7 @@ import numpy as np
 from osgeo import gdal, osr
 from shapely import covers, polygons
 from shapely.geometry import box, Polygon, LineString, mapping, shape
+from shapely.affinity import rotate, translate, scale
 
 from mesher.mesher_utls.mpi_remesh import (
     PatchError, PatchQualityError, merge_cavity, mesh_coverage, remesh_domain,
@@ -42,7 +43,33 @@ def audit(vertices, triangles):
         'nvertex': len(vertices), 'nelem': len(triangles)}})[0]
 
 
+def buffered_slanted_domain():
+    # The physical rectangle has right angles; rectangular clipping creates
+    # the acute 20.1093-degree corner reported for the five-vertex tile input.
+    rectangle = translate(rotate(box(-50, -2.5, 50, 2.5), 20.1093, origin=(0, 0)), -22, -17)
+    rectangle = scale(rectangle, xfact=1000, yfact=1000, origin=(0, 0))
+    return rectangle.buffer(200, join_style=2).simplify(10, preserve_topology=True).buffer(-200)
+
+
 class CavityGeometryTests(unittest.TestCase):
+    def test_local_cut_extensions_keep_owned_area_holes_and_physical_boundary(self):
+        for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
+            with self.subTest(origin=(x, y)):
+                domain = translate(buffered_slanted_domain(), x, y)
+                core = box(x, y, x+20000, y+20000)
+                centre = domain.intersection(core).buffer(-50).representative_point()
+                hole = box(centre.x-25, centre.y-25, centre.x+25, centre.y+25)
+                self.assertTrue(domain.intersection(core).covers(hole))
+                domain = domain.difference(hole)
+                raw = domain.intersection(box(x-5000, y-5000, x+25000, y+25000))
+                result = tile_domain(domain, list(core.bounds), 5000)
+                self.assertGreater(result.area, raw.area)
+                self.assertLess(result.area-raw.area, 5000**2)
+                self.assertEqual(domain.intersection(core).difference(result).area, 0)
+                self.assertAlmostEqual(result.difference(domain).area, 0, places=5)
+                self.assertEqual(result.intersection(hole).area, 0)
+                self.assertEqual(result.difference(raw).intersection(core).area, 0)
+
     def test_halo_point_or_line_contact_does_not_own_core_area(self):
         for domain in (box(-2, 2, -1, 3), box(-2, 2, 0, 3), box(-2, -2, 0, 0)):
             with self.subTest(domain=domain.wkt):
@@ -334,6 +361,75 @@ class CgalCavityTests(unittest.TestCase):
             mesh_tile(args)
         self.assertFalse((self.work / 'owned.npz').exists())
         self.assertFalse((self.work / 'owned.json').exists())
+
+    def test_five_vertex_owned_tile_extends_only_its_artificial_corner(self):
+        from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
+        options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
+                       remesh_band_width=5000, remesh_max_vertices=500000)
+        for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
+            with self.subTest(origin=(x, y)):
+                domain = translate(buffered_slanted_domain(), x, y)
+                bounds = [x, y, x+20000, y+20000]
+                raw = domain.intersection(box(x-5000, y-5000, x+25000, y+25000))
+                self.assertEqual(len(raw.exterior.coords)-1, 5)
+                self.assertGreater(domain.intersection(box(*bounds)).area, 0)
+                with self.assertRaises(PatchQualityError) as failure:
+                    remesh_domain(raw, [], options, self.work)
+                self.assertIn('vertices=5', str(failure.exception))
+                self.assertTrue(any(f['reason'] == 'angle' and abs(f['min_angle_degrees']-20.1093) < 1e-4
+                                    for f in failure.exception.failures))
+                domain_file = self.work / 'buffered.geojson'
+                domain_file.write_text(json.dumps(mapping(domain)))
+                args = dict(options, merge_method='remesh', tile_bbox=bounds, band_width=5000,
+                            outer_polygon_shp=str(domain_file), constraints=[], base_dir=str(self.work)+'/',
+                            tile_prefix='owned_cut')
+                mesh_tile(args)
+                with np.load(self.work / 'owned_cut.npz') as mesh:
+                    v, t = mesh['verts'], mesh['tris']
+                    validate_patch(v, t, tile_domain(domain, bounds, 5000))
+                    self.assertTrue(audit(v, t)['valid'])
+                    covered_core = mesh_coverage(v, t).intersection(box(*bounds))
+                    self.assertLess(covered_core.symmetric_difference(domain.intersection(box(*bounds))).area, 1e-5)
+                self.assertFalse(json.loads((self.work / 'owned_cut.json').read_text())['empty_tile'])
+
+    def test_intermediate_cut_halos_disappear_in_complete_merge(self):
+        from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
+        from mesher.mesher_utls.MPI_merge_tiles import merge_tiles
+        domain = buffered_slanted_domain()
+        domain_file = self.work / 'whole.geojson'
+        domain_file.write_text(json.dumps(mapping(domain)))
+        options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
+                       remesh_band_width=5000, remesh_max_vertices=500000, merge_method='remesh',
+                       outer_polygon_shp=str(domain_file), constraints=[])
+        bounds = [[-80000, -40000, 0, 0], [0, -40000, 40000, 0],
+                  [-80000, 0, 0, 20000], [0, 0, 40000, 20000]]
+        def files(name):
+            return {'npz': str(self.work / (name+'.npz')), 'meta': str(self.work / (name+'.json'))}
+        for i, core in enumerate(bounds):
+            mesh_tile(dict(options, tile_bbox=core, band_width=5000,
+                           base_dir=str(self.work)+'/', tile_prefix=f'tile{i}'))
+        group_halo_area = []
+        for row in range(2):
+            name = f'row{row}'
+            merge_tiles(dict(options, tile_a=files(f'tile{2*row}'), tile_b=files(f'tile{2*row+1}'),
+                             out_prefix=str(self.work / name)))
+            metadata = json.loads((self.work / (name+'.json')).read_text())
+            core = box(*metadata['core_bbox'])
+            group_halo_area.append(metadata['remesh_report']['boundary_halo_area'])
+            with np.load(self.work / (name+'.npz')) as mesh:
+                covered = mesh_coverage(mesh['verts'], mesh['tris'])
+                self.assertLess(covered.intersection(core).symmetric_difference(domain.intersection(core)).area, 1e-5)
+                self.assertTrue(audit(mesh['verts'], mesh['tris'])['valid'])
+        self.assertGreater(max(group_halo_area), 0)
+        merge_tiles(dict(options, tile_a=files('row0'), tile_b=files('row1'), out_prefix=str(self.work / 'final')))
+        with np.load(self.work / 'final.npz') as mesh:
+            validate_patch(mesh['verts'], mesh['tris'], domain)
+            report = audit(mesh['verts'], mesh['tris'])
+            self.assertTrue(report['valid'], report)
+            self.assertEqual(report['components'], 1)
+        metadata = json.loads((self.work / 'final.json').read_text())['remesh_report']
+        self.assertAlmostEqual(metadata['boundary_halo_area'], 0)
+        self.assertGreater(metadata['original_triangles_retained'], 0)
 
     def test_batched_subdivision_multiple_sides_at_large_coordinates(self):
         from mesher.mesher_utls.mpi_remesh import subdivide_parents
