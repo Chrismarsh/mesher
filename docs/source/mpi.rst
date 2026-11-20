@@ -49,7 +49,6 @@ meshing entry point. Install the updated Python dependencies (including Shapely
    mpi_merge_method = "remesh"
    reuse_mesh = False
    lloyd_itr = 0
-   mpi_global_lloyd = 0
 
 Use a projected working CRS with area and length units consistent with
 ``min_area``/``max_area``. Start in a separate output directory to retain older
@@ -228,9 +227,11 @@ local repair, stitching and I/O. Backend/refinement/raster timings are nested;
 local repair time includes its backend and validation. They must not all be added
 as independent phases. Backend progress/heartbeats are printed about every ten
 seconds while waiting; counters measure work, not a convergence percentage.
-Parameters are extracted after geometry is finalized. Current MPI smoothing is
-disabled for this path because it does not preserve the checked constraints and
-criteria.
+Parameters are extracted after geometry is finalized. The distributed MPI
+smoother has been removed because it did not preserve the checked constraints
+and criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
+``mpi_global_lloyd`` from MPI configurations; ``mpi_global_lloyd=0`` remains a
+compatibility no-op. Serial Lloyd smoothing is still available via ``lloyd_itr``.
 
 This change addresses seam geometry and correctness. Pairwise stages still load
 the two tile/group arrays, and the final export remains in memory. It does not

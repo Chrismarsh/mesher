@@ -69,7 +69,7 @@ def main():
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
         MPI_exec_str, MPI_nworkers, mpi_mesh, \
-            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file = read_config(configfile)
+        mesher_debug, use_exactextract, write_param_per_file = read_config(configfile)
 
 
     ########################################################
@@ -596,21 +596,6 @@ def main():
         data = np.load(final_npz_path)
         verts = data['verts']
         tris = data['tris']
-        if mpi_global_lloyd > 0:
-            verts_path = base_dir + base_name + '_mpi_lloyd_verts.npy'
-            tris_path = base_dir + base_name + '_mpi_lloyd_tris.npy'
-            out_verts_path = base_dir + base_name + '_mpi_lloyd_verts_out.npy'
-            np.save(verts_path, verts)
-            np.save(tris_path, tris)
-            lloyd_rows, lloyd_cols = compute_tile_grid_allow_unused(MPI_nworkers)
-            run_mpi_lloyd(verts_path, tris_path, out_verts_path, outputBufferfn,
-                          mpi_lloyd_boundary_tol, mpi_global_lloyd,
-                          MPI_exec_str, MPI_nworkers,
-                          shared_edge_constraints=True,
-                          shared_edge_tol=mpi_lloyd_boundary_tol,
-                          tile_rows=lloyd_rows,
-                          tile_cols=lloyd_cols)
-            verts = np.load(out_verts_path)
         mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose)
     else:
         mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
@@ -1023,27 +1008,12 @@ def read_config(configfile):
     if hasattr(X, 'mpi_mesh'):
         mpi_mesh = X.mpi_mesh
 
-    mpi_global_lloyd = 0
-    if hasattr(X, 'mpi_global_lloyd'):
-        mpi_global_lloyd = X.mpi_global_lloyd
-
-    mpi_lloyd_boundary_tol = 0.0
-    if hasattr(X, 'mpi_lloyd_boundary_tol'):
-        mpi_lloyd_boundary_tol = X.mpi_lloyd_boundary_tol
-    elif mpi_global_lloyd > 0:
-        min_area_val = locals().get('min_area', None)
-        if min_area_val is None:
-            min_area_val = getattr(X, 'min_area', None)
-        if min_area_val is None:
-            min_area_val = locals().get('max_area', 1.0)
-        mpi_lloyd_boundary_tol = max(1e-6, math.sqrt(min_area_val))
-
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
         wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file
+        mesher_debug, use_exactextract, write_param_per_file
 
 
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
@@ -1412,41 +1382,6 @@ def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, tot
     os.remove('pickled_mesh_merge_args.pickle')
 
 
-def run_mpi_lloyd(verts_path, tris_path, out_verts_path, outer_polygon_shp,
-                  boundary_tol, iterations, MPI_exec_str, MPI_nworkers,
-                  shared_edge_constraints=False, shared_edge_tol=None,
-                  tile_rows=None, tile_cols=None):
-    args = {
-        'verts_path': verts_path,
-        'tris_path': tris_path,
-        'out_verts_path': out_verts_path,
-        'outer_polygon_shp': outer_polygon_shp,
-        'boundary_tol': boundary_tol,
-        'iterations': iterations,
-        'shared_edge_constraints': shared_edge_constraints,
-        'shared_edge_tol': shared_edge_tol,
-        'tile_rows': tile_rows,
-        'tile_cols': tile_cols
-    }
-    with open('pickled_lloyd_args.pickle', 'wb') as f:
-        cloudpickle.dump(args, f)
-
-    MPI_lloyd_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                  'MPI_do_lloyd.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_lloyd_path} pickled_lloyd_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_lloyd_path,
-                                         'pickled_lloyd_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_lloyd_args.pickle')
-
-
 def mpi_remesh_options_from_config(config):
     """Validate MPI meshing settings before preparing or replacing any inputs."""
     if getattr(config, 'mpi_merge_method', 'remesh') != 'remesh':
@@ -1454,9 +1389,11 @@ def mpi_remesh_options_from_config(config):
     for name in ('mpi_merge_snap_tol', 'mpi_shared_edge_spacing', 'mpi_shared_edge_constraints'):
         if getattr(config, name, None) is not None:
             raise ValueError(f'{name} belongs to the retired shared-edge implementation; remove it from the configuration')
-    if getattr(config, 'mpi_global_lloyd', 0) > 0:
-        raise ValueError('mpi_global_lloyd must be 0 with remesh: the current MPI smoother does not preserve the validated patch criteria')
-    if getattr(config, 'lloyd_itr', 0) > 0:
+    if getattr(config, 'mpi_global_lloyd', 0) != 0:
+        raise ValueError('Distributed MPI smoothing has been retired; remove mpi_global_lloyd or set it to 0')
+    if getattr(config, 'mpi_lloyd_boundary_tol', None) is not None:
+        raise ValueError('mpi_lloyd_boundary_tol belongs to the retired distributed smoother; remove it from the configuration')
+    if getattr(config, 'lloyd_itr', 0) != 0:
         raise ValueError('lloyd_itr must be 0 with MPI remeshing; smoothing does not preserve the validated patch criteria')
     return {'merge_method': 'remesh',
             'remesh_band_width': getattr(config, 'mpi_remesh_band_width', None),

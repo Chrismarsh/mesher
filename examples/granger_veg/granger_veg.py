@@ -27,10 +27,6 @@ MPI_nworkers=4
 mpi_mesh=True
 MPI_exec_str='mpirun -n 4 python '
 nworkers_gdal=1
-mpi_global_lloyd = 0
-
-
-
 
 parameter_files = {
     'landcover': {'file': '../data/eosd.tif',

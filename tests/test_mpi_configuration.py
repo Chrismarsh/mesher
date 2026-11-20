@@ -67,3 +67,18 @@ class MpiConfigurationTests(unittest.TestCase):
             tile = {'meta': str(meta), 'npz': 'not-read.npz'}
             with self.assertRaisesRegex(ValueError, 'Cannot merge old shared-edge tiles'):
                 merge_tiles({'tile_a': tile, 'tile_b': tile})
+
+    def test_disabled_smoothing_setting_is_compatible(self):
+        defaults = mpi_remesh_options_from_config(SimpleNamespace())
+        self.assertEqual(defaults, mpi_remesh_options_from_config(SimpleNamespace(mpi_global_lloyd=0)))
+
+    def test_retired_smoother_controls_fail_clearly(self):
+        for count in (1, -1):
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, 'smoothing.*retired.*mpi_global_lloyd'):
+                mpi_remesh_options_from_config(SimpleNamespace(mpi_global_lloyd=count))
+        with self.assertRaisesRegex(ValueError, 'mpi_lloyd_boundary_tol.*retired.*remove'):
+            mpi_remesh_options_from_config(SimpleNamespace(mpi_lloyd_boundary_tol=0))
+
+    def test_mpi_cannot_enable_serial_lloyd(self):
+        with self.assertRaisesRegex(ValueError, 'lloyd_itr must be 0 with MPI'):
+            mpi_remesh_options_from_config(SimpleNamespace(lloyd_itr=1))

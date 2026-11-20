@@ -144,7 +144,7 @@ Lloyd iterations
 
    :type: int
 
-Enables *n* Lloyd iterations. As per the `CGAL documentation <https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization>`_: the goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees. 100 iterations is a suggested amount. However, please note this does invalidate the numerical guarantees about the minimum amount of error introduced to the mesh.
+Enables *n* Lloyd iterations for serial meshing. MPI cavity remeshing requires ``lloyd_itr=0``. As per the `CGAL documentation <https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization>`_: the goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees. 100 iterations is a suggested amount. However, please note this does invalidate the numerical guarantees about the minimum amount of error introduced to the mesh.
 
 
 .. |no_lloyd| image:: images/no_lloyd.jpg
@@ -574,8 +574,8 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
 
     The only supported value is ``remesh``. It generates overlapping tiles and replaces artificial boundaries
     with validated local CGAL meshes. Requires a rebuilt C++ executable,
-    Shapely >= 2, a projected working CRS, ``lloyd_itr=0``, and
-    ``mpi_global_lloyd=0``. The shared-edge implementation has been retired.
+    Shapely >= 2, a projected working CRS and ``lloyd_itr=0``.
+    The shared-edge implementation has been retired.
     Remove ``mpi_merge_snap_tol``, ``mpi_shared_edge_spacing`` and
     ``mpi_shared_edge_constraints`` from old MPI configurations and regenerate
     shared-edge intermediates with ``reuse_mesh=False``. See :doc:`mpi` for
@@ -617,19 +617,10 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     the budget is reached. This does not cap memory used by retained tile
     arrays, graph construction, or GEOS validation.
 
-.. confval:: mpi_global_lloyd
-
-    :type: int
-    :default: 0
-
-    Run N distributed Lloyd iterations on the stitched mesh after MPI merge. Doesn't work well so leave disabled.
-
-.. confval:: mpi_lloyd_boundary_tol
-
-    :type: double
-    :default: sqrt(min_area)
-
-    Boundary lock distance for distributed Lloyd (vertices within this distance to the domain boundary remain fixed).
+The distributed MPI smoother has also been retired because it did not preserve
+validated mesh criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
+``mpi_global_lloyd`` from MPI configurations. ``mpi_global_lloyd=0`` is accepted
+as a compatibility no-op. Serial ``lloyd_itr`` remains available.
 
 .. confval:: use_exactextract
 
