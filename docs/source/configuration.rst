@@ -436,6 +436,21 @@ Classifier
 
 A user-specified function can be given as a classified function. This allows, after the ``method`` function has combined all the rasters into a single value for the triangle, to re-value this value. This function takes 1 value, and returns 1 value. It is called **after** the ``method`` function is called.
 
+Classifier parameters retain the legacy ``ALL_TOUCHED`` raster sampler: each
+input raster is aggregated independently, then the classifier is called once
+per triangle with those aggregates. The former ``per-pixel classifier`` warning
+was misleading; no per-pixel classification was taking place. Routine sampling
+messages are now shown only with ``mesher_debug=True``.
+
+Raster NoData values, invalid mask pixels and nonfinite samples are excluded
+before aggregation and before applying the band's scale/offset. Valid zero
+values are retained. An empty raster intersection or an aggregation with no
+valid samples returns ``NaN``. Classifiers receive this missing value and should
+handle it explicitly instead of mapping it through a catch-all class. For
+example, ``if not np.isfinite(value): return np.nan`` preserves missing data.
+For multiple inputs, a classifier can decide which missing inputs matter (for
+example, a valid water mask may be sufficient even when canopy height is missing).
+
 For example, perhaps a vegetation density metric as derived from remote sensing is to be converted to a canopy height. This could be done as:
 ::
 
@@ -643,10 +658,17 @@ as a compatibility no-op. Serial ``lloyd_itr`` remains available.
     :type: bool
     :default: True
 
-    Use the exactextract Python API for parameterization when possible. If any
-    parameter uses a `classifier`, exactextract still runs but the classifier
-    is applied to aggregated per-triangle stats (not per-pixel). Set to False
-    to use the slower per-pixel path.
+    Use the exactextract Python API for parameters with built-in aggregation
+    methods and no classifier. Supported methods are ``mean`` (or ``average``),
+    ``mode`` (coverage-weighted majority), ``min`` and ``max``. Unknown methods
+    raise an error instead of silently computing a mean.
+
+    Parameters with a ``classifier`` or callable ``method`` use the legacy
+    ``ALL_TOUCHED`` sampler, preserving callback order and sampling semantics.
+    Set to False to use that sampler for all parameters. Its unweighted pixel
+    statistics can differ from exactextract's coverage-weighted statistics,
+    including mode tie handling. Every sampler uses each parameter raster's
+    own grid and NoData metadata.
 
 .. confval:: write_param_per_file
 

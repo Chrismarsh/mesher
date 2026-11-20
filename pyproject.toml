@@ -19,6 +19,7 @@ dependencies = [
     'matplotlib',
     'cloudpickle',
     'gdal[numpy]',
+    'exactextract',
     'metis',
     'mpi4py',
     'natsort'

@@ -7,11 +7,13 @@ except ModuleNotFoundError:
     from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
 ensure_mesher_on_path()
 import cloudpickle
-import warnings
 from mpi4py import MPI
 import numpy as np
 from osgeo import gdal, ogr, osr
-import importlib
+import importlib.util
+import importlib.machinery
+from functools import lru_cache
+from mesher.mesher_utls.mpi_progress import debug_log
 from exactextract import exact_extract
 from exactextract.feature import JSONFeatureSource
 
@@ -26,87 +28,65 @@ def str2bool(s: str) -> bool:
     return False
 
 def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
-    originX = gt[0]
-    originY = gt[3]
-    pixel_width = gt[1]
-    pixel_height = gt[5]
-    x1 = int((bbox[0] - originX) / pixel_width)
-    x2 = int((bbox[1] - originX) / pixel_width) + 1
-
-    y1 = int((bbox[3] - originY) / pixel_height)
-    y2 = int((bbox[2] - originY) / pixel_height) + 1
-
-    xsize = x2 - x1
-    ysize = y2 - y1
-
-    # only apply this correction if we are touching the underlying raster.
-    if x1 < rasterXsize and y1 < rasterYsize:
-        # deal with small out of bounds
-        if x1 < 0:
-            x1 = 0
-
-        if y1 < 0:
-            y1 = 0
-
-        if x1 + xsize > rasterXsize:
-            xsize = rasterXsize - x1
-
-        if y1 + ysize > rasterYsize:
-            ysize = rasterYsize - y1
-
-    return x1, y1, xsize, ysize
-
+    """Clip the geometry envelope to this raster's own affine pixel grid."""
+    inverse = gdal.InvGeoTransform(gt)
+    if inverse is None:
+        raise ValueError('Cannot invert raster geotransform')
+    pixels = [gdal.ApplyGeoTransform(inverse, x, y)
+              for x in (bbox[0], bbox[1]) for y in (bbox[2], bbox[3])]
+    xs, ys = np.asarray(pixels).T
+    # Include the high-edge pixel as in the existing ALL_TOUCHED sampler.
+    # Clamp both endpoints, not the origin of an already-sized window.
+    x0 = max(0, min(rasterXsize, int(np.floor(xs.min()))))
+    y0 = max(0, min(rasterYsize, int(np.floor(ys.min()))))
+    x1 = max(0, min(rasterXsize, int(np.floor(xs.max())) + 1))
+    y1 = max(0, min(rasterYsize, int(np.floor(ys.max())) + 1))
+    return x0, y0, x1-x0, y1-y0
 
 
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
+    if src_offset[2] <= 0 or src_offset[3] <= 0:
+        return float('nan')
     raster = rds.GetRasterBand(1)
+    # Integer class rasters cannot hold NaN. Mask raw samples before applying
+    # scale/offset so the NoData sentinel cannot become an ordinary value.
+    src_array = np.asarray(raster.ReadAsArray(*src_offset), dtype=np.float64).copy()
+    valid = np.isfinite(src_array)
+    nodata = raster.GetNoDataValue()
+    if nodata is not None:
+        valid &= src_array != nodata
+    if raster.GetMaskFlags() != gdal.GMF_ALL_VALID:
+        valid &= raster.GetMaskBand().ReadAsArray(*src_offset) != 0
 
-    src_array = raster.ReadAsArray(*src_offset)
-
-    # Rasterize it
     driver = gdal.GetDriverByName('MEM')
     mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
     mask.SetGeoTransform(new_gt)
     mask.SetProjection(srs.ExportToWkt())
     err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
     if err != 0:
-        raise Exception("Error rasterizing layer: %s" % err)
+        raise RuntimeError('Error rasterizing layer: %s' % err)
+    valid &= mask.ReadAsArray() != 0
+    src_array[~valid] = np.nan
 
-    # holds a mask of where the triangle is on the raster
-    mask_arr = mask.ReadAsArray()
-
-    # Mask the source data array with our current feature
-    src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
-
-    scale = raster.GetScale() or 1.0
-    offset = raster.GetOffset() or 0.0
-
-    src_array = src_array * scale + offset
-
-    output = -9999.0
+    scale, offset = raster.GetScale(), raster.GetOffset()
+    src_array = src_array * (1.0 if scale is None else scale) + (0.0 if offset is None else offset)
+    if not np.isfinite(src_array).any():
+        return float('nan')
 
     if callable(aggMethod):
         output = float(aggMethod(src_array))
-        if np.isnan(output):
-            output = raster.GetNoDataValue()
+    elif aggMethod == 'mode':
+        vals, counts = np.unique(src_array[np.isfinite(src_array)], return_counts=True)
+        output = float(vals[np.argmax(counts)])
+    elif aggMethod in ('mean', 'average'):
+        output = float(np.nanmean(src_array))
+    elif aggMethod == 'max':
+        output = float(np.nanmax(src_array))
+    elif aggMethod == 'min':
+        output = float(np.nanmin(src_array))
     else:
-        if aggMethod == 'mode':
-            vals, counts = np.unique(src_array[~np.isnan(src_array)], return_counts=True)
-            if len(vals) == 0:
-                output = raster.GetNoDataValue()
-            else:
-                output = float(vals[np.argmax(counts)])
-
-        elif aggMethod == 'mean':
-            output = float(np.nanmean(src_array))
-        elif aggMethod == 'max':
-            output = float(np.nanmax(src_array))
-        elif aggMethod == 'min':
-            output = float(np.nanmin(src_array))
-        else:
-            raise Exception('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
-
+        raise ValueError('Unknown data aggregation method %s' % aggMethod)
 
     # feature.SetField(key, output)
 
@@ -140,13 +120,24 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
     return output
 
 
+@lru_cache(maxsize=4)
+def _load_config(configfile):
+    # Load once per worker, including before unpickling callbacks referenced
+    # through the config module. Re-executing it for every triangle is unsafe
+    # for stateful configuration and needlessly expensive.
+    loader = importlib.machinery.SourceFileLoader('config', configfile)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader('config', loader))
+    sys.modules['config'] = module
+    loader.exec_module(module)
+    return module
+
+
 def do_parameterize(gt, is_geographic, mesh,
                     parameter_files, current_parameter,
                     initial_conditions, RasterXSize, RasterYSize, srs_proj4,
                     elem, configfile):
 
-    X = importlib.machinery.SourceFileLoader('config', configfile)
-    X = X.load_module()
+    _load_config(configfile)
 
     params = {}
     ics = {}
@@ -161,7 +152,7 @@ def do_parameterize(gt, is_geographic, mesh,
     v2 = mesh['mesh']['elem'][elem][2]
 
     # Create a temporary vector layer in memory
-    mem_drv = ogr.GetDriverByName('MEM')
+    mem_drv = ogr.GetDriverByName('MEM') or ogr.GetDriverByName('Memory')
     mem_ds = mem_drv.CreateDataSource('out')
     mem_layer = mem_ds.CreateLayer('poly', srs_out, ogr.wkbPolygon)
 
@@ -208,16 +199,6 @@ def do_parameterize(gt, is_geographic, mesh,
     # calculate new geotransform of the feature subset
     geom = feature.geometry()
 
-    src_offset = bbox_to_pixel_offsets(gt, geom.GetEnvelope(), RasterXSize, RasterYSize)
-    new_gt = (
-        (gt[0] + (src_offset[0] * gt[1])),
-        gt[1],
-        0.0,
-        (gt[3] + (src_offset[1] * gt[5])),
-        0.0,
-        gt[5]
-    )
-
     # get the value under each triangle from each parameter file
     # for key, data in parameter_files.items():
 
@@ -228,7 +209,14 @@ def do_parameterize(gt, is_geographic, mesh,
 
     if data.get('file') is None:
         raise RuntimeError(f'Parameter {key} has no open rasters in data[\"file\"]')
-    for f, m in zip(data['file'], data['method']):
+    methods = data['method'] if isinstance(data['method'], list) else [data['method']]
+    if len(data['file']) != len(methods):
+        raise ValueError(f'{key}: Specify one aggregation method per input raster')
+    for f, m in zip(data['file'], methods):
+        raster_gt = f.GetGeoTransform()
+        src_offset = bbox_to_pixel_offsets(raster_gt, geom.GetEnvelope(), f.RasterXSize, f.RasterYSize)
+        x, y = gdal.ApplyGeoTransform(raster_gt, src_offset[0], src_offset[1])
+        new_gt = (x, raster_gt[1], raster_gt[2], y, raster_gt[4], raster_gt[5])
         output.append(rasterize_elem(f, mem_layer, m, srs_out, new_gt, src_offset))
 
     if 'classifier' in data:
@@ -277,6 +265,8 @@ def main(pickle_file: str,
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
 
+    config = _load_config(configfile)
+    log_options = {'mesher_debug': getattr(config, 'mesher_debug', False)}
     prepare_only = '--prepare-only' in extra_args
 
     if prepare_only:
@@ -343,12 +333,14 @@ def main(pickle_file: str,
         return features
 
     def stats_for_method(method):
-        if method == 'mode':
-            return 'majority'
-        return 'mean'
+        stats = {'mode': 'majority', 'mean': 'mean', 'average': 'mean', 'min': 'min', 'max': 'max'}
+        if method not in stats:
+            raise ValueError(f'Unknown data aggregation method {method}')
+        return stats[method]
 
     # Fast path: compute per-triangle stats once via exactextract. Parameters
-    # with classifiers fall back to the per-pixel path so semantics match.
+    # with classifiers/custom reducers retain the legacy ALL_TOUCHED sampler.
+    # A classifier receives one aggregate per input raster, not individual pixels.
     # exactextract is much faster for zonal stats;
     if use_exactextract:
         features = build_tri_features(mesh)
@@ -366,7 +358,8 @@ def main(pickle_file: str,
         for key, data in parameter_files.items():
             if key == 'area':
                 continue
-            if 'classifier' in data:
+            methods = data['method'] if isinstance(data['method'], list) else [data['method']]
+            if 'classifier' in data or any(callable(method) for method in methods):
                 slow_params[key] = data
             else:
                 exact_params[key] = data
@@ -374,14 +367,14 @@ def main(pickle_file: str,
         for key, data in exact_params.items():
             if len(data) == 0:
                 continue
-            print(f'Rank {MPI.COMM_WORLD.rank} {key}')
-            print(data)
+            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}')
+            debug_log(log_options, str(data))
             files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
             methods = data['method'] if isinstance(data['method'], list) else [data['method']]
             values = []
             for fpath, method in zip(files, methods):
                 stats = stats_for_method(method)
-                print(fpath)
+                debug_log(log_options, str(fpath))
                 result = exact_extract(fpath, features, stats)
                 values.append([row.get('properties').get(stats) for row in result])
             for tri_idx in range(mesh['mesh']['nelem']):
@@ -389,9 +382,8 @@ def main(pickle_file: str,
 
         # Slow path for classifier-based parameters.
         for key, data in slow_params.items():
-            warnings.warn(f'Rank {MPI.COMM_WORLD.rank} {key} uses per-pixel classifier; '
-                          f'exactextract is skipped for this parameter.')
-            print(f'Rank {MPI.COMM_WORLD.rank} {key} (per-pixel classifier)')
+            debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}: legacy ALL_TOUCHED aggregation; '
+                      'classifier, if supplied, runs once per triangle after aggregation')
             parameter_files[key]['file'] = []
             if key != 'area':
                 files = data['filename'] if isinstance(data['filename'], list) else [data['filename']]
@@ -417,7 +409,7 @@ def main(pickle_file: str,
                                       srs_proj4, tri_idx, configfile)
                 ret_tri[tri_idx]['area'] = ret['area']
 
-        print(f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
+        debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
         with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
             cloudpickle.dump(ret_tri, f)
         os.remove(pickle_file)
@@ -428,7 +420,7 @@ def main(pickle_file: str,
 
     for key, data in parameter_files.items():
 
-        print(f'Rank {MPI.COMM_WORLD.rank} {key}')
+        debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}')
         parameter_files[key]['file'] = []
 
         # load the data
@@ -455,7 +447,7 @@ def main(pickle_file: str,
 
         parameter_files[key]['file'] = []
 
-    print(f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
+    debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
     # there is no way to return the uuid mangled filename + param name  so save it to a pickle which we can get later
     with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
         cloudpickle.dump(ret_tri, f)
