@@ -21,6 +21,7 @@ import re
 import json
 import os
 import shlex
+import tempfile
 import numpy as np
 import math
 
@@ -35,7 +36,6 @@ import time
 from mpi4py import MPI
 import glob
 
-from natsort import natsorted
 
 
 from . import mesher_utls
@@ -624,14 +624,7 @@ def main():
     # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
     start_time = time.perf_counter()
 
-    MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher_utls.__file__),
-                                                      'MPI_do_parameterize.py'))
-    verts_path = base_dir + base_name + '_mpi_param_verts.npy'
-    elems_path = base_dir + base_name + '_mpi_param_elems.npy'
-    np.save(verts_path, np.asarray(mesh['mesh']['vertex'], dtype=float))
-    np.save(elems_path, np.asarray(mesh['mesh']['elem'], dtype=int))
-
-    prepare_args = {
+    parameter_args = {
         'gt': gt,
         'is_geographic': is_geographic,
         'parameter_files': parameter_files,
@@ -639,52 +632,10 @@ def main():
         'RasterXSize': src_ds.RasterXSize,
         'RasterYSize': src_ds.RasterYSize,
         'srs_proj4': srs_out.ExportToProj4(),
-        'verts_path': verts_path,
-        'elems_path': elems_path,
-        'use_exactextract': use_exactextract
+        'use_exactextract': use_exactextract,
     }
-    with open('pickled_param_prepare_args.pickle', 'wb') as f:
-        cloudpickle.dump(prepare_args, f)
-
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_prepare_args.pickle False {configfile} --prepare-only"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_do_parameterize_path,
-                                         'pickled_param_prepare_args.pickle', 'True', configfile, '--prepare-only'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_param_prepare_args.pickle')
-
-    if MPI_exec_str is not None:
-        # RANK is placeholder, it's change within the do parameterize call
-        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_do_parameterize_path,
-                                         'pickled_param_args_RANK.pickle', 'True', configfile],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    for tmp_path in (verts_path, elems_path):
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-
-
-    files = natsorted(glob.glob('pickled_param_args_rets_*.pickle'))
-    # print(files)
-
-    for file in files:
-        with open(file, 'rb') as f:
-            ret_tri.extend(cloudpickle.load(f))
-        os.remove(file)
+    ret_tri = run_parameterization(mesh, parameter_args, base_dir,
+                                   MPI_exec_str, MPI_nworkers, configfile)
 
     for key, data in parameter_files.items():
         parameter_files[key]['file'] = None
@@ -695,9 +646,6 @@ def main():
     for t in ret_tri:
         for key, data in t.items():
             params[key].append(data)
-
-    #reset this as it was mangled during the MPI call
-    params['id'] = [x for x in range(0, mesh['mesh']['nelem'])]
 
 
     for t in ret_tri_ic:
@@ -739,6 +687,48 @@ def main():
     with open(user_output_dir + output_name + '.ic', 'w') as outfile:
         json.dump(ics, outfile, indent=4)
     print('Done')
+
+
+def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile):
+    """Launch workers once against shared arrays and collect only this run's results."""
+    from .mesher_utls.MPI_do_parameterize import rank_face_range
+
+    worker = os.path.join(os.path.dirname(mesher_utls.__file__), 'MPI_do_parameterize.py')
+    configfile = os.path.abspath(configfile)
+    if nranks < 1:
+        raise ValueError('Parameterization requires at least one MPI rank')
+    with tempfile.TemporaryDirectory(prefix='mesher-parameters-', dir=os.path.abspath(base_dir)) as work:
+        verts_path = os.path.join(work, 'vertices.npy')
+        elems_path = os.path.join(work, 'elements.npy')
+        np.save(verts_path, np.asarray(mesh['mesh']['vertex'], dtype=float))
+        np.save(elems_path, np.asarray(mesh['mesh']['elem'], dtype=np.int64).reshape(-1, 3))
+        manifest = dict(parameter_args, verts_path=verts_path, elems_path=elems_path,
+                        output_dir=work, nranks=nranks)
+        inputs = os.path.join(work, 'inputs.pickle')
+        with open(inputs, 'wb') as stream:
+            cloudpickle.dump(manifest, stream)
+
+        if exec_str is not None:
+            command = f'{exec_str} {shlex.join([worker, inputs, "False", configfile])}'
+            print(command, flush=True)
+            subprocess.check_call(command, shell=True, cwd=os.getcwd())
+        else:
+            comm = MPI.COMM_SELF.Spawn(sys.executable, args=[worker, inputs, 'True', configfile],
+                                       maxprocs=nranks)
+            comm.Disconnect()
+
+        result = []
+        nfaces = len(mesh['mesh']['elem'])
+        for rank in range(nranks):
+            start, stop = rank_face_range(nfaces, rank, nranks)
+            with open(os.path.join(work, f'result_{rank}.pickle'), 'rb') as stream:
+                batch = cloudpickle.load(stream)
+            if ((batch['rank'], batch['start'], batch['stop']) != (rank, start, stop)
+                    or len(batch['triangles']) != stop-start
+                    or any(row['id'] != index for index, row in enumerate(batch['triangles'], start))):
+                raise ValueError(f'Invalid parameterization results for rank {rank}')
+            result.extend(batch['triangles'])
+        return result
 
 
 def find_gdal_prefix():

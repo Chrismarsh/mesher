@@ -8,7 +8,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 import cloudpickle
 import numpy as np
@@ -103,7 +104,13 @@ class ParameterizeTests(unittest.TestCase):
         self.assertEqual(self.aggregate([ds], 'mean', mesh=mesh), 2)
 
     def run_worker(self, parameters, exact=True, geographic=False):
-        args = [self.gt, geographic, self.mesh, parameters, {}, 2, 2, self.srs.ExportToProj4(), exact]
+        np.save(self.work/'vertices.npy', np.asarray(self.mesh['mesh']['vertex'], dtype=float))
+        np.save(self.work/'elements.npy', np.asarray(self.mesh['mesh']['elem'], dtype=int).reshape(-1, 3))
+        args = {'gt': self.gt, 'is_geographic': geographic, 'parameter_files': parameters,
+                'initial_conditions': {}, 'RasterXSize': 2, 'RasterYSize': 2,
+                'srs_proj4': self.srs.ExportToProj4(), 'use_exactextract': exact,
+                'verts_path': str(self.work/'vertices.npy'), 'elems_path': str(self.work/'elements.npy'),
+                'nranks': 1, 'output_dir': str(self.work)}
         path = self.work / 'args.pickle'
         path.write_bytes(cloudpickle.dumps(args))
         previous = os.getcwd()
@@ -112,8 +119,8 @@ class ParameterizeTests(unittest.TestCase):
             os.chdir(self.work)
             with redirect_stdout(log):
                 parameterize.main(str(path), False, str(self.config))
-            with open('pickled_param_args_rets_0.pickle', 'rb') as stream:
-                result = cloudpickle.load(stream)
+            with open(self.work/'result_0.pickle', 'rb') as stream:
+                result = cloudpickle.load(stream)['triangles']
         finally:
             os.chdir(previous)
         return result, log.getvalue()
@@ -340,6 +347,65 @@ class ParameterizeTests(unittest.TestCase):
         self.aggregate([ds])
         self.assertEqual(self.config.with_suffix('.count').read_text(), '1')
 
+    def test_rank_ownership_is_contiguous_and_arrays_remain_file_backed(self):
+        np.save(self.work/'vertices.npy', np.zeros((100000, 3)))
+        elements = np.arange(30).reshape(10, 3)
+        np.save(self.work/'elements.npy', elements)
+        prep = {'verts_path': str(self.work/'vertices.npy'), 'elems_path': str(self.work/'elements.npy')}
+        # Only paths are serialized, regardless of the global vertex count.
+        self.assertLess(len(cloudpickle.dumps(prep)), 1000)
+        for nranks in (1, 4, 16):
+            expected = np.array_split(elements, nranks)
+            previous = 0
+            for rank in range(nranks):
+                mesh, start, stop = parameterize._load_rank_mesh(prep, rank, nranks)
+                self.assertEqual(start, previous)
+                self.assertEqual(stop-start, len(expected[rank]))
+                previous = stop
+                for key in ('vertex', 'elem'):
+                    if mesh['mesh'][key].size:
+                        self.assertIsInstance(mesh['mesh'][key], np.memmap)
+                        self.assertIsNotNone(mesh['mesh'][key].filename)
+                    else:
+                        self.assertEqual(mesh['mesh'][key].nbytes, 0)
+                    self.assertFalse(mesh['mesh'][key].flags.writeable)
+                np.testing.assert_array_equal(mesh['mesh']['elem'], expected[rank])
+            self.assertEqual(previous, len(elements))
+
+    def test_worker_rejects_mismatched_launcher_size(self):
+        inputs = self.work/'mismatched.pickle'
+        inputs.write_bytes(cloudpickle.dumps({'nranks': 2}))
+        with self.assertRaisesRegex(ValueError, 'expected 2 MPI ranks'):
+            parameterize.main(str(inputs), False, str(self.config))
+
+    def test_launcher_propagates_failure_and_rejects_invalid_rank_results(self):
+        from mesher import mesher_cli
+        metadata = {'gt': self.gt, 'is_geographic': False, 'parameter_files': {},
+                    'initial_conditions': {}, 'RasterXSize': 2, 'RasterYSize': 2,
+                    'srs_proj4': self.srs.ExportToProj4(), 'use_exactextract': True}
+        # Exercise the Spawn path independently of a cluster launcher. Failed
+        # jobs cannot reuse unrelated pickles in the working directory.
+        for mode in ('failure', 'missing', 'wrong_ids'):
+            def spawn(*args, **kwargs):
+                inputs = Path(kwargs['args'][1])
+                prep = cloudpickle.loads(inputs.read_bytes())
+                self.assertNotIn('mesh', prep)
+                self.assertNotIn('vertex', prep)
+                if mode == 'failure':
+                    raise RuntimeError('worker failed')
+                if mode == 'wrong_ids':
+                    (inputs.parent/'result_0.pickle').write_bytes(cloudpickle.dumps(
+                        {'rank': 0, 'start': 0, 'stop': 1, 'triangles': [{'id': 8}]}))
+                return Mock()
+
+            fake_mpi = SimpleNamespace(COMM_SELF=SimpleNamespace(Spawn=Mock(side_effect=spawn)))
+            with patch.object(mesher_cli, 'MPI', fake_mpi), self.subTest(mode=mode):
+                error = {'failure': RuntimeError, 'missing': FileNotFoundError, 'wrong_ids': ValueError}[mode]
+                with self.assertRaises(error):
+                    mesher_cli.run_parameterization(self.mesh, metadata, str(self.work), None, 1, str(self.config))
+                self.assertEqual(fake_mpi.COMM_SELF.Spawn.call_count, 1)
+                self.assertEqual(list(self.work.glob('mesher-parameters-*')), [])
+
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_mpi_callbacks_from_config_and_empty_rank(self):
         self.config.write_text('import numpy as np\nmesher_debug = False\n'
@@ -353,6 +419,7 @@ class ParameterizeTests(unittest.TestCase):
         prep = {'gt': self.gt, 'is_geographic': False, 'RasterXSize': 2, 'RasterYSize': 2,
                 'srs_proj4': self.srs.ExportToProj4(), 'use_exactextract': True,
                 'verts_path': str(self.work/'vertices.npy'), 'elems_path': str(self.work/'triangles.npy'),
+                'nranks': 3, 'output_dir': str(self.work),
                 'initial_conditions': {}, 'parameter_files': {
                     'landcover': {'filename': [str(self.work/'classes.tif'), str(self.work/'numeric.tif')],
                                   'method': ['mode', 'mean'],
@@ -363,16 +430,52 @@ class ParameterizeTests(unittest.TestCase):
         inputs = self.work / 'prepare.pickle'
         inputs.write_bytes(cloudpickle.dumps(prep))
         command = ['mpirun', '--oversubscribe', '-n', '3', sys.executable, parameterize.__file__]
-        for arguments in ([str(inputs), 'False', str(self.config), '--prepare-only'],
-                          ['pickled_param_args_RANK.pickle', 'False', str(self.config)]):
-            run = subprocess.run(command+arguments, cwd=self.work, text=True, capture_output=True, timeout=45)
-            self.assertEqual(run.returncode, 0, run.stdout+run.stderr)
-            self.assertNotIn('per-pixel', run.stderr)
-            self.assertEqual(run.stdout, '')
-        results = [cloudpickle.loads((self.work/f'pickled_param_args_rets_{rank}.pickle').read_bytes())
-                   for rank in range(3)]
+        run = subprocess.run(command+[str(inputs), 'False', str(self.config)],
+                             cwd=self.work, text=True, capture_output=True, timeout=45)
+        self.assertEqual(run.returncode, 0, run.stdout+run.stderr)
+        self.assertNotIn('per-pixel', run.stderr)
+        self.assertEqual(run.stdout, '')
+        batches = [cloudpickle.loads((self.work/f'result_{rank}.pickle').read_bytes()) for rank in range(3)]
+        results = [batch['triangles'] for batch in batches]
         self.assertEqual(results[2], [])
+        self.assertTrue(inputs.exists())  # The parent owns shared-input cleanup.
+        self.assertEqual(list(self.work.glob('pickled_param_args_*.pickle')), [])
         for result, water, numeric in zip(results[:2], (9, 1), (10/3, 26/3)):
             self.assertAlmostEqual(result[0]['landcover'], 100*water+numeric, places=5)
             self.assertEqual(result[0]['raw'], water)
             self.assertEqual(result[0]['custom'], 19)
+
+        # The CLI launcher uses the same single-pass protocol. Verify quoting,
+        # global IDs, exact rank collection and temporary-file cleanup.
+        from mesher import mesher_cli
+        import shlex
+        root = self.work/'shared directory with spaces'; root.mkdir()
+        config_with_spaces = self.work/'config with spaces.py'
+        config_with_spaces.write_text(self.config.read_text())
+        mesh = {'mesh': {'vertex': np.load(prep['verts_path']), 'elem': np.load(prep['elems_path'])}}
+        command = f'mpirun --oversubscribe -n 3 {shlex.quote(sys.executable)}'
+        with redirect_stdout(io.StringIO()):
+            collected = mesher_cli.run_parameterization(mesh, prep, str(root), command, 3, str(config_with_spaces))
+        self.assertEqual(collected, results[0]+results[1])
+        self.assertEqual([row['id'] for row in collected], [0, 1])
+        self.assertEqual(list(root.iterdir()), [])
+
+        spawn_script = '''
+import cloudpickle, numpy as np, sys
+from mesher import mesher_cli
+from mesher.mesher_utls import MPI_do_parameterize as worker
+worker._load_config(sys.argv[2])
+with open(sys.argv[1], 'rb') as stream:
+    prep = cloudpickle.load(stream)
+mesh = {'mesh': {'vertex': np.load(prep['verts_path']), 'elem': np.load(prep['elems_path'])}}
+result = mesher_cli.run_parameterization(mesh, prep, sys.argv[3], None, 3, sys.argv[2])
+with open(sys.argv[4], 'wb') as stream:
+    cloudpickle.dump(result, stream)
+'''
+        spawned = self.work/'spawned.pickle'
+        run = subprocess.run([sys.executable, '-c', spawn_script, str(inputs), str(config_with_spaces),
+                              str(root), str(spawned)], cwd=self.work, text=True,
+                             capture_output=True, timeout=45)
+        self.assertEqual(run.returncode, 0, run.stdout+run.stderr)
+        self.assertEqual(cloudpickle.loads(spawned.read_bytes()), collected)
+        self.assertEqual(list(root.iterdir()), [])

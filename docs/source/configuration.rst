@@ -594,8 +594,16 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     and `job.sh` contains
     `srun --label --unbuffered  python "$@"`
 
-    The exec string used is `f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""` where MPI_do_parameterize_path
-    holds the path to the helper script that is run with python.
+    Parameterization appends the worker script, a shared input-manifest path,
+    ``False`` and the configuration path to this command, quoting these paths.
+    The launcher must wait until all workers finish. Its rank count must match
+    ``MPI_nworkers``.
+
+    Workers use one MPI launch and read shared vertex/element NumPy arrays
+    through read-only memory maps. Each rank owns a contiguous face range;
+    there is no separate preparation launch or full vertex-array pickle per
+    rank. Temporary inputs and rank results live in a unique directory under
+    the output directory, which must be accessible to every compute node.
 
     If `MPI_exec_str` is provided `MPI_nworkers` must also be provided.
 
