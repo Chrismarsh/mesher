@@ -30,8 +30,6 @@ nworkers_gdal=1
 mpi_global_lloyd = 0
 
 
-mpi_shared_edge_constraints=True
-mpi_shared_edge_spacing = 500
 
 
 parameter_files = {

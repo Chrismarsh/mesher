@@ -291,7 +291,7 @@ class CavityGeometryTests(unittest.TestCase):
             inputs = []
             for name, bounds in (('a', [0, 0, 1, 1]), ('b', [1, 0, 2, 1])):
                 np.savez(work / (name + '.npz'), verts=np.zeros((0, 3)), tris=np.zeros((0, 3), dtype=int))
-                (work / (name + '.json')).write_text(json.dumps({'core_bbox': bounds}))
+                (work / (name + '.json')).write_text(json.dumps({'core_bbox': bounds, 'merge_method': 'remesh'}))
                 inputs.append({'npz': str(work / (name + '.npz')), 'meta': str(work / (name + '.json'))})
             (work / 'joined.npz').write_bytes(b'previous mesh')
             (work / 'joined.json').write_bytes(b'previous metadata')
@@ -1012,10 +1012,10 @@ class CgalCavityTests(unittest.TestCase):
         try:
             os.chdir(self.work)
             final = run_mpi_meshing(str(self.work) + '/', 'case', 0, 0, 40, 20,
-                '/usr/bin', self.options['mesher_path'], str(domain_file), {}, {}, {},
-                8, .25, 1, 'rmse', 0, False, 1, 0, False,
+                self.options['mesher_path'], str(domain_file), {}, {}, {},
+                8, .25, 1, 'rmse', False, 1, 0, False,
                 f'mpirun --oversubscribe -n 4 {sys.executable}', 4,
-                remesh_options={'merge_method': 'remesh', 'remesh_band_width': 2,
+                remesh_options={'remesh_band_width': 2,
                                 'remesh_max_attempts': 6, 'remesh_max_vertices': 10000})
         finally:
             os.chdir(cwd)

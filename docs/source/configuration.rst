@@ -570,13 +570,16 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
 .. confval:: mpi_merge_method
 
     :type: str
-    :default: "shared"
+    :default: "remesh"
 
-    ``shared`` uses the existing densely sampled shared-edge merge.
-    ``remesh`` generates overlapping tiles and replaces artificial boundaries
+    The only supported value is ``remesh``. It generates overlapping tiles and replaces artificial boundaries
     with validated local CGAL meshes. Requires a rebuilt C++ executable,
     Shapely >= 2, a projected working CRS, ``lloyd_itr=0``, and
-    ``mpi_global_lloyd=0``. See :doc:`mpi` for the recovery and validation rules.
+    ``mpi_global_lloyd=0``. The shared-edge implementation has been retired.
+    Remove ``mpi_merge_snap_tol``, ``mpi_shared_edge_spacing`` and
+    ``mpi_shared_edge_constraints`` from old MPI configurations and regenerate
+    shared-edge intermediates with ``reuse_mesh=False``. See :doc:`mpi` for
+    recovery and validation rules.
 
 .. confval:: mpi_remesh_band_width
 
@@ -588,7 +591,7 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     smallest tile dimension. The area/coordinate units must be consistent.
     Retained faces affected by interface refinement or adjacent quality failures
     are absorbed locally on retry. Consecutive local retries double the number
-    of neighbouring rings removed (1, 2, 4, 8, ...), within retained components.
+    of neighbouring rings removed (1, 2, 4, then capped at 4), within retained components.
     Other recoverable failures double the
     current removal band. The physical domain and quality thresholds are unchanged.
 
@@ -614,15 +617,6 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     the budget is reached. This does not cap memory used by retained tile
     arrays, graph construction, or GEOS validation.
 
-.. confval:: mpi_merge_snap_tol
-
-    :type: double
-    :default: None
-
-    Override the snap tolerance used for ``shared`` merge vertex deduplication.
-    ``remesh`` connects retained interfaces by exact coordinates/IDs and does
-    not use this tolerance to weld unrelated vertices.
-
 .. confval:: mpi_global_lloyd
 
     :type: int
@@ -636,14 +630,6 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :default: sqrt(min_area)
 
     Boundary lock distance for distributed Lloyd (vertices within this distance to the domain boundary remain fixed).
-
-.. confval:: mpi_shared_edge_spacing
-
-    :type: double
-    :default: sqrt(min_area)
-
-    Target spacing used to densify shared tile boundary edges in ``shared``
-    mode. Ignored in ``remesh`` mode, where artificial seam vertices are removed.
 
 .. confval:: use_exactextract
 

@@ -16,36 +16,26 @@ mesher process running in a small job and spawn MPI sub-jobs in dedicated jobs. 
 ``MPI_exec_str`` can be a job submission script. Using the MPI spawn can sometimes not work, so setting
 ``MPI_exec_str=f'mpirun -n {MPI_nworkers} python '`` may be preferred.
 
-Mesh seam
-+++++++++++
+MPI mesh generation
++++++++++++++++++++
 
-There are two merge methods. ``mpi_merge_method="shared"`` is the compatibility
-default described below. The opt-in ``"remesh"`` method removes artificial
-seam constraints and is described in the next section.
+Set ``mpi_mesh=True`` to generate overlapping tiles in parallel. Cavity
+remeshing is the default and only supported merge method. It replaces
+artificial tile seams while preserving validated triangles away from repairs.
+The former shared-edge algorithm, its boundary densification and snap merge,
+and its export-time triangle splitter have been retired.
 
-The mesh generator is, by default, serial. For large meshes, this can be very slow. Enabling multiple MPI workers
-will split the domain into subdomains and mesh each subdomain independently. Points are placed
-along the seam, approximately spaced at the smallest allowed triangle size. This can be controlled with
-``mpi_shared_edge_spacing``. Setting a lower density can ensure this boundary seam is not over reprsented, but the
-triangles may not be strictly Delaunay while crossing the boundary. This can result in a regular pattern of small
-triangles. This is more evident in areas with low topographic variability than in areas with high variability.
+Remove ``mpi_shared_edge_spacing``, ``mpi_shared_edge_constraints`` and
+``mpi_merge_snap_tol`` from old MPI configurations. An explicit
+``mpi_merge_method="shared"`` fails with a migration message; omit it or set
+``"remesh"``. Old shared-edge intermediates cannot be reused: generate fresh
+tiles with ``reuse_mesh=False``. Keep older results in a separate output
+directory if needed.
 
-Independent refinement may add extra points to only one side of a shared edge.
-After loading the merged MPI arrays (and after optional global Lloyd iterations),
-Mesher reconciles these subdivisions before sampling elevations or face parameters.
-It splits coarse triangles using existing boundary vertices, rebuilds global
-neighbours, and requires each resulting seam segment to have a matching triangle
-on the opposite side. It rejects unresolved hanging nodes, coincident boundary
-vertices, degenerate/duplicate triangles, non-manifold edges, and gaps or
-same-side overlaps along repaired edges. Coordinates are not moved; local area changes are bounded by the
-XY detection tolerance (``1e-8`` in mesh coordinate units) and floating-point
-roundoff. Reconciliation does not guarantee Delaunay/angle quality or check
-arbitrary overlaps and coverage of the intended domain.
-
-The log reports the number of split faces and added triangles. Triangle counts
-and ordering can change, so parameter extraction and partitioning must use the
-resulting mesh. Existing ``.param`` files and partition metadata must not be
-attached to a mesh with repaired geometry.
+Export builds global neighbours and checks topology before sampling elevations
+or parameters. It preserves triangle count, connectivity and XY coordinates;
+it rejects hanging nodes and coincident boundary vertices instead of trying to
+repair the geometry after quality validation.
 
 Local cavity remeshing
 ++++++++++++++++++++++
@@ -326,34 +316,14 @@ still present, set the following in the original configuration and run Mesher:
    reuse_mesh = True
 
 Keep the original DEM/output paths and ``MPI_nworkers`` so the saved stitched
-file can be located. Mesher skips tile triangulation, reconciles the loaded
-arrays, and regenerates the exported mesh and face parameters. The stored
+file can be located. Only a completed cavity-remesh run with matching metadata
+is eligible. Mesher skips tile triangulation, validates the loaded topology,
+and regenerates the exported mesh and face parameters. The stored
 stitched NPZ is not modified. This workflow requires the original raster inputs
 and configuration; it cannot recover a complete model from the ``.mesh`` alone.
 Normal exported outputs are regenerated, so retain copies of any results you
 need to keep. ``meshaudit --rebuild-neighbours`` remains a neighbour-only tool
 and will refuse a mesh containing hanging nodes.
-
-Zoom in of a seam
-
-|image0-mpi|
-
-
-|image1-mpi|
-
-lloyd iterations
-++++++++++++++++++
-Global lloyd iterations breaks the alignment across the seams.
-
-MPI mesh gen
-+++++++++++++
-
-To do the triangulation in parallel, ``mpi_mesh=True`` must be set.
-
-
-
-.. |image0-mpi| image:: images/mpi_seam.png
-.. |image1-mpi| image:: images/mpi_seam_large.png
 
 Preservation regressions cover multiple split sides, large coordinates, the
 minimum-area stop, raster failures above that stop, poor-angle children, unchanged
