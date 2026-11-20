@@ -28,7 +28,7 @@ class ExtractPointTests(unittest.TestCase):
         vertices = [(-3.5, 1.5), (1.5, 2.5), (2.5, 2.5)]
         mesh = build_mesh_from_arrays(vertices, [(0, 1, 2)], raster, band, None, True, False)
         self.assertEqual([v[2] for v in mesh['mesh']['vertex']], [2.5, 2.0, 3.0])
-        self.assertEqual(mesh['mesh']['neigh'], [[-1, -1, -1]])
+        np.testing.assert_array_equal(mesh['mesh']['neigh'], [[-1, -1, -1]])
 
     def test_mpi_array_export_includes_reciprocal_neighbours(self):
         raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
@@ -38,9 +38,9 @@ class ExtractPointTests(unittest.TestCase):
         band.Fill(10)
         vertices = [(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5)]
         mesh = build_mesh_from_arrays(vertices, [(0, 1, 2), (0, 2, 3)], raster, band, None, True, False)
-        self.assertEqual(mesh['mesh']['neigh'], [[-1, 1, -1], [-1, -1, 0]])
+        np.testing.assert_array_equal(mesh['mesh']['neigh'], [[-1, 1, -1], [-1, -1, 0]])
         self.assertEqual(mesh['mesh']['nelem'], 2)
-        self.assertEqual(mesh['mesh']['elem'], [[0, 1, 2], [0, 2, 3]])
+        np.testing.assert_array_equal(mesh['mesh']['elem'], [[0, 1, 2], [0, 2, 3]])
         np.testing.assert_array_equal(np.asarray(mesh['mesh']['vertex'])[:, :2], vertices)
         self.assertTrue(audit_mesh(mesh)[0]['valid'])
 

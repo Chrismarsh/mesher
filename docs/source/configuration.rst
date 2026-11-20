@@ -770,3 +770,24 @@ still use the original square-grid naming rule and require their original
 
 
 
+
+Disk-backed preparation and export
+----------------------------------
+
+Mesh preparation stores coordinates, connectivity and global neighbours as NPY
+memory maps in a temporary directory beneath the mesh output directory. Existing
+NPZ meshes (including compressed archives) are extracted incrementally, so
+``reuse_mesh=True`` does not require loading their arrays into the Python heap.
+Serial Triangle files are read row by row into the same representation.
+
+Parameter workers process at most 32,768 faces per batch and write disjoint
+ranges of shared parameter columns. The parent validates rank completion and
+IDs without gathering triangle dictionaries. JSON retains the CHM schema;
+VTU uses one piece with streamed binary arrays and global point IDs. Shapefile
+export remains a face-at-a-time writer. These changes are automatic.
+
+The shared output filesystem must have room for mesh arrays, parameter columns,
+and temporary topology indexes. Memory-mapped pages are reclaimable file cache;
+RSS can include those pages. Native patch meshing, raster caches and boundary
+geometry still have their own memory requirements. Temporary preparation files
+are removed when export completes or raises an exception.

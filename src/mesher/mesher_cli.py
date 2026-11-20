@@ -28,7 +28,6 @@ import math
 import sys
 import shutil
 import importlib
-import vtk
 import warnings
 import cloudpickle
 
@@ -39,6 +38,8 @@ import glob
 
 
 from . import mesher_utls
+from .mesh_store import (batches, disk_array, copy_array, open_mesh_arrays,
+                         check_boundary_geometry, dump_json, write_vtu)
 from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
                             boundary_subdivisions)
 from .mesher_utls.raster_utils import fill_nodata
@@ -596,109 +597,90 @@ def main():
         print('Dropping parameter ' + key + ' and not writing to mesh due to user request')
         del parameter_files[key]
 
-    # holds our main mesh structure which we will write out to json to read into CHM
-    if mpi_mesh:
-        if final_npz_path is None:
-            raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
-        data = np.load(final_npz_path)
-        verts = data['verts']
-        tris = data['tris']
-        mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose)
-    else:
-        mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
+    # The preparation store lives through export; workers map the same files.
+    with tempfile.TemporaryDirectory(prefix='mesher-prepared-', dir=base_dir) as preparation_dir:
+        if mpi_mesh:
+            if final_npz_path is None:
+                raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
+            with open_mesh_arrays(final_npz_path, preparation_dir) as (verts, tris):
+                mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose,
+                                              directory=preparation_dir)
+        else:
+            mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs,
+                                               is_geographic, verbose, directory=preparation_dir)
 
-    print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
-    # holds parameters and initial conditions for CHM
-    params = {}
-    ics = {}
-    for key, data in parameter_files.items():
-        params[key] = []
+        print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
+        ics = {key: [] for key in initial_conditions}
 
-    params['area'] = []
-    params['id'] = []
-
-    for key, data in initial_conditions.items():
-        ics[key] = []
-
-    gt = src_ds.GetGeoTransform()
-
-    ret_tri = []
-    ret_tri_ic = []
-
-    print('Computing parameters and initial conditions')
-
-    # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
-    start_time = time.perf_counter()
-
-    parameter_args = {
-        'gt': gt,
-        'is_geographic': is_geographic,
-        'parameter_files': parameter_files,
-        'initial_conditions': initial_conditions,
-        'RasterXSize': src_ds.RasterXSize,
-        'RasterYSize': src_ds.RasterYSize,
-        'srs_proj4': srs_out.ExportToProj4(),
-        'use_exactextract': use_exactextract,
-    }
-    ret_tri = run_parameterization(mesh, parameter_args, base_dir,
-                                   MPI_exec_str, MPI_nworkers, configfile)
-
-    for key, data in parameter_files.items():
-        parameter_files[key]['file'] = None
-
-    for key, data in initial_conditions.items():
-        initial_conditions[key]['file'] = None
-
-    for t in ret_tri:
-        for key, data in t.items():
-            params[key].append(data)
+        gt = src_ds.GetGeoTransform()
 
 
-    for t in ret_tri_ic:
-        for key, data in t.items():
-            ics[key].append(data)
+        print('Computing parameters and initial conditions')
 
-    mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
+        # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
+        start_time = time.perf_counter()
 
-    print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
+        parameter_args = {
+            'gt': gt,
+            'is_geographic': is_geographic,
+            'parameter_files': parameter_files,
+            'initial_conditions': initial_conditions,
+            'RasterXSize': src_ds.RasterXSize,
+            'RasterYSize': src_ds.RasterYSize,
+            'srs_proj4': srs_out.ExportToProj4(),
+            'use_exactextract': use_exactextract,
+        }
+        params = run_parameterization(mesh, parameter_args, base_dir,
+                                      MPI_exec_str, MPI_nworkers, configfile,
+                                      output_dir=preparation_dir)
 
-    export_started = time.perf_counter()
-    output_name = base_name + '_mpi' if mpi_mesh else base_name
+        for key, data in parameter_files.items():
+            parameter_files[key]['file'] = None
 
-    if output_write_vtu:
-        print('Writing vtu file...')
-        write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
+        for key, data in initial_conditions.items():
+            initial_conditions[key]['file'] = None
 
-    if output_write_shp:
-        print('Writing shp file...')
-        write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
+        mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
 
+        print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
 
-    print('Saving mesh to file ' + output_name + '.mesh')
-    with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
-        json.dump(mesh, outfile, indent=4)
+        export_started = time.perf_counter()
+        output_name = base_name + '_mpi' if mpi_mesh else base_name
 
-    # pdb.set_trace()
-    if write_param_per_file:
-        print('Saving parameters to individual files')
-        for key, data in params.items():
-            out_path = user_output_dir + f'{output_name}.param.{key}.json'
-            with open(out_path, 'w') as outfile:
-                json.dump({key: data}, outfile, indent=4)
-    else:
-        print('Saving parameters to file ' + output_name + '.param')
-        with open(user_output_dir + output_name + '.param', 'w') as outfile:
-            json.dump(params, outfile, indent=4)
+        if output_write_vtu:
+            print('Writing vtu file...')
+            write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
 
-    print('Saving initial conditions  to file ' + output_name + '.ic')
-    with open(user_output_dir + output_name + '.ic', 'w') as outfile:
-        json.dump(ics, outfile, indent=4)
-    print(f'Export took {time.perf_counter() - export_started:.2f} s')
-    print(f'Total run took {time.perf_counter() - run_started:.2f} s')
-    print('Done')
+        if output_write_shp:
+            print('Writing shp file...')
+            write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
 
 
-def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile):
+        print('Saving mesh to file ' + output_name + '.mesh')
+        with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
+            dump_json(mesh, outfile)
+
+        # pdb.set_trace()
+        if write_param_per_file:
+            print('Saving parameters to individual files')
+            for key, data in params.items():
+                out_path = user_output_dir + f'{output_name}.param.{key}.json'
+                with open(out_path, 'w') as outfile:
+                    dump_json({key: data}, outfile)
+        else:
+            print('Saving parameters to file ' + output_name + '.param')
+            with open(user_output_dir + output_name + '.param', 'w') as outfile:
+                dump_json(params, outfile)
+
+        print('Saving initial conditions  to file ' + output_name + '.ic')
+        with open(user_output_dir + output_name + '.ic', 'w') as outfile:
+            dump_json(ics, outfile)
+        print(f'Export took {time.perf_counter() - export_started:.2f} s')
+        print(f'Total run took {time.perf_counter() - run_started:.2f} s')
+        print('Done')
+
+
+def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile, output_dir=None):
     """Launch workers once against shared arrays and collect only this run's results."""
     from .mesher_utls.MPI_do_parameterize import rank_face_range
 
@@ -710,10 +692,27 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
     with tempfile.TemporaryDirectory(prefix='mesher-parameters-', dir=os.path.abspath(base_dir)) as work:
         verts_path = os.path.join(work, 'vertices.npy')
         elems_path = os.path.join(work, 'elements.npy')
-        np.save(verts_path, np.asarray(mesh['mesh']['vertex'], dtype=float))
-        np.save(elems_path, np.asarray(mesh['mesh']['elem'], dtype=np.int64).reshape(-1, 3))
+        def shared_path(key, path, dtype):
+            array = mesh['mesh'][key]
+            if isinstance(array, np.memmap):
+                # Preparation arrays are entire files, not rank slices.
+                on_disk = np.load(array.filename, mmap_mode='r')
+                if (not isinstance(array.base, np.ndarray) and on_disk.shape == array.shape
+                        and on_disk.strides == array.strides and on_disk.dtype == array.dtype):
+                    array.flush()
+                    return str(array.filename)
+            copy_array(path, np.asarray(array, dtype=dtype).reshape(-1, 3))
+            return path
+        verts_path = shared_path('vertex', verts_path, float)
+        elems_path = shared_path('elem', elems_path, np.int64)
         manifest = dict(parameter_args, verts_path=verts_path, elems_path=elems_path,
                         output_dir=work, nranks=nranks)
+        if output_dir is not None:
+            names = list(dict.fromkeys([*parameter_args['parameter_files'], 'area', 'id']))
+            columns = {key: disk_array(os.path.join(output_dir, f'parameter-{i}.npy'),
+                                      (len(mesh['mesh']['elem']),), np.int64 if key == 'id' else float)
+                       for i, key in enumerate(names)}
+            manifest['result_paths'] = {key: str(value.filename) for key, value in columns.items()}
         inputs = os.path.join(work, 'inputs.pickle')
         with open(inputs, 'wb') as stream:
             cloudpickle.dump(manifest, stream)
@@ -737,6 +736,13 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
             start, stop = rank_face_range(nfaces, rank, nranks)
             with open(os.path.join(work, f'result_{rank}.pickle'), 'rb') as stream:
                 batch = cloudpickle.load(stream)
+            if output_dir is not None:
+                if batch != {'rank': rank, 'start': start, 'stop': stop, 'complete': True}:
+                    raise ValueError(f'Invalid parameterization completion for rank {rank}')
+                for lo, hi in batches(stop-start):
+                    if not np.array_equal(columns['id'][start+lo:start+hi], np.arange(start+lo, start+hi)):
+                        raise ValueError(f'Invalid parameterization IDs for rank {rank}')
+                continue
             if ((batch['rank'], batch['start'], batch['stop']) != (rank, start, stop)
                     or len(batch['triangles']) != stop-start
                     or any(row['id'] != index for index, row in enumerate(batch['triangles'], start))):
@@ -745,7 +751,7 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
         print(f'Parameter inputs: {inputs_seconds:.2f} s; '
               f'MPI workers: {workers_seconds:.2f} s; '
               f'result collection: {time.perf_counter() - collection_started:.2f} s', flush=True)
-        return result
+        return columns if output_dir is not None else result
 
 
 def find_gdal_prefix():
@@ -1175,204 +1181,80 @@ def mpi_final_npz_name(base_name, rows, cols):
     return f'{base_name}_mpi_{suffix}.npz'
 
 
-def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
-    # Export must preserve the triangles validated during cavity remeshing.
-    # Reject old/nonconforming arrays before sampling elevations or parameters.
-    print('Checking MPI mesh topology...', flush=True)
+def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose, directory=None):
+    """Keep one numeric representation; sample and repair elevations in place."""
     verts_xy = np.asarray(verts_xy, dtype=float)
     tris = integer_rows(tris, 'elem')
-    neighbours = build_neighbours(tris, len(verts_xy), verts_xy)
-    coincident, hanging = boundary_subdivisions(verts_xy, tris, neighbours, 1e-8)
-    if coincident:
-        raise MeshTopologyError('Coincident boundary vertices in MPI mesh; regenerate with reuse_mesh=False')
-    if next(hanging, None) is not None:
-        raise MeshTopologyError('Hanging boundary nodes in MPI mesh; regenerate with reuse_mesh=False')
-    mesh = {'mesh': {}}
-    mesh['mesh']['vertex'] = []
-    mesh['mesh']['elem'] = []
-    # Reconstruct the global graph after tile vertex IDs have been merged.
-    # Tile-local .neigh files cannot supply cross-tile neighbours.
-    mesh['mesh']['neigh'] = neighbours.tolist()
-    mesh['mesh']['nvertex'] = len(verts_xy)
-    mesh['mesh']['nelem'] = len(tris)
-    mesh['mesh']['is_geographic'] = is_geographic
-
+    def allocate(name, shape, dtype):
+        return (np.empty(shape, dtype=dtype) if directory is None else
+                disk_array(os.path.join(directory, name + '.npy'), shape, dtype))
+    elements = allocate('elements', tris.shape, np.int64)
+    for lo, hi in batches(len(tris)):
+        elements[lo:hi] = tris[lo:hi]
+    neighbours = build_neighbours(elements, len(verts_xy), verts_xy, chunk_size=32768,
+        output_path=None if directory is None else os.path.join(directory, 'neighbours.npy'),
+        temporary_directory=directory)
+    with tempfile.TemporaryDirectory(dir=directory) as work:
+        check_boundary_geometry(verts_xy, elements, neighbours, work)
+    vertices = allocate('vertices', (len(verts_xy), 3), float)
+    invalid = allocate('invalid-elevations', (len(verts_xy),), bool)
+    for lo, hi in batches(len(vertices)):
+        vertices[lo:hi, :2] = verts_xy[lo:hi, :2]
+        for i in range(lo, hi):
+            z = extract_point(src_ds, float(vertices[i, 0]), float(vertices[i, 1]))
+            invalid[i] = z is None or z == dem.GetNoDataValue() or not np.isfinite(z)
+            vertices[i, 2] = np.nan if invalid[i] else z
+    # Preserve the original ordered, one-pass propagation through face vertices.
+    for lo, hi in batches(len(elements)):
+        for tri in elements[lo:hi]:
+            for vid in tri:
+                if invalid[vid]:
+                    valid = tri[~invalid[tri]]
+                    if len(valid):
+                        vertices[vid, 2] = vertices[valid, 2].mean()
+                        invalid[vid] = False
+    count = sum(np.count_nonzero(invalid[lo:hi]) for lo, hi in batches(len(invalid)))
+    if count:
+        raise RuntimeError(f'Length of invalid nodes after correction= {count}. '
+                           'An entire triangle may lie outside the DEM; try reducing simplify_tol.')
+    m = dict(vertex=vertices, elem=elements, neigh=neighbours, nvertex=len(vertices),
+             nelem=len(elements), is_geographic=is_geographic)
     if not is_geographic:
-        mesh['mesh']['proj4'] = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
-
-    invalid_nodes = []
-
-    for i, v in enumerate(verts_xy):
-        mx = float(v[0])
-        my = float(v[1])
-        mz = extract_point(src_ds, mx, my)
-        if mz == dem.GetNoDataValue() or mz is None:
-            invalid_nodes.append(i)
-        mesh['mesh']['vertex'].append([mx, my, mz])
-
-    for tri in tris:
-        v0, v1, v2 = int(tri[0]), int(tri[1]), int(tri[2])
-
-        if v0 in invalid_nodes:
-            z_v1 = mesh['mesh']['vertex'][v1][2]
-            z_v2 = mesh['mesh']['vertex'][v2][2]
-            tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
-                invalid_nodes = [x for x in invalid_nodes if x != v0]
-
-        if v1 in invalid_nodes:
-            z_v0 = mesh['mesh']['vertex'][v0][2]
-            z_v2 = mesh['mesh']['vertex'][v2][2]
-            tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
-                invalid_nodes = [x for x in invalid_nodes if x != v1]
-
-        if v2 in invalid_nodes:
-            z_v1 = mesh['mesh']['vertex'][v1][2]
-            z_v0 = mesh['mesh']['vertex'][v0][2]
-            tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
-                invalid_nodes = [x for x in invalid_nodes if x != v2]
-
-        mesh['mesh']['elem'].append([v0, v1, v2])
-
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
-        errstr += 'reconstruct this triangle. '
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
-
-    return mesh
+        m.update(proj4=srs.ExportToProj4(), UTM_zone=srs.GetUTMZone())
+    return {'mesh': m}
 
 
-def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose):
-    mesh = {'mesh': {}}
-    mesh['mesh']['vertex'] = []
-
-    read_header = False
-    invalid_nodes = []
-
-    print('Reading nodes')
-    start_time = time.perf_counter()
-    with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
-        for line in f:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    num_nodes = int(header[0])
-                    read_header = True
-                    mesh['mesh']['nvertex'] = num_nodes
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    mx = float(items[1])
-                    my = float(items[2])
-
-                    mz = extract_point(src_ds, mx, my)
-
-                    if mz == dem.GetNoDataValue() or mz is None:
-                        invalid_nodes.append(int(items[0]) - 1)
-
-                    mesh['mesh']['vertex'].append([mx, my, mz])
-
-    print('Length of invalid nodes = ' + str(len(invalid_nodes)))
-    print('Reading nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    print('Reading in neighbour file')
-    start_time = time.perf_counter()
-    read_header = False
-    mesh['mesh']['neigh'] = []
-    with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    read_header = True
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    mesh['mesh']['neigh'].append([v0, v1, v2])
-
-    read_header = False
-    print('Reading neigh file took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    print('Repairing invalid triangles if needed...')
-    start_time = time.perf_counter()
-
-    mesh['mesh']['elem'] = []
-    mesh['mesh']['is_geographic'] = is_geographic
-
-    if not is_geographic:
-        mesh['mesh']['proj4'] = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
-
-    with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    nelem = int(header[0])
-                    mesh['mesh']['nelem'] = nelem
-                    read_header = True
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    if v0 in invalid_nodes:
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v0]
-
-                    if v1 in invalid_nodes:
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v1]
-
-                    if v2 in invalid_nodes:
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v2]
-                    mesh['mesh']['elem'].append([v0, v1, v2])
-
-    print('Repairing nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
-        errstr += 'reconstruct this triangle. '
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
-
-    return mesh
+def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose, directory=None):
+    """Read Triangle text files directly into numeric backing arrays."""
+    def rows(path):
+        with open(path) as stream:
+            for line in stream:
+                fields = line.split('#', 1)[0].split()
+                if fields:
+                    yield fields
+    with tempfile.TemporaryDirectory(prefix='serial-arrays-', dir=directory) as work:
+        nodes = rows(base_dir + 'PLGS' + base_name + '.1.node')
+        nv = int(next(nodes)[0])
+        vertices = disk_array(os.path.join(work, 'vertices.npy'), (nv, 3))
+        count = 0
+        for count, fields in enumerate(nodes, 1):
+            if int(fields[0]) != count or count > nv:
+                raise MeshTopologyError('Unexpected node ID in Triangle output')
+            vertices[count-1] = (float(fields[1]), float(fields[2]), 0)
+        if count != nv:
+            raise MeshTopologyError('Truncated Triangle node file')
+        faces = rows(base_dir + 'PLGS' + base_name + '.1.ele')
+        nt = int(next(faces)[0])
+        elements = disk_array(os.path.join(work, 'elements.npy'), (nt, 3), np.int64)
+        count = 0
+        for count, fields in enumerate(faces, 1):
+            if int(fields[0]) != count or count > nt:
+                raise MeshTopologyError('Unexpected face ID in Triangle output')
+            elements[count-1] = [int(v)-1 for v in fields[1:4]]
+        if count != nt:
+            raise MeshTopologyError('Truncated Triangle element file')
+        return build_mesh_from_arrays(vertices, elements, src_ds, dem, srs, is_geographic,
+                                      verbose, directory=directory)
 
 
 def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
@@ -1813,109 +1695,6 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     output_usm.FlushCache()
     output_usm = None  # close file
 
-
-def write_vtu(fname, mesh, parameter_files, initial_conditions):
-    vtu = vtk.vtkUnstructuredGrid()
-
-    output_vtk = fname
-    vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
-    vtuwriter.SetFileName(output_vtk)
-
-    # check what version of vtk we are using so we can avoid the api conflict
-    # http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
-    if vtk.vtkVersion.GetVTKMajorVersion() > 5:
-        vtuwriter.SetInputData(vtu)
-    else:
-        vtuwriter.SetInput(vtu)
-
-    vtu_points = vtk.vtkPoints()
-    vtu_triangles = vtk.vtkCellArray()
-
-    vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
-
-    vtu_cells = {'elevation': vtk.vtkFloatArray(),
-                 'cellid': vtk.vtkFloatArray(),
-                 'area': vtk.vtkFloatArray()
-                 }
-    vtu_cells['elevation'].SetName('elevation')
-    vtu_cells['area'].SetName('area')
-    vtu_cells['cellid'].SetName('cellid')
-
-    for key, data in parameter_files.items():
-        k = '[param] ' + key
-        vtu_cells[k] = vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
-
-    for key, data in initial_conditions.items():
-        k = '[ic] ' + key
-        vtu_cells[k] = vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
-
-    def as_float(value):
-        if value is None:
-            return float('nan')
-        if isinstance(value, (list, tuple, np.ndarray)):
-            if len(value) == 0:
-                return float('nan')
-            value = value[0]
-        try:
-            return float(value)
-        except Exception:
-            return float('nan')
-
-    for elem in range(mesh['mesh']['nelem']):
-        v0 = mesh['mesh']['elem'][elem][0]
-        v1 = mesh['mesh']['elem'][elem][1]
-        v2 = mesh['mesh']['elem'][elem][2]
-
-        vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0],
-                            mesh['mesh']['vertex'][v0][1],
-                            mesh['mesh']['vertex'][v0][2])
-
-        vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0],
-                            mesh['mesh']['vertex'][v1][1],
-                            mesh['mesh']['vertex'][v1][2])
-
-        vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0],
-                            mesh['mesh']['vertex'][v2][1],
-                            mesh['mesh']['vertex'][v2][2])
-
-        triangle = vtk.vtkTriangle()
-        triangle.GetPointIds().SetId(0, v0)
-        triangle.GetPointIds().SetId(1, v1)
-        triangle.GetPointIds().SetId(2, v2)
-
-        vtu_triangles.InsertNextCell(triangle)
-        vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
-                                                 mesh['mesh']['vertex'][v1][2] +
-                                                 mesh['mesh']['vertex'][v2][2]) / 3.)
-
-        vtu_cells['cellid'].InsertNextTuple1(elem)
-
-        area = 1
-        vtu_cells['area'].InsertNextTuple1(area)
-
-        for key, data in parameter_files.items():
-            output = as_float(data[elem])
-            vtu_cells['[param] ' + key].InsertNextTuple1(output)
-
-        for key, data in initial_conditions.items():
-            output = as_float(data[elem])
-            vtu_cells['[ic] ' + key].InsertNextTuple1(output)
-
-    vtu.SetPoints(vtu_points)
-    vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
-    for p in vtu_cells.values():
-        vtu.GetCellData().AddArray(p)
-
-    vtk_proj4 = vtk.vtkStringArray()
-    vtk_proj4.SetNumberOfComponents(1)
-    vtk_proj4.SetName("proj4")
-    vtk_proj4.InsertNextValue(mesh['mesh']['proj4'])
-
-    vtu.GetFieldData().AddArray(vtk_proj4)
-
-    vtuwriter.Write()
 
 
 if __name__ == "__main__":

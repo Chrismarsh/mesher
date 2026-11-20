@@ -459,6 +459,14 @@ class ParameterizeTests(unittest.TestCase):
         self.assertEqual(collected, results[0]+results[1])
         self.assertEqual([row['id'] for row in collected], [0, 1])
         self.assertEqual(list(root.iterdir()), [])
+        with tempfile.TemporaryDirectory(dir=root) as output_dir:
+            with redirect_stdout(io.StringIO()):
+                columns = mesher_cli.run_parameterization(mesh, dict(prep, batch_size=1), str(root),
+                    command, 3, str(config_with_spaces), output_dir=output_dir)
+            for key, column in columns.items():
+                self.assertIsInstance(column, np.memmap)
+                np.testing.assert_allclose(column, [row[key] for row in collected])
+        self.assertEqual(list(root.iterdir()), [])
 
         spawn_script = '''
 import cloudpickle, numpy as np, sys

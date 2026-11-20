@@ -325,6 +325,29 @@ def main(pickle_file: str, disconnect: bool, configfile: str):
         raise ValueError(f"Parameterization expected {prep['nranks']} MPI ranks, "
                          f"but the launcher started {MPI.COMM_WORLD.size}")
     mesh, start, stop = _load_rank_mesh(prep, MPI.COMM_WORLD.rank, MPI.COMM_WORLD.size)
+    if 'result_paths' not in prep:
+        rows = _parameterize_batch(prep, mesh, configfile, log_options)
+        _write_worker_results(prep, rows, start, stop)
+    else:
+        from mesher.mesh_store import batches, BATCH_SIZE
+        columns = {key: np.load(path, mmap_mode='r+') for key, path in prep['result_paths'].items()}
+        for lo, hi in batches(stop-start, prep.get('batch_size', BATCH_SIZE)):
+            local = {'mesh': dict(mesh['mesh'], elem=mesh['mesh']['elem'][lo:hi], nelem=hi-lo)}
+            rows = _parameterize_batch(prep, local, configfile, log_options)
+            for key, array in columns.items():
+                array[start+lo:start+hi] = (np.arange(start+lo, start+hi) if key == 'id' else
+                                           [row[key] for row in rows])
+        for array in columns.values():
+            array.flush()
+        # A marker is published only after every column in this rank's range is complete.
+        output = {'rank': MPI.COMM_WORLD.rank, 'start': start, 'stop': stop, 'complete': True}
+        with open(os.path.join(prep['output_dir'], f'result_{MPI.COMM_WORLD.rank}.pickle'), 'wb') as stream:
+            cloudpickle.dump(output, stream)
+    if disconnect:
+        MPI.Comm.Get_parent().Disconnect()
+
+
+def _parameterize_batch(prep, mesh, configfile, log_options):
     gt, is_geographic = prep['gt'], prep['is_geographic']
     parameter_files, initial_conditions = prep['parameter_files'], prep['initial_conditions']
     RasterXSize, RasterYSize = prep['RasterXSize'], prep['RasterYSize']
@@ -459,12 +482,7 @@ def main(pickle_file: str, disconnect: bool, configfile: str):
                                           srs_proj4, tri_idx, configfile)
                     ret_tri[tri_idx]['area'] = ret['area']
 
-        debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
-        _write_worker_results(prep, ret_tri, start, stop)
-        if disconnect:
-            comm = MPI.Comm.Get_parent()
-            comm.Disconnect()
-        return
+        return ret_tri
 
     for key, data in parameter_files.items():
 
@@ -499,13 +517,15 @@ def main(pickle_file: str, disconnect: bool, configfile: str):
 
         parameter_files[key]['file'] = []
 
-    debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
-    _write_worker_results(prep, ret_tri, start, stop)
-
-    # have been run from the MPI.spawn, so disconnect from parent
-    if disconnect:
-        comm = MPI.Comm.Get_parent()
-        comm.Disconnect()
+    # Always publish area and ID, including an empty parameter configuration.
+    for index, row in enumerate(ret_tri):
+        row['id'] = index
+        if 'area' not in row:
+            row['area'] = (float(projected_areas[index]) if projected_areas is not None else
+                           do_parameterize(gt, is_geographic, mesh, parameter_files, 'area',
+                                           initial_conditions, RasterXSize, RasterYSize, srs_proj4,
+                                           index, configfile)['area'])
+    return ret_tri
 
 
 if __name__ == '__main__':

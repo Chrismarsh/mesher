@@ -75,6 +75,7 @@ class MeshTopologyTests(unittest.TestCase):
                 a = y * width + x
                 triangles.extend([[a, a + 1, a + width + 1], [a, a + width + 1, a + width]])
         expected = build_neighbours(triangles, width * width)
-        result = build_neighbours(triangles, width * width, chunk_size=7)
+        # More than 64 runs exercises bounded fan-in across multiple passes.
+        result = build_neighbours(triangles, width * width, chunk_size=2)
         np.testing.assert_array_equal(result, expected)
         validate_neighbours(result)
