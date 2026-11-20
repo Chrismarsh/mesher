@@ -102,8 +102,8 @@ class ParameterizeTests(unittest.TestCase):
         mesh = {'mesh': dict(self.mesh['mesh'], vertex=vertices)}
         self.assertEqual(self.aggregate([ds], 'mean', mesh=mesh), 2)
 
-    def run_worker(self, parameters, exact=True):
-        args = [self.gt, False, self.mesh, parameters, {}, 2, 2, self.srs.ExportToProj4(), exact]
+    def run_worker(self, parameters, exact=True, geographic=False):
+        args = [self.gt, geographic, self.mesh, parameters, {}, 2, 2, self.srs.ExportToProj4(), exact]
         path = self.work / 'args.pickle'
         path.write_bytes(cloudpickle.dumps(args))
         previous = os.getcwd()
@@ -295,6 +295,42 @@ class ParameterizeTests(unittest.TestCase):
             self.assertEqual(result[0]['combined'], 302)
             self.assertEqual(result[0]['repeat'], 4)
             self.assertEqual(len(calls), 4)
+
+    def test_projected_areas_match_ogr_for_large_coordinates_and_both_orientations(self):
+        # Include a narrow face and a degenerate face; chunk boundaries must
+        # not affect face ordering or the sign of the unsigned area.
+        vertices = np.array([[0., 0., 0.], [10., 0., 9.], [0., 8., -1.],
+                             [10., .0001, 3.], [5., 0., 0.]])+[-1900000, 3500000, 0]
+        triangles = np.array([[0, 1, 2], [2, 1, 0], [0, 1, 3], [0, 1, 4]])
+        self.mesh['mesh'].update(vertex=vertices, elem=triangles, nelem=4, nvertex=5)
+        expected = []
+        for i in range(4):
+            expected.append(parameterize.do_parameterize(self.gt, False, self.mesh, {'area': {}},
+                'area', {}, 2, 2, self.srs.ExportToProj4(), i, str(self.config))['area'])
+        areas = parameterize._projected_triangle_areas(self.mesh, chunk_size=2)
+        np.testing.assert_allclose(areas, expected, rtol=1e-12)
+        self.assertEqual(areas[0], 40)
+        self.assertEqual(areas[1], 40)
+        self.assertEqual(areas[3], 0)
+        # Neither projected worker path needs OGR per-triangle area objects.
+        with patch.object(parameterize, 'do_parameterize', side_effect=AssertionError('unexpected OGR call')):
+            for exact in (False, True):
+                result, _ = self.run_worker({'area': {}}, exact)
+                np.testing.assert_allclose([row['area'] for row in result], expected, rtol=1e-12)
+        self.mesh['mesh'].update(elem=np.empty((0, 3), dtype=int), nelem=0)
+        result, _ = self.run_worker({'area': {}})
+        self.assertEqual(result, [])
+
+    def test_geographic_areas_keep_existing_projected_geometry_calculation(self):
+        self.srs = osr.SpatialReference(); self.srs.ImportFromEPSG(4326)
+        self.mesh['mesh']['vertex'] = [[-135., 68., 0.], [-134.99, 68., 0.], [-135., 68.01, 0.]]
+        expected = parameterize.do_parameterize(self.gt, True, self.mesh, {'area': {}}, 'area', {},
+            2, 2, self.srs.ExportToProj4(), 0, str(self.config))['area']
+        self.assertGreater(expected, 0)
+        with patch.object(parameterize, '_projected_triangle_areas', side_effect=AssertionError('unprojected area')):
+            for exact in (False, True):
+                result, _ = self.run_worker({'area': {}}, exact, geographic=True)
+                self.assertEqual(result[0]['area'], expected)
 
     def test_configuration_is_loaded_once_for_all_triangles(self):
         self.config.write_text('from pathlib import Path\np = Path(__file__).with_suffix(".count")\n'

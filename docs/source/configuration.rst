@@ -683,6 +683,9 @@ as a compatibility no-op. Serial ``lloyd_itr`` remains available.
     Each rank extracts all requested built-in statistics for a given raster in
     one pass and reuses those aggregates across parameters. Numeric results are
     released after their last consumer; nothing is cached across runs.
+    Projected triangle areas are calculated from XY coordinates in bounded
+    NumPy batches. Geographic meshes retain the existing equal-area projection
+    calculation; elevations do not affect the horizontal area parameter.
 
     Earlier versions always used the legacy sampler for classifier parameters.
     With the default setting, those parameters now use coverage weighting;

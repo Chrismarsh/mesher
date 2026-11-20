@@ -84,6 +84,19 @@ def _parameter_value(key, values, classifier=None):
     return float('nan') if output == -9999 else float(output)
 
 
+def _projected_triangle_areas(mesh, chunk_size=65536):
+    """Calculate XY areas in bounded batches, subtracting a local origin."""
+    vertices = np.asarray(mesh['mesh']['vertex'], dtype=float)
+    triangles = np.asarray(mesh['mesh']['elem'], dtype=np.intp)
+    areas = np.empty(len(triangles), dtype=float)
+    for start in range(0, len(triangles), chunk_size):
+        points = vertices[triangles[start:start+chunk_size], :2]
+        u = points[:, 1] - points[:, 0]
+        v = points[:, 2] - points[:, 0]
+        areas[start:start+chunk_size] = .5 * np.abs(u[:, 0]*v[:, 1] - u[:, 1]*v[:, 0])
+    return areas
+
+
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
     if src_offset[2] <= 0 or src_offset[3] <= 0:
@@ -329,6 +342,7 @@ def main(pickle_file: str,
     gt, is_geographic, mesh, parameter_files, initial_conditions, RasterXSize, RasterYSize, srs_proj4, use_exactextract = param_args
 
     ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
+    projected_areas = None if is_geographic else _projected_triangle_areas(mesh)
 
     def build_tri_features(mesh):
         features = []
@@ -447,10 +461,13 @@ def main(pickle_file: str,
         for tri_idx in range(mesh['mesh']['nelem']):
             ret_tri[tri_idx]['id'] = tri_idx
             if 'area' not in ret_tri[tri_idx]:
-                ret = do_parameterize(gt, is_geographic, mesh, parameter_files, 'area',
-                                      initial_conditions, RasterXSize, RasterYSize,
-                                      srs_proj4, tri_idx, configfile)
-                ret_tri[tri_idx]['area'] = ret['area']
+                if projected_areas is not None:
+                    ret_tri[tri_idx]['area'] = float(projected_areas[tri_idx])
+                else:
+                    ret = do_parameterize(gt, is_geographic, mesh, parameter_files, 'area',
+                                          initial_conditions, RasterXSize, RasterYSize,
+                                          srs_proj4, tri_idx, configfile)
+                    ret_tri[tri_idx]['area'] = ret['area']
 
         debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} writing output pickle')
         with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
@@ -464,6 +481,10 @@ def main(pickle_file: str,
     for key, data in parameter_files.items():
 
         debug_log(log_options, f'Rank {MPI.COMM_WORLD.rank} {key}')
+        if key == 'area' and projected_areas is not None:
+            for elem, area in enumerate(projected_areas):
+                ret_tri[elem].update(id=elem, area=float(area))
+            continue
         parameter_files[key]['file'] = []
 
         # load the data
