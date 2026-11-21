@@ -57,7 +57,16 @@ The maximum difference (vertical distance) between the triangle and the underlyi
    :type: double
    :default: ``pixel_width * pixel_height``
 
-A minimum area (m^2) past which mesher should not refine a triangle further. A good setting is the square area of a DEM cell. This does not mean a triangle won't be smaller than this; rather, if a triangle is below this threshold it will automatically be accepted as valid. This will override the tolerance setting. For example, if the threshold is 3m^2, and a 2m^2 triangle is checked for validity, it will automatically be accepted, without checking the tolerance. A triangle may end up smaller than this threshold due to other splitting that occurs in order to guarantee triangle quality. 
+The area (m^2) at or below which a well-shaped triangle is accepted without
+sampling or checking elevation, land-cover or other raster criteria, including
+weighted criteria. The minimum-angle requirement still applies. For example,
+with ``min_area = 3``, a well-shaped 2 m^2 triangle is accepted even if its raster
+error would exceed the requested tolerance; a poorly shaped triangle of the
+same area still requires refinement.
+
+A good starting value is the area of a DEM cell. This is a stopping threshold
+for raster-driven refinement, not a lower bound on triangle size: shape
+refinement and constraint splitting can produce smaller triangles.
 
 .. note::
    Although there is a default value for this, it really should be specified with a value that makes sense.
@@ -135,7 +144,7 @@ Lloyd iterations
 
    :type: int
 
-Enables *n* Lloyd iterations. As per the `CGAL documentation <https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization>`_: the goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees. 100 iterations is a suggested amount. However, please note this does invalidate the numerical guarantees about the minimum amount of error introduced to the mesh.
+Enables *n* Lloyd iterations for serial meshing. MPI cavity remeshing requires ``lloyd_itr=0``. As per the `CGAL documentation <https://doc.cgal.org/latest/Mesh_2/index.html#secMesh_2_optimization>`_: the goal of this mesh optimization is to improve the angles inside the mesh, and make them as close as possible to 60 degrees. 100 iterations is a suggested amount. However, please note this does invalidate the numerical guarantees about the minimum amount of error introduced to the mesh.
 
 
 .. |no_lloyd| image:: images/no_lloyd.jpg
@@ -161,6 +170,22 @@ Enables *n* Lloyd iterations. As per the `CGAL documentation <https://doc.cgal.o
    :default: False
 
 Enables verbose output
+
+.. confval:: mesher_debug
+
+   :type: boolean
+   :default: False
+
+Enables detailed MPI meshing diagnostics: backend heartbeats, rejected patch
+attempts, local cavity growth, preserved-work counts, clipping extensions and
+per-merge timings. Also enables the existing C++ backend debug option.
+
+By default MPI tile generation and each merge stage show compact completion
+counts and elapsed time. Terminals update one progress line; redirected/PBS
+logs receive start/end lines and a heartbeat every 30 seconds. Counts represent
+completed tasks, not triangle counts or estimated remaining time. Fatal errors
+and reproduction-folder paths remain visible with debug disabled. Failed
+backend attempts retain their inputs and full ``backend.log`` in either mode.
 
 Outputs
 ========
@@ -411,6 +436,29 @@ Classifier
 
 A user-specified function can be given as a classified function. This allows, after the ``method`` function has combined all the rasters into a single value for the triangle, to re-value this value. This function takes 1 value, and returns 1 value. It is called **after** the ``method`` function is called.
 
+Each input raster is aggregated independently, then the classifier is called
+once per triangle with those aggregates. With ``use_exactextract=True`` (the
+default), built-in methods use exactextract even when a classifier is supplied:
+``mean``/``average`` weight pixels by their covered fraction and ``mode`` selects
+the class with the greatest total coverage. ``min``/``max`` use intersecting
+valid pixels. On the projected grids used for MPI meshing, coverage weighting
+corresponds to weighting by intersected area. Classification still happens
+after aggregation; it is not applied to individual pixels.
+
+If any input uses a callable ``method``, all inputs for that parameter retain
+the legacy ``ALL_TOUCHED`` sampler and its unweighted arrays. Setting
+``use_exactextract=False`` selects that sampler for every parameter. Routine
+sampling messages identify the selected backend only with ``mesher_debug=True``.
+
+Raster NoData values, invalid mask pixels and nonfinite samples are excluded
+before aggregation and before applying the band's scale/offset. Valid zero
+values are retained. An empty raster intersection or an aggregation with no
+valid samples returns ``NaN``. Classifiers receive this missing value and should
+handle it explicitly instead of mapping it through a catch-all class. For
+example, ``if not np.isfinite(value): return np.nan`` preserves missing data.
+For multiple inputs, a classifier can decide which missing inputs matter (for
+example, a valid water mask may be sufficient even when canopy height is missing).
+
 For example, perhaps a vegetation density metric as derived from remote sensing is to be converted to a canopy height. This could be done as:
 ::
 
@@ -530,7 +578,42 @@ By default Mesher will use MPI to launch the Mesher backend tasks.
     :type: int
     :default: Number of cores on machine (e.g., 4, 8, 10, etc)
 
-    Set this to limit the number of processors used.
+    Number of MPI workers. Each worker processes one tile or one merge at a time.
+    For an external launcher, set its rank count to the same value.
+
+.. confval:: mpi_num_tiles
+
+    :type: int or None
+    :default: None
+
+    Exact number of spatial tiles for a fresh MPI mesh. Mesher factors this count
+    into rows and columns to make tiles as close to square as the projected
+    domain permits. A prime count gives a single row or column. With the
+    default, the existing grid selection uses the available worker count.
+
+    For example, this meshes 96 tiles with at most eight active tile workers.
+    Each worker finishes one tile before starting its next. Completed tiles are
+    stored on disk and pairwise merge jobs use the same worker limit.
+
+    .. code-block:: python
+
+        mpi_mesh = True
+        MPI_nworkers = 8
+        mpi_num_tiles = 96
+
+    Increase the tile count to reduce the initial area per meshing task.
+    More tiles add seams, merge jobs and intermediate files. Peak job memory
+    also includes DEM preprocessing, the active seam geometry and raster caches.
+
+.. confval:: mpi_parameter_batch_size
+
+    :type: int
+    :default: 32768
+
+    Maximum number of faces a parameter worker processes per batch. Set this
+    independently of the spatial tile count, including when using
+    ``reuse_mesh=True``. Smaller batches can reduce per-worker memory during
+    raster aggregation at the cost of more batch setup.
 
 If Mesher is used on a cluster to process a large domain, the use of a job scheduler, such as SLURM, may be optimal.
 
@@ -546,8 +629,16 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     and `job.sh` contains
     `srun --label --unbuffered  python "$@"`
 
-    The exec string used is `f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""` where MPI_do_parameterize_path
-    holds the path to the helper script that is run with python.
+    Parameterization appends the worker script, a shared input-manifest path,
+    ``False`` and the configuration path to this command, quoting these paths.
+    The launcher must wait until all workers finish. Its rank count must match
+    ``MPI_nworkers``.
+
+    Workers use one MPI launch and read shared vertex/element NumPy arrays
+    through read-only memory maps. Each rank owns a contiguous face range;
+    there is no separate preparation launch or full vertex-array pickle per
+    rank. Temporary inputs and rank results live in a unique directory under
+    the output directory, which must be accessible to every compute node.
 
     If `MPI_exec_str` is provided `MPI_nworkers` must also be provided.
 
@@ -556,45 +647,109 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: bool
     :default: False
 
-    Enable MPI tile meshing and shared-edge merge. Produces a single stitched mesh.
+    Enable MPI tile meshing. Produces a single stitched mesh.
 
-.. confval:: mpi_merge_snap_tol
+.. confval:: mpi_merge_method
 
-    :type: double
+    :type: str
+    :default: "remesh"
+
+    The only supported value is ``remesh``. It generates overlapping tiles and replaces artificial boundaries
+    with validated local CGAL meshes. Requires a rebuilt C++ executable,
+    Shapely >= 2, a projected working CRS and ``lloyd_itr=0``.
+    The shared-edge implementation has been retired.
+    Remove ``mpi_merge_snap_tol``, ``mpi_shared_edge_spacing`` and
+    ``mpi_shared_edge_constraints`` from old MPI configurations and regenerate
+    shared-edge intermediates with ``reuse_mesh=False``. See :doc:`mpi` for
+    recovery and validation rules.
+
+.. confval:: mpi_remesh_band_width
+
+    :type: double or None
     :default: None
 
-    Override the snap tolerance used for merge vertex deduplication.
+    Initial halo and removal-band width in projected coordinate units. The
+    automatic value is the smaller of ``2*sqrt(max_area)`` and 20% of the
+    smallest tile dimension. The area/coordinate units must be consistent.
+    Retained faces affected by interface refinement or adjacent quality failures
+    are absorbed locally on retry. Consecutive local retries double the number
+    of neighbouring rings removed (1, 2, 4, then capped at 4), within retained components.
+    Other recoverable failures double the
+    current removal band. The physical domain and quality thresholds are unchanged.
 
-.. confval:: mpi_global_lloyd
+.. confval:: mpi_remesh_max_attempts
 
     :type: int
-    :default: 0
+    :default: 12
 
-    Run N distributed Lloyd iterations on the stitched mesh after MPI merge. Doesn't work well so leave disabled.
+    Maximum number of attempts within a loaded seam region, including final
+    interface recovery. The same limit applies separately to the number of
+    seam-region attempts, including the first solve. A value of 1 allows a
+    single solve at each level. Before a solve, the merge can release whole
+    faces bordering roundoff-width rings and recompute the cavity. These
+    geometry-only passes count against the active-face budget when they load
+    disk faces. They do not consume a refinement attempt. Exhaustion leaves
+    any previous output intact.
 
-.. confval:: mpi_lloyd_boundary_tol
+.. confval:: mpi_remesh_max_vertices
 
-    :type: double
-    :default: sqrt(min_area)
+    :type: int
+    :default: 500000
 
-    Boundary lock distance for distributed Lloyd (vertices within this distance to the domain boundary remain fixed).
+    CGAL vertex budget per tile or cavity invocation. Refinement fails when
+    the budget is reached. This does not cap memory used by retained tile
+    arrays, graph construction, or GEOS validation. See the separate active-face
+    budget below.
 
-.. confval:: mpi_shared_edge_spacing
+.. confval:: mpi_remesh_max_active_faces
 
-    :type: double
-    :default: sqrt(min_area)
+    :type: int
+    :default: 2000000
 
-    Target spacing used to densify shared tile boundary edges.
+    Limit on faces loaded into an in-memory seam region. Checked before loading
+    input faces and between local repair attempts. If expansion exceeds this
+    limit, the merge fails without publishing; increase it only when memory
+    permits. This is not a byte limit: native refinement, candidate arrays,
+    boundary geometry and GEOS validation also allocate memory.
+
+The distributed MPI smoother has also been retired because it did not preserve
+validated mesh criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
+``mpi_global_lloyd`` from MPI configurations. ``mpi_global_lloyd=0`` is accepted
+as a compatibility no-op. Serial ``lloyd_itr`` remains available.
 
 .. confval:: use_exactextract
 
     :type: bool
     :default: True
 
-    Use the exactextract Python API for parameterization when possible. If any
-    parameter uses a `classifier`, exactextract still runs but the classifier
-    is applied to aggregated per-triangle stats (not per-pixel). Set to False
-    to use the slower per-pixel path.
+    Use the exactextract Python API for parameters with built-in aggregation
+    methods, including parameters with a classifier. Supported methods are
+    ``mean`` (or ``average``), ``mode`` (coverage-weighted majority), ``min`` and
+    ``max``. Unknown methods raise an error instead of silently computing a mean.
+
+    Classifiers receive one aggregate per raster in the configured input order,
+    once per triangle. Missing aggregates are passed as ``NaN``. If any input
+    uses a callable ``method``, all inputs for that parameter use the legacy
+    ``ALL_TOUCHED`` sampler, preserving the reducer's unweighted pixel arrays.
+    Set to False to use that sampler for all parameters. Its unweighted pixel
+    statistics can differ from exactextract's coverage-weighted statistics,
+    including mode tie handling. Every sampler uses each parameter raster's
+    own grid and NoData metadata.
+
+    Each rank extracts all requested built-in statistics for a given raster in
+    one pass and reuses those aggregates across parameters. Numeric results are
+    released after their last consumer; nothing is cached across runs.
+    Projected triangle areas are calculated from XY coordinates in bounded
+    NumPy batches. Geographic meshes retain the existing equal-area projection
+    calculation; elevations do not affect the horizontal area parameter.
+
+    Earlier versions always used the legacy sampler for classifier parameters.
+    With the default setting, those parameters now use coverage weighting;
+    values can change near class boundaries and for small triangles. Existing
+    classifier functions and their argument order do not need to change.
+    Set ``reuse_mesh=True`` to regenerate parameters on a completed mesh
+    without remeshing. This sampling change does not alter mesh refinement
+    criteria or require rebuilding the C++ backend.
 
 .. confval:: write_param_per_file
 
@@ -605,24 +760,142 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     instead of a single `<output>.param` file. This reduces memory pressure
     for very large meshes.
 
+Timing output
+-------------
+
+Mesher reports preprocessing, meshing (or mesh reuse), mesh preparation,
+parameterization and export separately. Mesh preparation includes topology
+validation and elevation sampling. Parameterization also reports shared-input
+writing, MPI worker execution (including launch overhead) and result collection.
+Those three times are included in the overall parameterization duration.
+
+``Total run took`` covers configuration loading through completed exports.
+The older ``Total time took`` message measured only parameterization and should
+not be compared directly with the new total-run duration. Compare it with
+``Parameterization took`` instead.
+
+For a reproducible local worker benchmark against the pre-optimization code,
+run ``PYTHONPATH=src python tests/benchmark_parameterization.py --repeats 3``
+from a source checkout. ``--case batched-stats`` exercises different statistics
+from one raster; the default shares one mean across three classifiers. The
+benchmark verifies identical outputs but does not measure MPI startup, input
+preparation, full-domain meshing or production-filesystem performance.
+
+Recorded medians over three runs on 20,000 synthetic triangles were 8.27 s to
+1.78 s when three classifiers shared a raster mean (4.65x), and 11.42 s to
+2.85 s when requesting mean/min/max together (4.01x). Outputs matched exactly
+in both cases. Raw timings are in ``parameterization-benchmark.json``; these
+single-worker measurements are not estimates of whole-domain MPI speedup.
+
 MPI pitfalls and guards
 -----------------------
 
-MPI tiling can produce skinny tiles that cause instability. Mesher now applies
-preflight checks that will fail fast before launching MPI work:
+With ``mpi_num_tiles=None``, tiling balances worker utilization with physical tile shape using the
+projected domain width and height. It does not round the rank count down to a
+perfect square. For a square domain, 95 ranks produce a 9-by-10 grid and 96
+ranks produce an 8-by-12 grid. Some allocations can still leave ranks unused
+when filling them would create long thin tiles. This is a geometric heuristic;
+it does not predict terrain-dependent refinement cost.
 
-- Tile size guard: ensures the smallest tile edge is not too small relative to `min_area`.
+Before launching MPI work, the smallest tile edge must exceed 1.25 times the
+remesh band width. If an explicit band is too wide, reduce the tile count
+or ``mpi_remesh_band_width``. Small positive-area domain fragments are retained;
+they are not discarded to improve utilization.
 
-If you hit these guards, reduce `MPI_nworkers` or choose a more square grid (Mesher may leave some ranks idle
-to preserve square tiles).
-
-
-
-
-
-
-
-
+A completed run writes ``<base_name>_mpi_layout.json`` with its chosen grid and
+final mesh filename. Reuse reads that manifest, so the number of workers can
+change when regenerating parameters. Older completed runs without a manifest
+still use the original square-grid naming rule and require their original
+``MPI_nworkers`` value.
 
 
 
+
+
+
+
+
+
+
+
+
+Disk-backed preparation and export
+----------------------------------
+
+Mesh preparation stores coordinates, connectivity and global neighbours as NPY
+memory maps in a temporary directory beneath the mesh output directory. Existing
+NPZ meshes (including compressed archives) are extracted incrementally, so
+``reuse_mesh=True`` does not require loading their arrays into the Python heap.
+Serial Triangle files are read row by row into the same representation.
+
+Parameter workers process up to ``mpi_parameter_batch_size`` faces per batch
+(32,768 by default) and write disjoint
+ranges of shared parameter columns. The parent validates rank completion and
+IDs without gathering triangle dictionaries. JSON retains the CHM schema;
+VTU uses one piece with streamed binary arrays and global point IDs. Shapefile
+export remains a face-at-a-time writer. These changes are automatic.
+
+The shared output filesystem must have room for mesh arrays, parameter columns,
+and temporary topology indexes. Memory-mapped pages are reclaimable file cache;
+RSS can include those pages. Native patch meshing, raster caches and boundary
+geometry still have their own memory requirements. Temporary preparation files
+are removed when export completes or raises an exception.
+
+Seam-region merging
+-------------------
+
+Each hierarchical merge, including the final merge, maps its input arrays from
+disk. A strip around the seam and a four-ring triangle collar are loaded for
+native refinement and parent repair. All other faces remain immutable on disk.
+The cavity is the exact target domain minus their coverage. An outer-interface
+check requires identical edge endpoints before joining the local result to the
+interiors; no approximate welding or relaxed quality criteria are used.
+
+If a disk edge has been split, Mesher first tries to subdivide its owning
+triangle using the exact vertices from the seam. Each child must satisfy the
+native quality criteria, and the new boundary must match the remaining disk
+edges. When this repair fails, Mesher loads neighbouring faces and reuses the
+completed local mesh. On the last expansion it first reserves space for the
+usual collars. It then loads the connected disk interiors touching each collar
+if they fit the remaining active-face budget. Unrelated components stay on
+disk. The final mesh goes through the usual topology checks.
+
+When a rejected local solve leaves no mesh to reuse, the final seam attempt
+opens the remaining connected disk regions at the artificial cuts where they
+fit the active-face budget. A small tile pair can therefore be loaded in full.
+
+CGAL can finish its refinement queue while a face near a constrained edge
+still fails the minimum angle. Mesher audits every interior face. For residual
+shape failures it bisects the longest available unconstrained edge of each
+face and reruns constrained refinement and the audit. Recovery continues
+while the failure count decreases or, at equal count, the worst angle improves.
+The vertex budget applies throughout. The quality report identifies a
+``constrained_corner`` when two constraint rays enclose an in-domain angle
+below the required minimum. Such a sector requires a change to a retained
+interface or to the input geometry to meet that minimum.
+
+Stream verification follows a connected chain of CGAL-constrained output
+edges between the exact input vertices of each clipped stream segment.
+Intermediate vertices may deviate from the segment by coordinate roundoff.
+Missing links and disconnected endpoints fail validation.
+
+Global topology checks and final compaction still make sequential passes over
+the mesh, using disk-backed tables and bounded edge-sorting runs. NPZ output is
+still readable by existing tools and old completed NPZ meshes can be reused.
+This reduces heap memory at the cost of temporary disk space and additional IO;
+it does not eliminate full-dataset disk reads/writes. Boundary geometry scales
+with boundary complexity, and the loaded region scales with seam complexity.
+
+Merge metadata reports ``disk_interior_faces``, ``peak_loaded_faces`` (input
+region size, excluding subsequently generated candidates), ``seam_attempts``
+and ``seam_work_reused`` (faces carried into expansion attempts, not unique final
+faces). Existing refinement counters describe the final local repair, with
+prior successful local reports under ``seam_attempt_reports``. Each report counts
+``unmatched_disk_edges`` before disk-side repair. A successful subdivision
+records ``disk_parents_subdivided``. Expansions record ``disk_expansion_faces``
+and whether they closed affected disk components (``closing_disk_components``).
+
+``tests/benchmark_streaming.py`` measures export heap allocations separately
+from process RSS. In a synthetic 100,000 versus 1,000,000-face export, traced
+Python/NumPy peak allocations were about 2.97 MB in both cases. This excludes
+native meshing and is not a whole-pipeline memory or production timing claim.

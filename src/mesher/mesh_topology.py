@@ -80,12 +80,43 @@ def _match_edge_runs(paths, neighbours):
             run._mmap.close()
 
 
-def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_SIZE):
+def _bounded_edge_runs(paths, directory, fan_in=64):
+    """Reduce sorted runs in passes so open files and merge heap stay bounded."""
+    generation = 0
+    while len(paths) > fan_in:
+        next_paths = []
+        for start in range(0, len(paths), fan_in):
+            group = paths[start:start+fan_in]
+            if len(group) == 1:
+                next_paths.extend(group)
+                continue
+            runs = [np.load(path, mmap_mode='r') for path in group]
+            path = os.path.join(directory, f'merged-{generation}-{start}.npy')
+            output = np.lib.format.open_memmap(path, mode='w+', dtype=EDGE_DTYPE,
+                                              shape=(sum(len(run) for run in runs),))
+            try:
+                for index, record in enumerate(heapq.merge(*(_records(run) for run in runs))):
+                    output[index] = record
+                output.flush()
+            finally:
+                output._mmap.close()
+                for run in runs:
+                    run._mmap.close()
+            for old in group:
+                os.unlink(old)
+            next_paths.append(path)
+        paths = next_paths
+        generation += 1
+    return paths
+
+
+def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_SIZE,
+                     output_path=None, temporary_directory=None):
     """Return an int64 (N, 3) table, rejecting invalid triangle topology.
 
-    chunk_size bounds the number of triangles sorted in memory at once. The
-    triangle and resulting neighbour arrays still occupy memory; larger edge
-    tables are written to temporary sorted runs under the system temporary dir.
+    chunk_size bounds the number of triangles sorted in memory at once.
+    An output_path keeps the neighbour table on disk. Edge sorting and geometry
+    checks use bounded batches; temporary_directory selects the scratch volume.
     """
     triangles = integer_rows(elements, 'elem')
     if not len(triangles):
@@ -99,8 +130,9 @@ def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_
         positions = np.asarray(vertices, dtype=float)
         if positions.ndim != 2 or positions.shape[0] != nvertex or positions.shape[1] not in (2, 3):
             raise MeshTopologyError('vertex must have shape (nvertex, 2) or (nvertex, 3)')
-        if not np.isfinite(positions).all():
-            raise MeshTopologyError('vertex contains non-finite coordinates or elevations')
+        for start in range(0, len(positions), chunk_size):
+            if not np.isfinite(positions[start:start + chunk_size]).all():
+                raise MeshTopologyError('vertex contains non-finite coordinates or elevations')
     for start in range(0, len(triangles), chunk_size):
         block = triangles[start:start + chunk_size]
         repeated = (block[:, 0] == block[:, 1]) | (block[:, 1] == block[:, 2]) | (block[:, 0] == block[:, 2])
@@ -114,17 +146,19 @@ def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_
             if degenerate.any():
                 raise MeshTopologyError(f'Triangle {start + np.flatnonzero(degenerate)[0]} has zero or numerically degenerate area')
 
-    neighbours = np.full(triangles.shape, -1, dtype=np.int64)
+    neighbours = (np.empty(triangles.shape, dtype=np.int64) if output_path is None else
+                  np.lib.format.open_memmap(output_path, mode='w+', dtype=np.int64, shape=triangles.shape))
+    neighbours[:] = -1
     if len(triangles) <= chunk_size:
         _match_sorted_edges(_edge_records(triangles, 0), neighbours)
     else:
-        with tempfile.TemporaryDirectory(prefix='mesher-edges-') as directory:
+        with tempfile.TemporaryDirectory(prefix='mesher-edges-', dir=temporary_directory) as directory:
             paths = []
             for start in range(0, len(triangles), chunk_size):
                 path = os.path.join(directory, f'{start}.npy')
                 np.save(path, _edge_records(triangles[start:start + chunk_size], start))
                 paths.append(path)
-            _match_edge_runs(paths, neighbours)
+            _match_edge_runs(_bounded_edge_runs(paths, directory), neighbours)
 
     for start in range(0, len(neighbours), chunk_size):
         block = neighbours[start:start + chunk_size]
@@ -169,6 +203,12 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     inside an unmatched edge, within tolerance in XY, are considered. This is a
     geometric candidate search, not proof that the edge is an MPI seam.
     """
+    coincident, subdivisions = boundary_node_conflicts(vertices, triangles, neighbours, tolerance)
+    return len(coincident), subdivisions
+
+
+def boundary_node_conflicts(vertices, triangles, neighbours, tolerance):
+    """Return coincident boundary vertex IDs and the same edge subdivision iterator."""
     from scipy.spatial import cKDTree
 
     if not np.isfinite(tolerance) or tolerance < 0:
@@ -178,11 +218,11 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     b = triangles[faces, (slots + 2) % 3]
     ids = np.unique(np.concatenate((a, b)))
     if len(ids) < 2:
-        return 0, iter(())
+        return ids[:0], iter(())
     xy = vertices[ids, :2]
     tree = cKDTree(xy)
     distances, _ = tree.query(xy, k=2)
-    coincident = int(np.count_nonzero(distances[:, 1] <= tolerance))
+    coincident = ids[distances[:, 1] <= tolerance]
 
     def subdivisions():
         for face, slot, va, vb in zip(faces, slots, a, b):

@@ -131,6 +131,10 @@ target_compile_features(
         PRIVATE
         cxx_std_14
 )
+# Keep CGAL's structural checks in optimized builds. Near-degenerate input
+# otherwise proceeds past a failed refinement invariant into invalid handles.
+# The patch entry point catches the resulting exception and retains diagnostics.
+target_compile_definitions(meshercxx PRIVATE CGAL_DEBUG)
 target_include_directories(
         meshercxx
         PRIVATE
@@ -144,3 +148,20 @@ target_link_libraries(
 
 install(TARGETS meshercxx RUNTIME)
 install(FILES ${CMAKE_BINARY_DIR}/build-bin/metis-config.py DESTINATION bin)
+
+option(BUILD_TESTING "Build C++ regression tests" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test_raster_sampling
+        tests/cxx/test_raster_sampling.cpp src-cxx/triangle.cpp src-cxx/raster.cpp)
+    target_compile_features(test_raster_sampling PRIVATE cxx_std_14)
+    target_include_directories(test_raster_sampling PRIVATE src-cxx)
+    target_link_libraries(test_raster_sampling PRIVATE GDAL::GDAL Boost::boost)
+    add_test(NAME raster_sampling COMMAND test_raster_sampling)
+    add_executable(test_mesh_criteria
+        tests/cxx/test_mesh_criteria.cpp src-cxx/triangle.cpp src-cxx/raster.cpp)
+    target_compile_features(test_mesh_criteria PRIVATE cxx_std_14)
+    target_include_directories(test_mesh_criteria PRIVATE src-cxx)
+    target_link_libraries(test_mesh_criteria PRIVATE ${EXTERNAL_LINK})
+    add_test(NAME mesh_criteria_ordering COMMAND test_mesh_criteria)
+endif()

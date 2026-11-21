@@ -1,0 +1,61 @@
+{
+  "description": "Local single-worker benchmark of the three parameterization optimizations in PR #25.",
+  "cases": [
+    {
+      "baseline_ref": "a37a011e378408da43860a691edec01822ef0b80",
+      "case": "shared-mean",
+      "triangles": 20000,
+      "parameters": 3,
+      "worker_count": 1,
+      "repeats": 3,
+      "gdal_version": "3100300",
+      "outputs_identical": true,
+      "seconds": {
+        "baseline": [
+          8.58842906299833,
+          8.270104605999222,
+          8.245037526001397
+        ],
+        "optimized": [
+          1.7804073780025647,
+          1.754045772999234,
+          1.834092970999336
+        ]
+      },
+      "median_seconds": {
+        "baseline": 8.270104605999222,
+        "optimized": 1.7804073780025647
+      },
+      "worker_speedup": 4.645063095209949,
+      "scope": "Worker execution only; excludes MPI startup, input preparation, meshing and final exports."
+    },
+    {
+      "baseline_ref": "a37a011e378408da43860a691edec01822ef0b80",
+      "case": "batched-stats",
+      "triangles": 20000,
+      "parameters": 3,
+      "worker_count": 1,
+      "repeats": 3,
+      "gdal_version": "3100300",
+      "outputs_identical": true,
+      "seconds": {
+        "baseline": [
+          8.81985316400096,
+          11.769706374001544,
+          11.419126540000434
+        ],
+        "optimized": [
+          2.845122156999423,
+          2.9264701940010127,
+          2.0360515540014603
+        ]
+      },
+      "median_seconds": {
+        "baseline": 11.419126540000434,
+        "optimized": 2.845122156999423
+      },
+      "worker_speedup": 4.013580405293912,
+      "scope": "Worker execution only; excludes MPI startup, input preparation, meshing and final exports."
+    }
+  ]
+}

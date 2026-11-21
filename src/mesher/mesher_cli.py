@@ -20,29 +20,30 @@ import subprocess
 import re
 import json
 import os
+import shlex
+import tempfile
 import numpy as np
-from operator import itemgetter
 import math
 
 import sys
 import shutil
 import importlib
-import vtk
 import warnings
-import uuid
 import cloudpickle
 
 import time
 from mpi4py import MPI
 import glob
 
-import inspect
-from natsort import natsorted
 
 
 from . import mesher_utls
-from .mesh_seams import reconcile_boundary_subdivisions
+from .mesh_store import (BATCH_SIZE, batches, disk_array, copy_array, open_mesh_arrays,
+                         check_boundary_geometry, dump_json, write_vtu)
+from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
+                            boundary_subdivisions)
 from .mesher_utls.raster_utils import fill_nodata
+from .mesher_utls.mpi_progress import StageProgress
 
 gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()  # Enable exception support
@@ -62,6 +63,7 @@ def main():
         print('ERROR: meshgen.py requires one argument [configuration file] (i.e. meshgen.py Bow.py)')
         return
 
+    run_started = time.perf_counter()
     # Get name of configuration file/module
     configfile = sys.argv[-1]
 
@@ -70,13 +72,18 @@ def main():
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, simplify,\
         simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, wkt_out, \
-        MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-            mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file, \
-            mpi_shared_edge_spacing = read_config(configfile)
+        MPI_exec_str, MPI_nworkers, mpi_mesh, \
+        mesher_debug, use_exactextract, write_param_per_file = read_config(configfile)
 
 
     ########################################################
 
+    mpi_remesh_options = mpi_remesh_options_from_config(X) if mpi_mesh else None
+    num_tiles = getattr(X, 'mpi_num_tiles', None) if mpi_mesh else None
+    if num_tiles is not None:
+        _positive_integer(num_tiles, 'mpi_num_tiles')
+    parameter_batch_size = _positive_integer(getattr(X, 'mpi_parameter_batch_size', BATCH_SIZE),
+                                             'mpi_parameter_batch_size')
     gdal_prefix = find_gdal_prefix()
 
     base_name = os.path.basename(dem_filename)
@@ -515,29 +522,30 @@ def main():
 
         f.write('0\n')
 
+    print(f'Preprocessing took {time.perf_counter() - run_started:.2f} s')
+    meshing_started = time.perf_counter()
     final_npz_path = None
     if mpi_mesh and reuse_mesh:
         final_npz_path = compute_mpi_final_npz_path(base_dir, base_name, MPI_nworkers)
         if not os.path.exists(final_npz_path):
             raise RuntimeError(
                 f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
-                'Ensure the previous MPI mesh run completed and used the same MPI_nworkers.'
+                'Ensure the previous MPI mesh run completed; legacy outputs without a layout manifest require the original MPI_nworkers.'
             )
+        validate_mpi_mesh_metadata(final_npz_path)
 
     # if we aren't reusing the mesh, generate a new one
     if not reuse_mesh:
         print(f'mpi_mesh={mpi_mesh}')
         if mpi_mesh:
             final_npz_path = run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax,
-                                             gdal_prefix, mesher_path, outputBufferfn, constraints, parameter_files,
+                                             mesher_path, outputBufferfn, constraints, parameter_files,
                                              initial_conditions, max_area, min_area, max_tolerance,
-                                             errormetric, lloyd_itr, use_weights, topo_weight,
+                                             errormetric, use_weights, topo_weight,
                                              weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                                             mpi_merge_snap_tol,
-                                             mesher_debug,
-                                             mpi_shared_edge_spacing)
+                                             mesher_debug=mesher_debug, remesh_options=mpi_remesh_options,
+                                             num_tiles=num_tiles)
         else:
-            start_time = time.perf_counter()
             execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
                       (mesher_path,
                        base_dir + poly_file,
@@ -580,7 +588,10 @@ def main():
 
             print(execstr)
             subprocess.check_call(execstr, shell=True)
-            print('Meshing took %s s' % str(round(time.perf_counter() - start_time, 2)))
+
+    mesh_action = 'Mesh reuse' if reuse_mesh else 'Meshing'
+    print(f'{mesh_action} took {time.perf_counter() - meshing_started:.2f} s')
+    mesh_preparation_started = time.perf_counter()
 
     # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
     # remove them
@@ -592,175 +603,162 @@ def main():
         print('Dropping parameter ' + key + ' and not writing to mesh due to user request')
         del parameter_files[key]
 
-    # holds our main mesh structure which we will write out to json to read into CHM
-    if mpi_mesh:
-        if final_npz_path is None:
-            raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
-        data = np.load(final_npz_path)
-        verts = data['verts']
-        tris = data['tris']
-        if mpi_global_lloyd > 0:
-            verts_path = base_dir + base_name + '_mpi_lloyd_verts.npy'
-            tris_path = base_dir + base_name + '_mpi_lloyd_tris.npy'
-            out_verts_path = base_dir + base_name + '_mpi_lloyd_verts_out.npy'
-            np.save(verts_path, verts)
-            np.save(tris_path, tris)
-            lloyd_rows, lloyd_cols = compute_tile_grid_allow_unused(MPI_nworkers)
-            run_mpi_lloyd(verts_path, tris_path, out_verts_path, outputBufferfn,
-                          mpi_lloyd_boundary_tol, mpi_global_lloyd,
-                          MPI_exec_str, MPI_nworkers,
-                          shared_edge_constraints=True,
-                          shared_edge_tol=mpi_lloyd_boundary_tol,
-                          tile_rows=lloyd_rows,
-                          tile_cols=lloyd_cols)
-            verts = np.load(out_verts_path)
-        mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose)
-    else:
-        mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose)
+    # The preparation store lives through export; workers map the same files.
+    with tempfile.TemporaryDirectory(prefix='mesher-prepared-', dir=base_dir) as preparation_dir:
+        if mpi_mesh:
+            if final_npz_path is None:
+                raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
+            with open_mesh_arrays(final_npz_path, preparation_dir) as (verts, tris):
+                mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose,
+                                              directory=preparation_dir)
+        else:
+            mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs,
+                                               is_geographic, verbose, directory=preparation_dir)
 
-    # holds parameters and initial conditions for CHM
-    params = {}
-    ics = {}
-    for key, data in parameter_files.items():
-        params[key] = []
+        print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
+        ics = {key: [] for key in initial_conditions}
 
-    params['area'] = []
-    params['id'] = []
-
-    for key, data in initial_conditions.items():
-        ics[key] = []
-
-    gt = src_ds.GetGeoTransform()
-
-    tris = range(mesh['mesh']['nelem'])
-
-    ret_tri = []
-    ret_tri_ic = []
-
-    csize = len(tris) // nworkers
-    if csize < 1:
-        csize = 1
-
-    print('Computing parameters and initial conditions')
-
-    # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
-    start_time = time.perf_counter()
-
-    MPI_do_parameterize_path = os.path.join(os.path.join(os.path.dirname(mesher_utls.__file__),
-                                                      'MPI_do_parameterize.py'))
-    verts_path = base_dir + base_name + '_mpi_param_verts.npy'
-    elems_path = base_dir + base_name + '_mpi_param_elems.npy'
-    np.save(verts_path, np.asarray(mesh['mesh']['vertex'], dtype=float))
-    np.save(elems_path, np.asarray(mesh['mesh']['elem'], dtype=int))
-
-    prepare_args = {
-        'gt': gt,
-        'is_geographic': is_geographic,
-        'parameter_files': parameter_files,
-        'initial_conditions': initial_conditions,
-        'RasterXSize': src_ds.RasterXSize,
-        'RasterYSize': src_ds.RasterYSize,
-        'srs_proj4': srs_out.ExportToProj4(),
-        'verts_path': verts_path,
-        'elems_path': elems_path,
-        'use_exactextract': use_exactextract
-    }
-    with open('pickled_param_prepare_args.pickle', 'wb') as f:
-        cloudpickle.dump(prepare_args, f)
-
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_prepare_args.pickle False {configfile} --prepare-only"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_do_parameterize_path,
-                                         'pickled_param_prepare_args.pickle', 'True', configfile, '--prepare-only'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_param_prepare_args.pickle')
-
-    if MPI_exec_str is not None:
-        # RANK is placeholder, it's change within the do parameterize call
-        exec_str = f"""{MPI_exec_str} {MPI_do_parameterize_path} pickled_param_args_RANK.pickle False {configfile}"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_do_parameterize_path,
-                                         'pickled_param_args_RANK.pickle', 'True', configfile],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    for tmp_path in (verts_path, elems_path):
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        gt = src_ds.GetGeoTransform()
 
 
-    files = natsorted(glob.glob('pickled_param_args_rets_*.pickle'))
-    # print(files)
+        print('Computing parameters and initial conditions')
 
-    for file in files:
-        with open(file, 'rb') as f:
-            ret_tri.extend(cloudpickle.load(f))
-        os.remove(file)
+        # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
+        start_time = time.perf_counter()
 
-    for key, data in parameter_files.items():
-        parameter_files[key]['file'] = None
+        parameter_args = {
+            'gt': gt,
+            'is_geographic': is_geographic,
+            'parameter_files': parameter_files,
+            'initial_conditions': initial_conditions,
+            'RasterXSize': src_ds.RasterXSize,
+            'RasterYSize': src_ds.RasterYSize,
+            'srs_proj4': srs_out.ExportToProj4(),
+            'use_exactextract': use_exactextract,
+            'batch_size': parameter_batch_size,
+        }
+        params = run_parameterization(mesh, parameter_args, base_dir,
+                                      MPI_exec_str, MPI_nworkers, configfile,
+                                      output_dir=preparation_dir)
 
-    for key, data in initial_conditions.items():
-        initial_conditions[key]['file'] = None
+        for key, data in parameter_files.items():
+            parameter_files[key]['file'] = None
 
-    for t in ret_tri:
-        for key, data in t.items():
-            params[key].append(data)
+        for key, data in initial_conditions.items():
+            initial_conditions[key]['file'] = None
 
-    #reset this as it was mangled during the MPI call
-    params['id'] = [x for x in range(0, mesh['mesh']['nelem'])]
+        mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
 
+        print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
 
-    for t in ret_tri_ic:
-        for key, data in t.items():
-            ics[key].append(data)
+        export_started = time.perf_counter()
+        output_name = base_name + '_mpi' if mpi_mesh else base_name
 
-    mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
+        if output_write_vtu:
+            print('Writing vtu file...')
+            write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
 
-    print('Total time took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    output_name = base_name + '_mpi' if mpi_mesh else base_name
-
-    if output_write_vtu:
-        print('Writing vtu file...')
-        write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
-
-    if output_write_shp:
-        print('Writing shp file...')
-        write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
+        if output_write_shp:
+            print('Writing shp file...')
+            write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
 
 
-    print('Saving mesh to file ' + output_name + '.mesh')
-    with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
-        json.dump(mesh, outfile, indent=4)
+        print('Saving mesh to file ' + output_name + '.mesh')
+        with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
+            dump_json(mesh, outfile)
 
-    # pdb.set_trace()
-    if write_param_per_file:
-        print('Saving parameters to individual files')
-        for key, data in params.items():
-            out_path = user_output_dir + f'{output_name}.param.{key}.json'
-            with open(out_path, 'w') as outfile:
-                json.dump({key: data}, outfile, indent=4)
-    else:
-        print('Saving parameters to file ' + output_name + '.param')
-        with open(user_output_dir + output_name + '.param', 'w') as outfile:
-            json.dump(params, outfile, indent=4)
+        # pdb.set_trace()
+        if write_param_per_file:
+            print('Saving parameters to individual files')
+            for key, data in params.items():
+                out_path = user_output_dir + f'{output_name}.param.{key}.json'
+                with open(out_path, 'w') as outfile:
+                    dump_json({key: data}, outfile)
+        else:
+            print('Saving parameters to file ' + output_name + '.param')
+            with open(user_output_dir + output_name + '.param', 'w') as outfile:
+                dump_json(params, outfile)
 
-    print('Saving initial conditions  to file ' + output_name + '.ic')
-    with open(user_output_dir + output_name + '.ic', 'w') as outfile:
-        json.dump(ics, outfile, indent=4)
-    print('Done')
+        print('Saving initial conditions  to file ' + output_name + '.ic')
+        with open(user_output_dir + output_name + '.ic', 'w') as outfile:
+            dump_json(ics, outfile)
+        print(f'Export took {time.perf_counter() - export_started:.2f} s')
+        print(f'Total run took {time.perf_counter() - run_started:.2f} s')
+        print('Done')
+
+
+def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile, output_dir=None):
+    """Launch workers once against shared arrays and collect only this run's results."""
+    from .mesher_utls.MPI_do_parameterize import rank_face_range
+
+    worker = os.path.join(os.path.dirname(mesher_utls.__file__), 'MPI_do_parameterize.py')
+    configfile = os.path.abspath(configfile)
+    if nranks < 1:
+        raise ValueError('Parameterization requires at least one MPI rank')
+    input_started = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix='mesher-parameters-', dir=os.path.abspath(base_dir)) as work:
+        verts_path = os.path.join(work, 'vertices.npy')
+        elems_path = os.path.join(work, 'elements.npy')
+        def shared_path(key, path, dtype):
+            array = mesh['mesh'][key]
+            if isinstance(array, np.memmap):
+                # Preparation arrays are entire files, not rank slices.
+                on_disk = np.load(array.filename, mmap_mode='r')
+                if (not isinstance(array.base, np.ndarray) and on_disk.shape == array.shape
+                        and on_disk.strides == array.strides and on_disk.dtype == array.dtype):
+                    array.flush()
+                    return str(array.filename)
+            copy_array(path, np.asarray(array, dtype=dtype).reshape(-1, 3))
+            return path
+        verts_path = shared_path('vertex', verts_path, float)
+        elems_path = shared_path('elem', elems_path, np.int64)
+        manifest = dict(parameter_args, verts_path=verts_path, elems_path=elems_path,
+                        output_dir=work, nranks=nranks)
+        if output_dir is not None:
+            names = list(dict.fromkeys([*parameter_args['parameter_files'], 'area', 'id']))
+            columns = {key: disk_array(os.path.join(output_dir, f'parameter-{i}.npy'),
+                                      (len(mesh['mesh']['elem']),), np.int64 if key == 'id' else float)
+                       for i, key in enumerate(names)}
+            manifest['result_paths'] = {key: str(value.filename) for key, value in columns.items()}
+        inputs = os.path.join(work, 'inputs.pickle')
+        with open(inputs, 'wb') as stream:
+            cloudpickle.dump(manifest, stream)
+
+        inputs_seconds = time.perf_counter() - input_started
+        workers_started = time.perf_counter()
+        if exec_str is not None:
+            command = f'{exec_str} {shlex.join([worker, inputs, "False", configfile])}'
+            print(command, flush=True)
+            subprocess.check_call(command, shell=True, cwd=os.getcwd())
+        else:
+            comm = MPI.COMM_SELF.Spawn(sys.executable, args=[worker, inputs, 'True', configfile],
+                                       maxprocs=nranks)
+            comm.Disconnect()
+
+        workers_seconds = time.perf_counter() - workers_started
+        collection_started = time.perf_counter()
+        result = []
+        nfaces = len(mesh['mesh']['elem'])
+        for rank in range(nranks):
+            start, stop = rank_face_range(nfaces, rank, nranks)
+            with open(os.path.join(work, f'result_{rank}.pickle'), 'rb') as stream:
+                batch = cloudpickle.load(stream)
+            if output_dir is not None:
+                if batch != {'rank': rank, 'start': start, 'stop': stop, 'complete': True}:
+                    raise ValueError(f'Invalid parameterization completion for rank {rank}')
+                for lo, hi in batches(stop-start):
+                    if not np.array_equal(columns['id'][start+lo:start+hi], np.arange(start+lo, start+hi)):
+                        raise ValueError(f'Invalid parameterization IDs for rank {rank}')
+                continue
+            if ((batch['rank'], batch['start'], batch['stop']) != (rank, start, stop)
+                    or len(batch['triangles']) != stop-start
+                    or any(row['id'] != index for index, row in enumerate(batch['triangles'], start))):
+                raise ValueError(f'Invalid parameterization results for rank {rank}')
+            result.extend(batch['triangles'])
+        print(f'Parameter inputs: {inputs_seconds:.2f} s; '
+              f'MPI workers: {workers_seconds:.2f} s; '
+              f'result collection: {time.perf_counter() - collection_started:.2f} s', flush=True)
+        return columns if output_dir is not None else result
 
 
 def find_gdal_prefix():
@@ -1021,6 +1019,7 @@ def read_config(configfile):
     elif not hasattr(X, 'MPI_nworkers') and MPI_exec_str:
         raise RuntimeError('If MPI_exec_str is provided, then MPI_nworkers must also be provided')
 
+    _positive_integer(MPI_nworkers, 'MPI_nworkers')
     mpi_vendor = MPI.get_vendor()[0]
     print(f'Detected MPI = {mpi_vendor}')
 
@@ -1032,43 +1031,12 @@ def read_config(configfile):
     if hasattr(X, 'mpi_mesh'):
         mpi_mesh = X.mpi_mesh
 
-    mpi_merge_snap_tol = None
-    if hasattr(X, 'mpi_merge_snap_tol'):
-        mpi_merge_snap_tol = X.mpi_merge_snap_tol
-
-    mpi_global_lloyd = 0
-    if hasattr(X, 'mpi_global_lloyd'):
-        mpi_global_lloyd = X.mpi_global_lloyd
-
-    mpi_lloyd_boundary_tol = 0.0
-    if hasattr(X, 'mpi_lloyd_boundary_tol'):
-        mpi_lloyd_boundary_tol = X.mpi_lloyd_boundary_tol
-    elif mpi_global_lloyd > 0:
-        min_area_val = locals().get('min_area', None)
-        if min_area_val is None:
-            min_area_val = getattr(X, 'min_area', None)
-        if min_area_val is None:
-            min_area_val = locals().get('max_area', 1.0)
-        mpi_lloyd_boundary_tol = max(1e-6, math.sqrt(min_area_val))
-
-    mpi_merge_snap_tol = None
-    if hasattr(X, 'mpi_merge_snap_tol'):
-        mpi_merge_snap_tol = X.mpi_merge_snap_tol
-
-    mpi_shared_edge_spacing = None
-    if hasattr(X, 'mpi_shared_edge_spacing'):
-        mpi_shared_edge_spacing = X.mpi_shared_edge_spacing
-
     return X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer, \
         nworkers, nworkers_gdal, output_write_shp, output_write_vtu, parameter_files, reuse_mesh, scaling_factor, \
         simplify, simplify_tol, use_input_prj, user_no_weights, user_output_dir, verbose, weight_threshold, \
-        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, mpi_merge_snap_tol, \
-        mpi_global_lloyd, mpi_lloyd_boundary_tol, mesher_debug, use_exactextract, write_param_per_file, \
-        mpi_shared_edge_spacing
-
-
-
+        wkt_out, MPI_exec_str, MPI_nworkers, mpi_mesh, \
+        mesher_debug, use_exactextract, write_param_per_file
 
 
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
@@ -1096,7 +1064,7 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
     MPI_regularize_path = os.path.join(os.path.dirname(mesher_utls.__file__),
                                                       'MPI_regularize_inputs.py')
     if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_regularize_path} pickled_param_args.pickle False"""
+        exec_str = f"""{MPI_exec_str} {MPI_regularize_path} pickled_param_args.pickle False {MPI_nworkers}"""
         print(exec_str)
         subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
     else:
@@ -1129,62 +1097,6 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
                 input_files[key]['method'] = [input_files[key]['method']]
 
     return total_weights, use_weights
-
-
-
-
-
-# Print iterations progress
-# http://stackoverflow.com/a/34325723/410074
-def printProgress(iteration, total, prefix='', suffix='', decimals=2, barLength=100):
-    """
-    Call in a loop to create terminal progress bar
-    @params:
-        iterations  - Required  : current iteration (Int)
-        total       - Required  : total iterations (Int)
-        prefix      - Optional  : prefix string (Str)
-        suffix      - Optional  : suffix string (Str)
-    """
-    filledLength = int(round(barLength * iteration / float(total)))
-    percents = round(100.00 * (iteration / float(total)), decimals)
-    bar = '#' * filledLength + '-' * (barLength - filledLength)
-    sys.stdout.write('%s [%s] %s%s %s\r' % (prefix, bar, percents, '%', suffix)),
-    sys.stdout.flush()
-    if iteration == total:
-        print("\n")
-
-
-# Zonal stats from here https://gist.github.com/perrygeo/5667173
-def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
-    originX = gt[0]
-    originY = gt[3]
-    pixel_width = gt[1]
-    pixel_height = gt[5]
-    x1 = int((bbox[0] - originX) / pixel_width)
-    x2 = int((bbox[1] - originX) / pixel_width) + 1
-
-    y1 = int((bbox[3] - originY) / pixel_height)
-    y2 = int((bbox[2] - originY) / pixel_height) + 1
-
-    xsize = x2 - x1
-    ysize = y2 - y1
-
-    # only apply this correction if we are touching the underlying raster.
-    if x1 < rasterXsize and y1 < rasterYsize:
-        # deal with small out of bounds
-        if x1 < 0:
-            x1 = 0
-
-        if y1 < 0:
-            y1 = 0
-
-        if x1 + xsize > rasterXsize:
-            xsize = rasterXsize - x1
-
-        if y1 + ysize > rasterYsize:
-            ysize = rasterYsize - y1
-
-    return x1, y1, xsize, ysize
 
 
 def extract_point(raster, mx, my):
@@ -1244,379 +1156,262 @@ def extract_point(raster, mx, my):
     return mz
 
 
-def compute_tile_grid(nranks):
-    best_rows = 1
-    best_cols = nranks
-    best_diff = abs(best_cols - best_rows)
+def _positive_integer(value, name):
+    if type(value) is not int or value < 1:
+        raise ValueError(f'{name} must be a positive integer')
+    return value
+
+
+def compute_tile_grid(nranks, width, height, *, num_tiles=None):
+    """Balance worker utilization with the physical perimeter of each tile.
+
+    A square tile has shape cost 1. Multiply that cost by ranks/tiles so a
+    slightly rectangular grid can use more workers without choosing long thin
+    strips just to fill a prime-sized allocation. This is a geometry heuristic,
+    not an estimate of raster-dependent refinement work. An explicit num_tiles
+    chooses the best-shaped exact grid independently of the worker count.
+    """
+    _positive_integer(nranks, 'MPI_nworkers')
+    if not all(np.isfinite(v) and v > 0 for v in (width, height)):
+        raise ValueError('MPI domain width and height must be positive and finite')
+    if num_tiles is not None:
+        _positive_integer(num_tiles, 'mpi_num_tiles')
+        # An explicit count must be exact. Of its factor pairs, find the
+        # grid with the most nearly square physical tiles.
+        candidates = ((short, num_tiles // short) if width >= height else (num_tiles // short, short)
+                      for short in range(1, math.isqrt(num_tiles) + 1) if num_tiles % short == 0)
+        return min(candidates, key=lambda grid: abs(math.log(width / grid[1]) - math.log(height / grid[0])))
+
+    best = None
     for rows in range(1, nranks + 1):
-        if nranks % rows != 0:
-            continue
-        cols = nranks // rows
-        diff = abs(cols - rows)
-        if diff < best_diff:
-            best_rows = rows
-            best_cols = cols
-            best_diff = diff
-    return best_rows, best_cols
+        for cols in range(1, nranks // rows + 1):
+            count = rows * cols
+            aspect = (width / cols) / (height / rows)
+            shape_cost = (math.sqrt(aspect) + 1 / math.sqrt(aspect)) / 2
+            score = shape_cost * nranks / count
+            candidate = (score, -count, abs(rows-cols), rows, cols)
+            if best is None or candidate < best:
+                best = candidate
+    _, _, _, rows, cols = best
+    return rows, cols
 
 
-def compute_tile_grid_allow_unused(nranks):
-    # Prefer near-square grids and allow unused ranks to avoid skinny tiles.
-    best_rows = 1
-    best_cols = 1
-    best_diff = None
-    best_tiles = 0
-    for rows in range(1, nranks + 1):
-        for cols in range(1, nranks + 1):
-            tiles = rows * cols
-            if tiles > nranks:
-                continue
-            diff = abs(cols - rows)
-            if best_diff is None or diff < best_diff or (diff == best_diff and tiles > best_tiles):
-                best_rows = rows
-                best_cols = cols
-                best_diff = diff
-                best_tiles = tiles
-    return best_rows, best_cols
+def mpi_final_npz_name(base_name, rows, cols):
+    # Pairwise stages halve columns and rows in turn, carrying odd groups.
+    stages = (cols - 1).bit_length() + (rows - 1).bit_length()
+    suffix = f'stage{stages-1}_r0_c0' if stages else 'tile_0'
+    return f'{base_name}_mpi_{suffix}.npz'
 
 
-def expand_bbox(bbox, buffer_dist):
-    return [
-        bbox[0] - buffer_dist,
-        bbox[1] - buffer_dist,
-        bbox[2] + buffer_dist,
-        bbox[3] + buffer_dist
-    ]
-
-
-def bbox_intersection(a, b):
-    xmin = max(a[0], b[0])
-    ymin = max(a[1], b[1])
-    xmax = min(a[2], b[2])
-    ymax = min(a[3], b[3])
-    if xmin >= xmax or ymin >= ymax:
-        return None
-    return [xmin, ymin, xmax, ymax]
-
-
-def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose):
-    # Shared points alone do not stop independently refined MPI tile edges from
-    # acquiring different subdivisions. Reconcile before DEM/parameter sampling,
-    # including reuse_mesh runs loading older stitched NPZ intermediates.
-    print('Checking MPI seam subdivisions...', flush=True)
-    tris, neighbours, seam_stats = reconcile_boundary_subdivisions(verts_xy, tris)
-    print('MPI seams: %d faces split, %d triangles added' %
-          (seam_stats['split_faces'], seam_stats['added_triangles']), flush=True)
-    mesh = {'mesh': {}}
-    mesh['mesh']['vertex'] = []
-    mesh['mesh']['elem'] = []
-    # Reconstruct the global graph after tile vertex IDs have been merged.
-    # Tile-local .neigh files cannot supply cross-tile neighbours.
-    mesh['mesh']['neigh'] = neighbours.tolist()
-    mesh['mesh']['nvertex'] = len(verts_xy)
-    mesh['mesh']['nelem'] = len(tris)
-    mesh['mesh']['is_geographic'] = is_geographic
-
+def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verbose, directory=None):
+    """Keep one numeric representation; sample and repair elevations in place."""
+    verts_xy = np.asarray(verts_xy, dtype=float)
+    tris = integer_rows(tris, 'elem')
+    def allocate(name, shape, dtype):
+        return (np.empty(shape, dtype=dtype) if directory is None else
+                disk_array(os.path.join(directory, name + '.npy'), shape, dtype))
+    elements = allocate('elements', tris.shape, np.int64)
+    for lo, hi in batches(len(tris)):
+        elements[lo:hi] = tris[lo:hi]
+    neighbours = build_neighbours(elements, len(verts_xy), verts_xy, chunk_size=32768,
+        output_path=None if directory is None else os.path.join(directory, 'neighbours.npy'),
+        temporary_directory=directory)
+    with tempfile.TemporaryDirectory(dir=directory) as work:
+        check_boundary_geometry(verts_xy, elements, neighbours, work)
+    vertices = allocate('vertices', (len(verts_xy), 3), float)
+    invalid = allocate('invalid-elevations', (len(verts_xy),), bool)
+    for lo, hi in batches(len(vertices)):
+        vertices[lo:hi, :2] = verts_xy[lo:hi, :2]
+        for i in range(lo, hi):
+            z = extract_point(src_ds, float(vertices[i, 0]), float(vertices[i, 1]))
+            invalid[i] = z is None or z == dem.GetNoDataValue() or not np.isfinite(z)
+            vertices[i, 2] = np.nan if invalid[i] else z
+    # Preserve the original ordered, one-pass propagation through face vertices.
+    for lo, hi in batches(len(elements)):
+        for tri in elements[lo:hi]:
+            for vid in tri:
+                if invalid[vid]:
+                    valid = tri[~invalid[tri]]
+                    if len(valid):
+                        vertices[vid, 2] = vertices[valid, 2].mean()
+                        invalid[vid] = False
+    count = sum(np.count_nonzero(invalid[lo:hi]) for lo, hi in batches(len(invalid)))
+    if count:
+        raise RuntimeError(f'Length of invalid nodes after correction= {count}. '
+                           'An entire triangle may lie outside the DEM; try reducing simplify_tol.')
+    m = dict(vertex=vertices, elem=elements, neigh=neighbours, nvertex=len(vertices),
+             nelem=len(elements), is_geographic=is_geographic)
     if not is_geographic:
-        mesh['mesh']['proj4'] = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
-
-    invalid_nodes = []
-
-    for i, v in enumerate(verts_xy):
-        mx = float(v[0])
-        my = float(v[1])
-        mz = extract_point(src_ds, mx, my)
-        if mz == dem.GetNoDataValue() or mz is None:
-            invalid_nodes.append(i)
-        mesh['mesh']['vertex'].append([mx, my, mz])
-
-    for tri in tris:
-        v0, v1, v2 = int(tri[0]), int(tri[1]), int(tri[2])
-
-        if v0 in invalid_nodes:
-            z_v1 = mesh['mesh']['vertex'][v1][2]
-            z_v2 = mesh['mesh']['vertex'][v2][2]
-            tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
-                invalid_nodes = [x for x in invalid_nodes if x != v0]
-
-        if v1 in invalid_nodes:
-            z_v0 = mesh['mesh']['vertex'][v0][2]
-            z_v2 = mesh['mesh']['vertex'][v2][2]
-            tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
-                invalid_nodes = [x for x in invalid_nodes if x != v1]
-
-        if v2 in invalid_nodes:
-            z_v1 = mesh['mesh']['vertex'][v1][2]
-            z_v0 = mesh['mesh']['vertex'][v0][2]
-            tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
-            if len(tmp) != 0:
-                mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
-                if verbose:
-                    print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
-                invalid_nodes = [x for x in invalid_nodes if x != v2]
-
-        mesh['mesh']['elem'].append([v0, v1, v2])
-
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
-        errstr += 'reconstruct this triangle. '
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
-
-    return mesh
+        m.update(proj4=srs.ExportToProj4(), UTM_zone=srs.GetUTMZone())
+    return {'mesh': m}
 
 
-def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose):
-    mesh = {'mesh': {}}
-    mesh['mesh']['vertex'] = []
+def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose, directory=None):
+    """Read Triangle text files directly into numeric backing arrays."""
+    def rows(path):
+        with open(path) as stream:
+            for line in stream:
+                fields = line.split('#', 1)[0].split()
+                if fields:
+                    yield fields
+    with tempfile.TemporaryDirectory(prefix='serial-arrays-', dir=directory) as work:
+        nodes = rows(base_dir + 'PLGS' + base_name + '.1.node')
+        nv = int(next(nodes)[0])
+        vertices = disk_array(os.path.join(work, 'vertices.npy'), (nv, 3))
+        count = 0
+        for count, fields in enumerate(nodes, 1):
+            if int(fields[0]) != count or count > nv:
+                raise MeshTopologyError('Unexpected node ID in Triangle output')
+            vertices[count-1] = (float(fields[1]), float(fields[2]), 0)
+        if count != nv:
+            raise MeshTopologyError('Truncated Triangle node file')
+        faces = rows(base_dir + 'PLGS' + base_name + '.1.ele')
+        nt = int(next(faces)[0])
+        elements = disk_array(os.path.join(work, 'elements.npy'), (nt, 3), np.int64)
+        count = 0
+        for count, fields in enumerate(faces, 1):
+            if int(fields[0]) != count or count > nt:
+                raise MeshTopologyError('Unexpected face ID in Triangle output')
+            elements[count-1] = [int(v)-1 for v in fields[1:4]]
+        if count != nt:
+            raise MeshTopologyError('Truncated Triangle element file')
+        return build_mesh_from_arrays(vertices, elements, src_ds, dem, srs, is_geographic,
+                                      verbose, directory=directory)
 
-    read_header = False
-    invalid_nodes = []
 
-    print('Reading nodes')
-    start_time = time.perf_counter()
-    with open(base_dir + 'PLGS' + base_name + '.1.node') as f:
-        for line in f:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    num_nodes = int(header[0])
-                    read_header = True
-                    mesh['mesh']['nvertex'] = num_nodes
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    mx = float(items[1])
-                    my = float(items[2])
-
-                    mz = extract_point(src_ds, mx, my)
-
-                    if mz == dem.GetNoDataValue() or mz is None:
-                        invalid_nodes.append(int(items[0]) - 1)
-
-                    mesh['mesh']['vertex'].append([mx, my, mz])
-
-    print('Length of invalid nodes = ' + str(len(invalid_nodes)))
-    print('Reading nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    print('Reading in neighbour file')
-    start_time = time.perf_counter()
-    read_header = False
-    mesh['mesh']['neigh'] = []
-    with open(base_dir + 'PLGS' + base_name + '.1.neigh') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    read_header = True
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    mesh['mesh']['neigh'].append([v0, v1, v2])
-
-    read_header = False
-    print('Reading neigh file took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    print('Repairing invalid triangles if needed...')
-    start_time = time.perf_counter()
-
-    mesh['mesh']['elem'] = []
-    mesh['mesh']['is_geographic'] = is_geographic
-
-    if not is_geographic:
-        mesh['mesh']['proj4'] = srs.ExportToProj4()
-        mesh['mesh']['UTM_zone'] = srs.GetUTMZone()
-
-    with open(base_dir + 'PLGS' + base_name + '.1.ele') as elem:
-        for line in elem:
-            if '#' not in line:
-                if not read_header:
-                    header = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    nelem = int(header[0])
-                    mesh['mesh']['nelem'] = nelem
-                    read_header = True
-                else:
-                    items = re.findall(r"[+-]?\d+(?:\.\d+)?", line)
-                    v0 = int(items[1]) - 1
-                    v1 = int(items[2]) - 1
-                    v2 = int(items[3]) - 1
-
-                    if v0 in invalid_nodes:
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v1, z_v2] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v0][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v0]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v0]
-
-                    if v1 in invalid_nodes:
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        z_v2 = mesh['mesh']['vertex'][v2][2]
-                        tmp = [x for x in [z_v0, z_v2] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v1][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v1]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v1]
-
-                    if v2 in invalid_nodes:
-                        z_v1 = mesh['mesh']['vertex'][v1][2]
-                        z_v0 = mesh['mesh']['vertex'][v0][2]
-                        tmp = [x for x in [z_v1, z_v0] if x != dem.GetNoDataValue()]
-                        if len(tmp) != 0:
-                            mesh['mesh']['vertex'][v2][2] = float(np.mean(tmp))
-                            if verbose:
-                                print('replaced invalid with ' + str(mesh['mesh']['vertex'][v2]))
-                            invalid_nodes = [x for x in invalid_nodes if x != v2]
-                    mesh['mesh']['elem'].append([v0, v1, v2])
-
-    print('Repairing nodes took %s s' % str(round(time.perf_counter() - start_time, 2)))
-
-    if len(invalid_nodes) > 0:
-        errstr = 'Length of invalid nodes after correction= ' + str(len(invalid_nodes))
-        errstr += 'This will have occurred if an entire triangle is outside of the domain. There is no way to '
-        errstr += 'reconstruct this triangle. '
-        errstr += 'Try reducing simplify_tol.'
-        raise RuntimeError(errstr)
-
-    return mesh
+def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
+    if not tasks:
+        return
+    debug = any(task.get('mesher_debug', False) for task in tasks)
+    worker_path = os.path.join(os.path.dirname(mesher_utls.__file__), worker)
+    with StageProgress(tasks, label, debug=debug) as progress:
+        arguments = str(progress.directory / 'tasks.pickle')
+        with open(arguments, 'wb') as stream:
+            cloudpickle.dump(progress.tasks, stream)
+        if MPI_exec_str is not None:
+            exec_str = f'{MPI_exec_str} {shlex.quote(worker_path)} {shlex.quote(arguments)} False {MPI_nworkers}'
+            if debug:
+                print(exec_str, flush=True)
+            subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
+        else:
+            comm = MPI.COMM_SELF.Spawn(sys.executable,
+                                       args=[worker_path, arguments, 'True'],
+                                       maxprocs=min(MPI_nworkers, len(tasks)))
+            comm.Disconnect()
 
 
 def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None):
-    if len(tasks) == 0:
+    if not tasks:
         return
-    if stage_label is not None:
+    if stage_label is not None and any(task.get('mesher_debug', False) for task in tasks):
         remaining = total_merges - len(tasks) if total_merges is not None else None
         if remaining is not None:
             print(f'MPI merge {stage_label}: {len(tasks)} merges (remaining after stage: {remaining})')
         else:
             print(f'MPI merge {stage_label}: {len(tasks)} merges')
 
-    with open('pickled_mesh_merge_args.pickle', 'wb') as f:
-        cloudpickle.dump(tasks, f)
-
-    MPI_merge_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                  'MPI_merge_tiles.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_merge_path} pickled_mesh_merge_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_merge_path,
-                                         'pickled_mesh_merge_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_mesh_merge_args.pickle')
+    _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, 'MPI_merge_tiles.py',
+                        f'MPI merge {stage_label}' if stage_label else 'MPI merge')
 
 
-def run_mpi_lloyd(verts_path, tris_path, out_verts_path, outer_polygon_shp,
-                  boundary_tol, iterations, MPI_exec_str, MPI_nworkers,
-                  shared_edge_constraints=False, shared_edge_tol=None,
-                  tile_rows=None, tile_cols=None):
-    args = {
-        'verts_path': verts_path,
-        'tris_path': tris_path,
-        'out_verts_path': out_verts_path,
-        'outer_polygon_shp': outer_polygon_shp,
-        'boundary_tol': boundary_tol,
-        'iterations': iterations,
-        'shared_edge_constraints': shared_edge_constraints,
-        'shared_edge_tol': shared_edge_tol,
-        'tile_rows': tile_rows,
-        'tile_cols': tile_cols
-    }
-    with open('pickled_lloyd_args.pickle', 'wb') as f:
-        cloudpickle.dump(args, f)
-
-    MPI_lloyd_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                  'MPI_do_lloyd.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_lloyd_path} pickled_lloyd_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_lloyd_path,
-                                         'pickled_lloyd_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_lloyd_args.pickle')
+def mpi_remesh_options_from_config(config):
+    """Validate MPI meshing settings before preparing or replacing any inputs."""
+    if getattr(config, 'mpi_merge_method', 'remesh') != 'remesh':
+        raise ValueError('Only mpi_merge_method="remesh" is supported; shared-edge meshing has been retired')
+    for name in ('mpi_merge_snap_tol', 'mpi_shared_edge_spacing', 'mpi_shared_edge_constraints'):
+        if getattr(config, name, None) is not None:
+            raise ValueError(f'{name} belongs to the retired shared-edge implementation; remove it from the configuration')
+    if getattr(config, 'mpi_global_lloyd', 0) != 0:
+        raise ValueError('Distributed MPI smoothing has been retired; remove mpi_global_lloyd or set it to 0')
+    if getattr(config, 'mpi_lloyd_boundary_tol', None) is not None:
+        raise ValueError('mpi_lloyd_boundary_tol belongs to the retired distributed smoother; remove it from the configuration')
+    if getattr(config, 'lloyd_itr', 0) != 0:
+        raise ValueError('lloyd_itr must be 0 with MPI remeshing; smoothing does not preserve the validated patch criteria')
+    return {'merge_method': 'remesh',
+            'remesh_band_width': getattr(config, 'mpi_remesh_band_width', None),
+            'remesh_max_attempts': getattr(config, 'mpi_remesh_max_attempts', 12),
+            'remesh_max_vertices': getattr(config, 'mpi_remesh_max_vertices', 500000),
+            'remesh_max_active_faces': getattr(config, 'mpi_remesh_max_active_faces', 2000000)}
 
 
-def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, mesher_path,
+def validate_mpi_mesh_metadata(npz_path):
+    """Only completed cavity meshes can be reused without remeshing geometry."""
+    metadata_path = os.path.splitext(npz_path)[0] + '.json'
+    try:
+        with open(metadata_path) as stream:
+            metadata = json.load(stream)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'Cannot verify MPI mesh metadata at {metadata_path}; regenerate with reuse_mesh=False') from exc
+    if not isinstance(metadata, dict) or metadata.get('merge_method') != 'remesh':
+        raise ValueError('Cannot reuse an old shared-edge MPI mesh; regenerate with reuse_mesh=False')
+
+
+def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
-                    max_tolerance, errormetric, lloyd_itr, use_weights, topo_weight,
+                    max_tolerance, errormetric, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                    mpi_merge_snap_tol=None, mesher_debug=False,
-                    mpi_shared_edge_spacing=None):
-    band_width = 5 * math.sqrt(min_area)
-    band_width = 0.0
-    rows, cols = compute_tile_grid_allow_unused(MPI_nworkers)
+                    mesher_debug=False, remesh_options=None, *, num_tiles=None):
+    remesh_options = dict(remesh_options or {})
+    if remesh_options.setdefault('merge_method', 'remesh') != 'remesh':
+        raise ValueError('Only mpi_merge_method="remesh" is supported; shared-edge meshing has been retired')
+    if is_geographic:
+        raise ValueError('MPI cavity remeshing requires a projected working CRS')
+    for key, minimum, default in (('remesh_max_attempts', 1, 12), ('remesh_max_vertices', 3, 500000),
+                                  ('remesh_max_active_faces', 1, 2000000)):
+        value = remesh_options.get(key, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
+    rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin, num_tiles=num_tiles)
+    layout_rows, layout_cols = rows, cols
 
     tile_width = (xmax - xmin) / cols
     tile_height = (ymax - ymin) / rows
     min_edge = min(tile_width, tile_height)
+    band_width = remesh_options.get('remesh_band_width')
+    if band_width is None:
+        band_width = min(2 * math.sqrt(max_area), .2 * min_edge)
+    if not np.isfinite(band_width) or band_width <= 0:
+        raise ValueError('mpi_remesh_band_width must be positive and finite')
+    remesh_options['remesh_band_width'] = float(band_width)
     min_edge_threshold = 1.25 * band_width
-    # min_edge_threshold=1
     if min_edge <= min_edge_threshold:
         msg = (
-            f'MPI_nworkers={MPI_nworkers} yields tiles {rows}x{cols} '
+            f'The {rows}x{cols} MPI tile grid has tiles '
             f'with min edge {min_edge:.3f} <= threshold {min_edge_threshold:.3f}. '
-            'This likely creates skinny tiles and unstable shared-edge merges. '
-            'Reduce MPI_nworkers or choose a more square grid.'
+            'The remesh band is too wide relative to the tiles. '
+            'Use fewer tiles or reduce mpi_remesh_band_width.'
         )
         raise RuntimeError(msg)
 
     tile_count = rows * cols
-    if tile_count < MPI_nworkers:
-        print(f'Warning: using {tile_count} tiles for {MPI_nworkers} MPI ranks to keep the grid square.')
+    print(f'MPI tile grid: {rows} rows x {cols} columns; '
+          f'{tile_count} tiles, up to {min(tile_count, MPI_nworkers)} active tile workers; '
+          f'tile dimensions={tile_width:.6g} x {tile_height:.6g}', flush=True)
 
 
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
 
     tile_args = []
-    if mpi_shared_edge_spacing is None:
-        mpi_shared_edge_spacing = max(1e-6, math.sqrt(min_area))
-    for rank in range(tile_count):
-        row = rank // cols
-        col = rank % cols
+    # Shared coordinates are computed once, preventing roundoff differences in
+    # neighbouring core boxes and making ownership an exact geometric contract.
+    x_edges = np.linspace(xmin, xmax, cols + 1)
+    y_edges = np.linspace(ymin, ymax, rows + 1)
+    for tile_id in range(tile_count):
+        row, col = divmod(tile_id, cols)
 
-        tile_xmin = xmin + col * tile_width
-        tile_xmax = tile_xmin + tile_width
-        tile_ymax = ymax - row * tile_height
-        tile_ymin = tile_ymax - tile_height
+        tile_xmin, tile_xmax = x_edges[col:col + 2]
+        tile_ymin, tile_ymax = y_edges[rows - row - 1:rows - row + 1]
 
         tile_bbox = [tile_xmin, tile_ymin, tile_xmax, tile_ymax]
-        tile_prefix = f"{base_name}_mpi_tile_{rank}"
+        tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
 
         tile_args.append({
-            'tile_id': rank,
-            'tile_row': row,
-            'tile_col': col,
-            'tile_rows': rows,
-            'tile_cols': cols,
+            'tile_id': tile_id,
             'tile_bbox': tile_bbox,
             'band_width': band_width,
             'base_dir': base_dir,
             'base_name': base_name,
             'tile_prefix': tile_prefix,
-            'gdal_prefix': gdal_prefix,
             'mesher_path': mesher_path,
             'constraints': constraint_files,
             'parameter_files': parameter_files,
@@ -1625,7 +1420,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'min_area': min_area,
             'max_tolerance': max_tolerance,
             'errormetric': errormetric,
-            'lloyd_itr': lloyd_itr,
             'use_weights': use_weights,
             'topo_weight': topo_weight,
             'weight_threshold': weight_threshold,
@@ -1633,27 +1427,10 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             'dem_path': base_dir + base_name + '_projected.tif',
             'outer_polygon_shp': outer_polygon_shp,
             'mesher_debug': mesher_debug,
-            'use_shared_edges': True,
-            'shared_edge_spacing': mpi_shared_edge_spacing
+            **remesh_options
         })
 
-    with open('pickled_mesh_tile_args.pickle', 'wb') as f:
-        cloudpickle.dump(tile_args, f)
-
-    MPI_mesh_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                 'MPI_mesh_tiles.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_mesh_path} pickled_mesh_tile_args.pickle False"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_mesh_path,
-                                         'pickled_mesh_tile_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-
-    os.remove('pickled_mesh_tile_args.pickle')
+    _run_mpi_mesh_tasks(tile_args, MPI_exec_str, MPI_nworkers, 'MPI_mesh_tiles.py', 'MPI tiles')
 
     tile_grid = []
     for row in range(rows):
@@ -1696,7 +1473,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'tile_a': left,
                             'tile_b': right,
                             'out_prefix': base_dir + out_prefix,
-                            'gdal_prefix': gdal_prefix,
                             'mesher_path': mesher_path,
                             'constraints': constraint_files,
                             'parameter_files': parameter_files,
@@ -1705,16 +1481,14 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'min_area': min_area,
                             'max_tolerance': max_tolerance,
                             'errormetric': errormetric,
-                            'lloyd_itr': lloyd_itr,
                             'use_weights': use_weights,
                             'topo_weight': topo_weight,
                             'weight_threshold': weight_threshold,
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
                             'outer_polygon_shp': outer_polygon_shp,
-                            'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': True
+                            **remesh_options
                         })
                         new_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1752,7 +1526,6 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'tile_a': top,
                             'tile_b': bottom,
                             'out_prefix': base_dir + out_prefix,
-                            'gdal_prefix': gdal_prefix,
                             'mesher_path': mesher_path,
                             'constraints': constraint_files,
                             'parameter_files': parameter_files,
@@ -1761,16 +1534,14 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
                             'min_area': min_area,
                             'max_tolerance': max_tolerance,
                             'errormetric': errormetric,
-                            'lloyd_itr': lloyd_itr,
                             'use_weights': use_weights,
                             'topo_weight': topo_weight,
                             'weight_threshold': weight_threshold,
                             'is_geographic': is_geographic,
                             'dem_path': base_dir + base_name + '_projected.tif',
                             'outer_polygon_shp': outer_polygon_shp,
-                            'merge_snap_tol': mpi_merge_snap_tol,
                             'mesher_debug': mesher_debug,
-                            'use_shared_edges': True
+                            **remesh_options
                         })
                         merged_row.append({
                             'npz': base_dir + out_prefix + '.npz',
@@ -1794,136 +1565,38 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, gdal_prefix, me
             rows = len(tile_grid)
             stage += 1
 
-    return tile_grid[0][0]['npz']
+    final_path = tile_grid[0][0]['npz']
+    layout_path = os.path.join(base_dir, base_name + '_mpi_layout.json')
+    temporary = layout_path + '.tmp'
+    with open(temporary, 'w') as stream:
+        json.dump({'version': 1, 'rows': layout_rows, 'cols': layout_cols,
+                   'mpi_nworkers': MPI_nworkers, 'num_tiles': tile_count, 'bounds': [xmin, ymin, xmax, ymax],
+                   'final_npz': os.path.basename(final_path)}, stream)
+    os.replace(temporary, layout_path)
+    return final_path
 
 
 def compute_mpi_final_npz_path(base_dir, base_name, mpi_nworkers):
-    rows, cols = compute_tile_grid_allow_unused(mpi_nworkers)
-    tile_grid = []
-    for row in range(rows):
-        row_tiles = []
-        for col in range(cols):
-            tile_id = row * cols + col
-            tile_prefix = f"{base_name}_mpi_tile_{tile_id}"
-            row_tiles.append({
-                'npz': base_dir + tile_prefix + '.npz'
-            })
-        tile_grid.append(row_tiles)
-
-    stage = 0
-    while rows > 1 or cols > 1:
-        if cols > 1:
-            new_grid = []
-            for row in range(rows):
-                new_row = []
-                col = 0
-                while col < cols:
-                    if col + 1 < cols:
-                        out_prefix = f"{base_name}_mpi_stage{stage}_r{row}_c{col // 2}"
-                        new_row.append({'npz': base_dir + out_prefix + '.npz'})
-                        col += 2
-                    else:
-                        new_row.append(tile_grid[row][col])
-                        col += 1
-                new_grid.append(new_row)
-            tile_grid = new_grid
-            cols = len(tile_grid[0])
-            stage += 1
-
-        if rows > 1:
-            new_grid = []
-            row = 0
-            new_row_idx = 0
-            while row < rows:
-                if row + 1 < rows:
-                    merged_row = []
-                    for col in range(cols):
-                        out_prefix = f"{base_name}_mpi_stage{stage}_r{new_row_idx}_c{col}"
-                        merged_row.append({'npz': base_dir + out_prefix + '.npz'})
-                    new_grid.append(merged_row)
-                    row += 2
-                    new_row_idx += 1
-                else:
-                    new_grid.append(tile_grid[row])
-                    row += 1
-                    new_row_idx += 1
-            tile_grid = new_grid
-            rows = len(tile_grid)
-            stage += 1
-
-    return tile_grid[0][0]['npz']
-
-
-def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
-    raster = rds.GetRasterBand(1)
-    src_array = raster.ReadAsArray(*src_offset)
-
-    # Rasterize it
-    driver = gdal.GetDriverByName('MEM')
-    mask = driver.Create('', src_offset[2], src_offset[3], 1, gdal.GDT_Byte)
-    mask.SetGeoTransform(new_gt)
-    mask.SetProjection(srs.ExportToWkt())
-    err = gdal.RasterizeLayer(mask, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
-    if err != 0:
-        raise Exception("Error rasterizing layer: %s" % err)
-
-    # holds a mask of where the triangle is on the raster
-    mask_arr = mask.ReadAsArray()
-
-    # Mask the source data array with our current feature
-    src_array[(mask_arr == 0) | (mask_arr == raster.GetNoDataValue())] = np.nan
-
-    output = -9999.0
-
-    if callable(aggMethod):
-        output = float(aggMethod(src_array))
-        if np.isnan(output):
-            output = raster.GetNoDataValue()
-    else:
-        if aggMethod == 'mode':
-            vals, counts = np.unique( src_array[~np.isnan(src_array)], return_counts=True)
-            output = float(vals[np.argmax(counts)])
-
-        elif aggMethod == 'mean':
-            output = float(np.nanmean(src_array))
-        elif aggMethod == 'max':
-            output = float(np.nanmax(src_array))
-        elif aggMethod == 'min':
-            output = float(np.nanmin(src_array))
-        else:
-            print('\n\nError: unknown data aggregation method %s\n\n' % aggMethod)
-            exit(-1)
-
-    # feature.SetField(key, output)
-
-    # testing code
-    # if output < 0:
-    #     print "Found < 0"
-    #
-    #     # testing code
-    #     tri_id = str(feature.GetField('triangle'))
-    #     print "Tri ID = " + tri_id
-    #
-    #     print masked
-    #
-    #     mem_drv = ogr.GetDriverByName('ESRI Shapefile')
-    #     mem_ds = mem_drv.CreateDataSource(tri_id+'.shp')
-    #     mem_layer = mem_ds.CreateLayer('poly', srs, ogr.wkbPolygon)
-    #     mem_layer.CreateFeature(feature.Clone())
-    #
-    #     driver = gdal.GetDriverByName('GTiff')
-    #     rvds = driver.Create(tri_id+'.tiff', src_offset[2], src_offset[3], 1, gdal.GDT_Float32)
-    #     rvds.SetGeoTransform(new_gt)
-    #     rvds.SetProjection(wkt)
-    #     outband = rvds.GetRasterBand(1)
-    #     outband.WriteArray(src_array)
-    #     # gdal.RasterizeLayer(rvds, [1], mem_layer, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
-    #
-    #     rvds = None
-    #     mem_layer = None
-    #     exit(1)
-
-    return output
+    """Locate the completed layout, with compatibility for pre-manifest runs."""
+    layout_path = os.path.join(base_dir, base_name + '_mpi_layout.json')
+    if os.path.exists(layout_path):
+        try:
+            with open(layout_path) as stream:
+                layout = json.load(stream)
+            rows, cols = layout['rows'], layout['cols']
+            if (layout.get('version') != 1 or any(type(v) is not int or v < 1 for v in (rows, cols))
+                    or layout['final_npz'] != mpi_final_npz_name(base_name, rows, cols)):
+                raise ValueError('Invalid layout fields')
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise ValueError(f'Cannot read completed MPI layout {layout_path}; '
+                             'regenerate with reuse_mesh=False') from exc
+        return os.path.join(base_dir, layout['final_npz'])
+    # Older versions always selected the largest square grid <= the rank count.
+    # Use their naming rule only for old cached outputs, never for fresh meshing.
+    if not isinstance(mpi_nworkers, int) or isinstance(mpi_nworkers, bool) or mpi_nworkers < 1:
+        raise ValueError('MPI_nworkers must be a positive integer')
+    side = math.isqrt(mpi_nworkers)
+    return os.path.join(base_dir, mpi_final_npz_name(base_name, side, side))
 
 
 # To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the
@@ -2045,109 +1718,6 @@ def write_shp(fname, mesh, parameter_files, initial_conditions):
     output_usm.FlushCache()
     output_usm = None  # close file
 
-
-def write_vtu(fname, mesh, parameter_files, initial_conditions):
-    vtu = vtk.vtkUnstructuredGrid()
-
-    output_vtk = fname
-    vtuwriter = vtk.vtkXMLUnstructuredGridWriter()
-    vtuwriter.SetFileName(output_vtk)
-
-    # check what version of vtk we are using so we can avoid the api conflict
-    # http://www.vtk.org/Wiki/VTK/VTK_6_Migration/Replacement_of_SetInput#Replacement_of_SetInput.28.29_with_SetInputData.28.29_and_SetInputConnection.28.29
-    if vtk.vtkVersion.GetVTKMajorVersion() > 5:
-        vtuwriter.SetInputData(vtu)
-    else:
-        vtuwriter.SetInput(vtu)
-
-    vtu_points = vtk.vtkPoints()
-    vtu_triangles = vtk.vtkCellArray()
-
-    vtu_points.SetNumberOfPoints(len(mesh['mesh']['vertex']))
-
-    vtu_cells = {'elevation': vtk.vtkFloatArray(),
-                 'cellid': vtk.vtkFloatArray(),
-                 'area': vtk.vtkFloatArray()
-                 }
-    vtu_cells['elevation'].SetName('elevation')
-    vtu_cells['area'].SetName('area')
-    vtu_cells['cellid'].SetName('cellid')
-
-    for key, data in parameter_files.items():
-        k = '[param] ' + key
-        vtu_cells[k] = vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
-
-    for key, data in initial_conditions.items():
-        k = '[ic] ' + key
-        vtu_cells[k] = vtk.vtkFloatArray()
-        vtu_cells[k].SetName(k)
-
-    def as_float(value):
-        if value is None:
-            return float('nan')
-        if isinstance(value, (list, tuple, np.ndarray)):
-            if len(value) == 0:
-                return float('nan')
-            value = value[0]
-        try:
-            return float(value)
-        except Exception:
-            return float('nan')
-
-    for elem in range(mesh['mesh']['nelem']):
-        v0 = mesh['mesh']['elem'][elem][0]
-        v1 = mesh['mesh']['elem'][elem][1]
-        v2 = mesh['mesh']['elem'][elem][2]
-
-        vtu_points.SetPoint(v0, mesh['mesh']['vertex'][v0][0],
-                            mesh['mesh']['vertex'][v0][1],
-                            mesh['mesh']['vertex'][v0][2])
-
-        vtu_points.SetPoint(v1, mesh['mesh']['vertex'][v1][0],
-                            mesh['mesh']['vertex'][v1][1],
-                            mesh['mesh']['vertex'][v1][2])
-
-        vtu_points.SetPoint(v2, mesh['mesh']['vertex'][v2][0],
-                            mesh['mesh']['vertex'][v2][1],
-                            mesh['mesh']['vertex'][v2][2])
-
-        triangle = vtk.vtkTriangle()
-        triangle.GetPointIds().SetId(0, v0)
-        triangle.GetPointIds().SetId(1, v1)
-        triangle.GetPointIds().SetId(2, v2)
-
-        vtu_triangles.InsertNextCell(triangle)
-        vtu_cells['elevation'].InsertNextTuple1((mesh['mesh']['vertex'][v0][2] +
-                                                 mesh['mesh']['vertex'][v1][2] +
-                                                 mesh['mesh']['vertex'][v2][2]) / 3.)
-
-        vtu_cells['cellid'].InsertNextTuple1(elem)
-
-        area = 1
-        vtu_cells['area'].InsertNextTuple1(area)
-
-        for key, data in parameter_files.items():
-            output = as_float(data[elem])
-            vtu_cells['[param] ' + key].InsertNextTuple1(output)
-
-        for key, data in initial_conditions.items():
-            output = as_float(data[elem])
-            vtu_cells['[ic] ' + key].InsertNextTuple1(output)
-
-    vtu.SetPoints(vtu_points)
-    vtu.SetCells(vtk.VTK_TRIANGLE, vtu_triangles)
-    for p in vtu_cells.values():
-        vtu.GetCellData().AddArray(p)
-
-    vtk_proj4 = vtk.vtkStringArray()
-    vtk_proj4.SetNumberOfComponents(1)
-    vtk_proj4.SetName("proj4")
-    vtk_proj4.InsertNextValue(mesh['mesh']['proj4'])
-
-    vtu.GetFieldData().AddArray(vtk_proj4)
-
-    vtuwriter.Write()
 
 
 if __name__ == "__main__":

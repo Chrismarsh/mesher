@@ -15,156 +15,107 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "raster.h"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 
 void raster::open(std::string path)
 {
-    ds = nullptr;
-    ds = (GDALDataset *) GDALOpen( path.c_str(), GA_ReadOnly);
-    if(!ds)
-    {
-        std::cout << "Unable to open " << path << std::endl;
-        exit(1);
-    }
-
-    gt = new double[6];
-    GDALGetGeoTransform( ds, gt );
-
-    band = ds->GetRasterBand( 1 );
-
+    auto opened = static_cast<GDALDataset*>(GDALOpen(path.c_str(), GA_ReadOnly));
+    if (!opened) throw std::runtime_error("Unable to open raster " + path);
+    setDs(opened);
 }
 
-raster::raster()
-{
-    mask = nullptr;
-    data = nullptr;
-    ds = nullptr;
-    band = nullptr;
-    gt = nullptr;
-}
+raster::raster() : gt(nullptr), ds(nullptr), band(nullptr), mask(nullptr), data(nullptr) {}
 
 raster::~raster()
 {
-    if(gt) delete[] gt;
-    if(mask) delete[] mask;
-    if(ds) GDALClose(ds);
-    if(data) delete[] data;
-
+    delete[] gt;
+    delete[] mask;
+    delete[] data;
+    if (ds) GDALClose(ds);
 }
 
 double raster::getXY(double x, double y)
 {
-
-    auto pxpy = xy_to_pxpy(x,y);
-    int px = pxpy.first;
-    int py = pxpy.second;
-
-    return getpXpY(px,py);
+    auto pixel = xy_to_pxpy(x, y);
+    // Vertices on the triangle boundary still sample the source pixel even if
+    // GDAL's polygon burn excludes that edge. The mask applies to area samples.
+    return getpXpY(pixel.first, pixel.second, false);
 }
 
+std::pair<double,double> raster::pixel_coordinates(double x, double y) const
+{
+    if (!ds || !gt) throw std::runtime_error("Raster geotransform is unavailable");
+    // Subtract the world origin first to avoid cancellation at large UTM values.
+    x -= gt[0]; y -= gt[3];
+    return {inverse_gt[1] * x + inverse_gt[2] * y,
+            inverse_gt[4] * x + inverse_gt[5] * y};
+}
 
 std::pair<int,int> raster::xy_to_pxpy(double x, double y)
 {
-//    adfGeoTransform[0] /* top left x */
-//    adfGeoTransform[1] /* w-e pixel resolution */
-//    adfGeoTransform[2] /* 0 */
-//    adfGeoTransform[3] /* top left y */
-//    adfGeoTransform[4] /* 0 */
-//    adfGeoTransform[5] /* n-s pixel resolution (negative value) */
-//
-    int px = (int) ((x - gt[0]) / gt[1]);  // x pixel
-    int py = (int) ((y - gt[3]) / gt[5]);  // y pixel
-
-    int xsize = ds->GetRasterXSize();
-    int ysize = ds->GetRasterYSize();
-    //out of bound issue when we are off by one because of UTM -> pixel round off
-    if (px == xsize)
-        px = xsize - 1;
-
-    if (py == ysize)
-        py = ysize - 1;
-
-    if(py == -1)
-        py = 0;
-
-    if(px == -1)
-        px = 0;
-
-    return std::make_pair(px,py);
+    auto pixel = pixel_coordinates(x, y);
+    const double precision = 64 * std::numeric_limits<double>::epsilon() *
+        std::max({1.0, std::abs(x), std::abs(y), std::abs(gt[0]), std::abs(gt[3])});
+    auto index = [](double value, int size, double precision) {
+        // Permit coordinate roundoff on the outer edge, not a whole pixel of
+        // extrapolation. Out-of-range values use a sentinel checked below.
+        const double epsilon = std::max(precision, 64 * std::numeric_limits<double>::epsilon() * std::max(1, size));
+        if (!std::isfinite(value) || value < -epsilon || value > size + epsilon)
+            return -1;
+        value = std::max(0.0, std::min(double(size - 1), std::floor(value)));
+        return static_cast<int>(value);
+    };
+    return {index(pixel.first, ds->GetRasterXSize(), precision * (std::abs(inverse_gt[1]) + std::abs(inverse_gt[2]))),
+            index(pixel.second, ds->GetRasterYSize(), precision * (std::abs(inverse_gt[4]) + std::abs(inverse_gt[5])))};
 }
 
-double *raster::getGt() const
+double *raster::getGt() const { return gt; }
+GDALDataset* raster::getDs() const { return ds; }
+GDALRasterBand* raster::getBand() const { return band; }
+
+void raster::setDs(GDALDataset* source)
 {
-    return gt;
+    if (ds && ds != source) GDALClose(ds);
+    ds = source; // This object owns the dataset, including on validation failure.
+    delete[] data; data = nullptr;
+    delete[] mask; mask = nullptr;
+    delete[] gt; gt = new double[6];
+    if (!ds || ds->GetGeoTransform(gt) != CE_None || !GDALInvGeoTransform(gt, inverse_gt))
+        throw std::runtime_error("Raster must have an invertible geotransform");
+    band = ds->GetRasterBand(1);
+    if (!band) throw std::runtime_error("Raster has no data band");
 }
 
-GDALDataset* raster::getDs() const
+void raster::setMask(float *values)
 {
-    return ds;
+    delete[] mask;
+    mask = values;
 }
 
-GDALRasterBand* raster::getBand() const
+double raster::getpXpY(int px, int py, bool apply_mask)
 {
-    return band;
-}
-
-
-void raster::setDs(GDALDataset* ds)
-{
-    raster::ds = ds;
-    if(gt)
-        delete[] gt;
-
-    gt = new double[6];
-    GDALGetGeoTransform( this->ds, gt );
-
-    band = this->ds->GetRasterBand( 1 );
-}
-
-void raster::setMask(float *mask)
-{
-    raster::mask = mask;
-}
-
-double raster::getpXpY(int px, int py)
-{
-    float pafScanline; //needs to be float because GDT_Float32
-
-//    GDALRasterIO(band, GF_Read, px, py, 1, 1,
-//                 &pafScanline, 1, 1, GDT_Float32,
-//                 0, 0);
-
-    int width = ds->GetRasterXSize();
-    auto idx = px + py * width;
-    pafScanline = data[idx];
-
-    double value = pafScanline; //cast up
-    if(mask)
-    {
-        //col + NCOLS * row
-        int idx = px+ds->GetRasterXSize()*py;
-        if (mask[idx] == 0) // 0 = no triangle touching this cell
-        {
-            value = nan("");
-        }
-    }
-
-    value = value == band->GetNoDataValue(NULL) ? nan("") : value;
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    if (!ds || !band || px < 0 || py < 0 || px >= ds->GetRasterXSize() || py >= ds->GetRasterYSize())
+        return missing;
+    const size_t index = size_t(py) * size_t(ds->GetRasterXSize()) + size_t(px);
+    if (apply_mask && mask && mask[index] == 0) return missing;
+    float value;
+    if (data) value = data[index];
+    else if (band->RasterIO(GF_Read, px, py, 1, 1, &value, 1, 1, GDT_Float32, 0, 0) != CE_None)
+        throw std::runtime_error("Cannot read raster sample: " + std::string(CPLGetLastErrorMsg()));
+    int has_nodata = false;
+    const double nodata = band->GetNoDataValue(&has_nodata);
+    if (!std::isfinite(value) || (has_nodata && value == static_cast<float>(nodata))) return missing;
     return value;
 }
 
-
-
-
-void raster::setBand(float *data, int xsize, int ysize)
+void raster::setBand(float *values, int xsize, int ysize)
 {
-    auto err = band->RasterIO( GF_Write, 0, 0, xsize, ysize,
-                      data, xsize, ysize, GDT_Float32, 0, 0 );
-    if (err != CE_None )
-    {
-        std::cout << "Error when updating raster band. GDAL CPLE error = "<<err<<std::endl;
-        exit(1);
-    }
-
-    this->data = data;
+    if (band->RasterIO(GF_Write, 0, 0, xsize, ysize, values, xsize, ysize, GDT_Float32, 0, 0) != CE_None)
+        throw std::runtime_error("Cannot update triangle raster band: " + std::string(CPLGetLastErrorMsg()));
+    delete[] data;
+    data = values;
 }
-

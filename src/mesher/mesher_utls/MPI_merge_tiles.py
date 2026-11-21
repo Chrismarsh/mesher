@@ -1,18 +1,19 @@
 import os
 import sys
+import tempfile
+from pathlib import Path
 try:
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 ensure_mesher_on_path()
 import json
-import math
-import shutil
 import time
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
+from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
 def str2bool(s: str) -> bool:
@@ -30,39 +31,14 @@ def bbox_union(a, b):
     ]
 
 
-def add_vertex(verts_out, index_map, spatial_map, coord, tol=1e-6):
-    key = (round(coord[0] / tol), round(coord[1] / tol))
-    if key in index_map:
-        return index_map[key]
-
-    if spatial_map is not None and len(verts_out) > 0:
-        cell = tol
-        cx = int(math.floor(coord[0] / cell))
-        cy = int(math.floor(coord[1] / cell))
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for idx in spatial_map.get((cx + dx, cy + dy), []):
-                    v = verts_out[idx]
-                    if (v[0] - coord[0]) ** 2 + (v[1] - coord[1]) ** 2 <= tol * tol:
-                        return idx
-
-    idx = len(verts_out)
-    verts_out.append([coord[0], coord[1], coord[2]])
-    index_map[key] = idx
-    if spatial_map is not None:
-        cell = tol
-        cx = int(math.floor(coord[0] / cell))
-        cy = int(math.floor(coord[1] / cell))
-        spatial_map.setdefault((cx, cy), []).append(idx)
-    return idx
-
-
 def merge_tiles(args):
+    if args.get("merge_method", "remesh") != "remesh":
+        raise ValueError('Shared-edge meshing has been retired; regenerate tasks with mpi_merge_method="remesh"')
     t0 = time.perf_counter()
 
     def log_step(msg):
         dt = time.perf_counter() - t0
-        print(f'[{dt:.2f}s] {msg}', flush=True)
+        debug_log(args, f'[{dt:.2f}s] {msg}')
 
     tile_a = args['tile_a']
     tile_b = args['tile_b']
@@ -73,81 +49,35 @@ def merge_tiles(args):
     with open(tile_b['meta']) as f:
         meta_b = json.load(f)
 
-    if meta_a.get('empty_tile') or meta_b.get('empty_tile'):
-        out_prefix = args['out_prefix']
-        out_npz = out_prefix + '.npz'
-        out_meta = out_prefix + '.json'
-        if meta_a.get('empty_tile') and meta_b.get('empty_tile'):
-            verts = np.zeros((0, 3), dtype=float)
-            tris = np.zeros((0, 3), dtype=int)
-            band_mask = np.zeros((0,), dtype=bool)
-            np.savez(out_npz, verts=verts, tris=tris, band_tri_mask=band_mask)
-            with open(out_meta, 'w') as f:
-                json.dump({
-                    'tile_bbox': meta_a.get('tile_bbox', meta_b.get('tile_bbox')),
-                    'core_bbox': meta_a.get('core_bbox', meta_b.get('core_bbox')),
-                    'band_width': 0.0,
-                    'empty_tile': True
-                }, f)
-            print(f'Merge skipped: both tiles empty for {out_prefix}')
-            return
-        if meta_a.get('empty_tile'):
-            shutil.copyfile(tile_b['npz'], out_npz)
-            shutil.copyfile(tile_b['meta'], out_meta)
-            print(f'Merge skipped: tile_a empty for {out_prefix}')
-            return
-        shutil.copyfile(tile_a['npz'], out_npz)
-        shutil.copyfile(tile_a['meta'], out_meta)
-        print(f'Merge skipped: tile_b empty for {out_prefix}')
-        return
+    for meta in (meta_a, meta_b):
+        if meta.get("merge_method") != "remesh":
+            raise ValueError("Cannot merge old shared-edge tiles; regenerate with reuse_mesh=False")
 
-    data_a = np.load(tile_a['npz'])
-    data_b = np.load(tile_b['npz'])
-
-    log_step('Merging tiles')
-    verts_a = data_a['verts']
-    tris_a = data_a['tris']
-    verts_b = data_b['verts']
-    tris_b = data_b['tris']
-    snap_tol = args.get('merge_snap_tol', 1e-6) or 1e-6
-
-    verts_out = []
-    index_map = {}
-    spatial_map = {}
-    tris_out = []
-
-    for tri in tris_a:
-        idxs = []
-        for idx in tri:
-            idxs.append(add_vertex(verts_out, index_map, spatial_map, verts_a[idx], snap_tol))
-        tris_out.append(idxs)
-
-    for tri in tris_b:
-        idxs = []
-        for idx in tri:
-            idxs.append(add_vertex(verts_out, index_map, spatial_map, verts_b[idx], snap_tol))
-        tris_out.append(idxs)
-
-    verts_out = np.asarray(verts_out, dtype=float)
-    tris_out = np.asarray(tris_out, dtype=int)
-    band_mask = np.zeros(len(tris_out), dtype=bool)
-
-    out_prefix = args['out_prefix']
-    npz_path = out_prefix + '.npz'
-    np.savez(npz_path, verts=verts_out, tris=tris_out, band_tri_mask=band_mask)
-
-    meta_path = out_prefix + '.json'
-    bbox_a = meta_a.get('tile_bbox', meta_a.get('core_bbox'))
-    bbox_b = meta_b.get('tile_bbox', meta_b.get('core_bbox'))
-    with open(meta_path, 'w') as f:
-        json.dump({
-            'tile_bbox': bbox_union(bbox_a, bbox_b),
-            'core_bbox': bbox_union(bbox_a, bbox_b),
-            'band_width': 0.0
-        }, f)
+    from mesher.mesher_utls.mpi_remesh import load_domain, load_constraints
+    from mesher.mesher_utls.disk_merge import merge_disk_cavity
+    bounds_a, bounds_b = meta_a['core_bbox'], meta_b['core_bbox']
+    prefix = args['out_prefix']
+    archive = Path(prefix + '.npz')
+    marker = Path(prefix + '.json')
+    with tempfile.TemporaryDirectory(dir=archive.parent, prefix='merge-output-') as directory:
+        staged_archive = Path(directory) / archive.name
+        staged_marker = Path(directory) / marker.name
+        report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
+            load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
+            args, staged_archive)
+        bounds = bbox_union(bounds_a, bounds_b)
+        with staged_marker.open('w') as stream:
+            json.dump({'core_bbox': bounds, 'tile_bbox': bounds, 'band_width': 0,
+                       'empty_tile': report['output_faces'] == 0, 'merge_method': 'remesh',
+                       'remesh_report': report}, stream)
+        # Invalidate an earlier completion marker only after both new files are ready.
+        marker.unlink(missing_ok=True)
+        os.replace(staged_archive, archive)
+        os.replace(staged_marker, marker)
 
 
-def main(pickle_file: str, disconnect: bool):
+def main(pickle_file: str, disconnect: bool, expected_workers=None):
+    check_worker_count(MPI.COMM_WORLD.size, expected_workers)
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
 
@@ -158,6 +88,7 @@ def main(pickle_file: str, disconnect: bool):
 
     for args in param_args_split[MPI.COMM_WORLD.rank]:
         merge_tiles(args)
+        complete_task(args)
 
     if disconnect:
         comm = MPI.Comm.Get_parent()

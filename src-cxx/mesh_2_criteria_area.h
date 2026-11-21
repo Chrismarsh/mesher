@@ -19,6 +19,7 @@
 #include <CGAL/Delaunay_mesh_criteria_2.h>
 #include <utility>
 #include <ostream>
+#include <limits>
 #include <algorithm>
 #include <map>
 #include <boost/shared_ptr.hpp>
@@ -27,6 +28,22 @@
 #include <vector>
 #include <cmath>
 #include "triangle.h"
+#include <chrono>
+
+// Per-process instrumentation enabled only for patch operations. No cache is
+// shared between raster inputs, criteria configurations, or backend invocations.
+struct MesherRasterStats { bool enabled = false; size_t evaluations = 0; double seconds = 0; };
+static MesherRasterStats mesher_raster_stats;
+struct MesherRasterTimer {
+    std::chrono::steady_clock::time_point start;
+    MesherRasterTimer() {
+        if (mesher_raster_stats.enabled) { start = std::chrono::steady_clock::now(); ++mesher_raster_stats.evaluations; }
+    }
+    ~MesherRasterTimer() {
+        if (mesher_raster_stats.enabled)
+            mesher_raster_stats.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+};
 
     template<class CDT>
     class mesh_2_criterion_area
@@ -120,6 +137,8 @@
             {
                 _sine = 0;
                 _area = 0;
+                _size = 0;
+                _weighted_raster_bad = false;
             };
 
 
@@ -130,45 +149,33 @@
             { return _sine; }
 
 
+            double min_angle_degrees() const
+            {
+                const double sine = std::sqrt(std::max(0.0, std::min(1.0, _sine)));
+                return std::asin(sine) * 180.0 / std::acos(-1.0);
+            }
+
         // q1<q2 means q1 is prioritised over q2
         // ( q1 == *this, q2 == q )
             bool operator<(const Quality &q) const
             {
-                if ( this->_area < q._area)
-                    return true;
-                else
-                {
-                    if( this->_sine < q._sine)
-                        return true;
-                    else
-                    {
-                        if(_tolerance.size() != 0 && q._tolerance.size() == 0)
-                            return false; //they're empty, we aren't, we should check their tolerance
-                        if(_tolerance.size() == 0 && q._tolerance.size() != 0)
-                            return true; //we're empty, they aren't, we should check our tolerance
-
-                        if(_tolerance.size() != 0 && q._tolerance.size() != 0)
-                        {
-                            //compare who has the the greatest current error
-                            auto my_max_tol = std::max_element(_tolerance.begin(), _tolerance.end(),
-                                                               [] (std::pair< double,double> const& lhs, std::pair< double,double> const& rhs)
-                                                               {return lhs.first < rhs.first;});
-
-                            auto their_max_tol = std::max_element(q._tolerance.begin(), q._tolerance.end(),
-                                                                  [] (std::pair< double,double> const& lhs, std::pair< double,double> const& rhs)
-                                                                  {return lhs.first < rhs.first;});
-
-                            if(my_max_tol->first > their_max_tol->first )
-                                return true; //remember we want to be preferential if our max tolerance is worse
-                        }
-
-                        return (sine() < q.sine()); //check angles as tie breaker
-                    }
-                }
+                // CGAL stores qualities in an ordered map. Every comparison
+                // must be a strict weak ordering, even when area and angle
+                // disagree. The old independent comparisons could make both
+                // a < b and b < a true, violating the queue's map contract.
+                // Prioritize oversized faces, then the worst minimum angle,
+                // following CGAL's standard size/shape refinement ordering.
+                if (_size > 1 || q._size > 1)
+                    return _size > q._size;
+                return _sine < q._sine;
             }
 
+            double _size; // area normalized by its maximum, for queue priority
             double _area;
             double _sine;
+            // CGAL re-evaluates cached Quality when removing a face from the
+            // queue. Preserve weighted rejection as well as geometry there.
+            bool _weighted_raster_bad;
             std::vector< std::pair<double,double> > _tolerance; // first = tol, seond = max tol
 
             std::vector<std::pair<double,double>> _category_tol; //first = current percent, second = threshold percent
@@ -234,6 +241,7 @@
 
             double rmse_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;
@@ -351,6 +359,7 @@
             }
             double categoryraster_isok(const typename CDT::Face_handle &fh, const raster& r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;
@@ -418,6 +427,7 @@
             }
             double mean_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex v0;
                 vertex v1;
@@ -505,6 +515,7 @@
             }
             double max_diff(const typename CDT::Face_handle &fh, const raster & r) const
             {
+                MesherRasterTimer raster_timer;
                 triangle t;
                 vertex _v0;
                 vertex _v1;
@@ -610,7 +621,7 @@
 
             }
 
-            CGAL::Mesh_2::Face_badness operator()(const Quality q) const
+            CGAL::Mesh_2::Face_badness operator()(const Quality& q) const
             {
                 if (q.area() > max_area)
                 {
@@ -622,20 +633,26 @@
 
                 if (q.sine() < this->B)
                 {
-                    double min_angle_rad = std::asin(std::max(-1.0, std::min(1.0, q.sine())));
-                    double min_angle_deg = min_angle_rad * 180.0 / std::acos(-1.0);
                     if (debug)
-                        std::cout << "Is_bad angle reject: sine=" << q.sine()
-                                  << " min_angle_deg=" << min_angle_deg
-                                  << " bound_sine=" << this->B << std::endl;
+                        std::cout << "Is_bad angle reject: squared_sine=" << q.sine()
+                                  << " min_angle_deg=" << q.min_angle_degrees()
+                                  << " bound_squared_sine=" << this->B << std::endl;
                     return CGAL::Mesh_2::BAD;
                 }
 
                 if (q.area() <= min_area )
                     return CGAL::Mesh_2::NOT_BAD;
 
+                // Raster resolution is mandatory, like maximum area. CGAL
+                // may drop ordinary BAD (shape) faces near protected acute
+                // constraint clusters; doing so for raster error leaves an
+                // apparently finished mesh which still violates tolerance.
+                if (q._weighted_raster_bad)
+                    return CGAL::Mesh_2::IMPERATIVELY_BAD;
+
                 for(auto& itr : q._tolerance)
                 {
+                    if (itr.second == -1) continue; // explicitly disabled raster
                     //first == current tol
                     //second == max tol
                     if(itr.first >= itr.second) //do we violate the max tol
@@ -643,7 +660,7 @@
                         if (debug)
                             std::cout << "Is_bad tolerance reject: tol=" << itr.first
                                       << " max_tol=" << itr.second << std::endl;
-                        return CGAL::Mesh_2::BAD;
+                        return CGAL::Mesh_2::IMPERATIVELY_BAD;
                     }
                 }
 
@@ -656,7 +673,7 @@
                         if (debug)
                             std::cout << "Is_bad category reject: frac=" << itr.first
                                       << " min_frac=" << itr.second << std::endl;
-                        return CGAL::Mesh_2::BAD;
+                        return CGAL::Mesh_2::IMPERATIVELY_BAD;
                     }
                 }
 
@@ -680,11 +697,15 @@
                 const Point_2 &pb = fh->vertex(1)->point();
                 const Point_2 &pc = fh->vertex(2)->point();
                 if (debug)
+                {
+                    auto precision = std::cout.precision(std::numeric_limits<double>::max_digits10);
                     std::cout << "Is_bad triangle: ("
                               << CGAL::to_double(pa.x()) << "," << CGAL::to_double(pa.y()) << ") ("
                               << CGAL::to_double(pb.x()) << "," << CGAL::to_double(pb.y()) << ") ("
                               << CGAL::to_double(pc.x()) << "," << CGAL::to_double(pc.y()) << ")"
                               << std::endl;
+                    std::cout.precision(precision);
+                }
 
                 double a = CGAL::to_double(squared_distance(pb, pc));
                 double b = CGAL::to_double(squared_distance(pc, pa));
@@ -758,11 +779,14 @@
                 if (max_area != 0)
                 {
                     q._area = area;
+                    q._size = area / max_area;
                 }
 
-                //if our triangle already fails either: area or angle, bail now.
+                // Geometry comes first. Once a well-shaped face reaches the
+                // minimum area, accept it before reading any raster: further
+                // numeric, categorical or weighted criteria no longer apply.
                 auto current_badness = operator()(q);
-                if (current_badness != CGAL::Mesh_2::NOT_BAD)
+                if (current_badness != CGAL::Mesh_2::NOT_BAD || q.area() <= min_area)
                     return current_badness;
 
                 if(use_weights)
@@ -842,10 +866,8 @@
                         alpha += weight;
                     }
 
-                    if (alpha >= weight_threshold)
-                        return CGAL::Mesh_2::NOT_BAD;
-                    else
-                        return CGAL::Mesh_2::BAD;
+                    q._weighted_raster_bad = !(alpha >= weight_threshold);
+                    return operator()(q);
 
                 } else //this rigorously ensures each tolerance is met
                 {
