@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from shapely.geometry import box, mapping
+from shapely import union_all
+from shapely.geometry import box, mapping, Polygon, shape
 from osgeo import gdal, osr
 
 from mesher.mesher_utls import disk_merge, mpi_remesh
@@ -170,6 +171,66 @@ class DiskMergeTests(unittest.TestCase):
             with self.assertRaises(MeshTopologyError):
                 self.merge()
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
+
+    def test_production_roundoff_components_release_only_adjacent_faces(self):
+        path = Path(__file__).parent / 'fixtures' / 'roundoff_boundary_cavity.geojson'
+        cavity = shape(json.loads(path.read_text()))
+        parts = list(cavity.geoms)
+        self.assertEqual(len(mpi_remesh._roundoff_chords(cavity)), 3)
+
+        # Reconstruct the unavailable source triangles on one side of each
+        # supplied chord. Subtracting these fans reproduces the exact cavity.
+        vertices, triangles, parents = [], [], []
+        for part in parts[:3]:
+            a, b, *chain = np.asarray(part.exterior.coords[:-1])
+            normal = np.array([a[1]-b[1], b[0]-a[0]])
+            apex = (a+b)/2 + np.sign(normal @ (chain[0]-a)) * .3 * normal
+            parents.append(Polygon([a, b, apex]))
+            start = len(vertices)
+            vertices.extend([a, *reversed(chain), b, apex])
+            tip = len(vertices)-1
+            triangles.extend([i, i+1, tip] for i in range(start, tip-1))
+
+        island = box(-1917200, 3717000, -1917000, 3717200)
+        start = len(vertices)
+        vertices.extend(island.exterior.coords[:-1])
+        triangles.extend([[start, start+1, start+2], [start, start+2, start+3]])
+        xy, ids = np.unique(vertices, axis=0, return_inverse=True)
+        v = np.column_stack((xy, np.zeros(len(xy))))
+        t = ids[np.asarray(triangles)]
+        self.domain = union_all([*parents, *parts[3:], island])
+        self.assertTrue(self.domain.difference(mpi_remesh.mesh_coverage(v, t)).equals(cavity))
+        self.bounds = ([-1950000,3680000,-1890000,3740000], [-1890000,3680000,-1880000,3740000])
+        empty_v, empty_t = v[:0], t[:0]
+        np.savez(self.inputs[0], verts=v, tris=t)
+        np.savez(self.inputs[1], verts=empty_v, tris=empty_t)
+        ds = gdal.GetDriverByName('GTiff').Create(str(self.root/'flat.tif'), 300, 300, 1, gdal.GDT_Float64)
+        ds.SetGeoTransform((-1920000, 100, 0, 3720000, 0, -100))
+        ds.GetRasterBand(1).Fill(10)
+        ds = None
+        options = dict(self.options, dem_path=str(self.root/'flat.tif'), max_area=6250000,
+                       min_area=2500, max_tolerance=20, remesh_band_width=1000, remesh_max_vertices=500000)
+
+        for disk in (False, True):
+            with self.subTest(disk=disk):
+                if disk:
+                    report = self.merge(**options)
+                    result_v, result_t = self.assert_valid()
+                    self.assertEqual(report['disk_interior_faces'], 2)
+                    self.assertEqual(report['roundoff_disk_parents'], 14)
+                    self.assertEqual(report['attempts'], 1)
+                    self.assertEqual(report['seam_attempts'], 2)
+                else:
+                    result_v, result_t, report = mpi_remesh.merge_cavity(
+                        v, t, self.bounds[0], empty_v, empty_t, self.bounds[1],
+                        self.domain, [], options, self.root)
+                    self.assertEqual(report['original_triangles_retained'], 2)
+                    self.assertEqual(report['attempt_stats'][0]['roundoff_parents_released'], 14)
+                    self.assertEqual(report['attempts'], 2)
+                mpi_remesh.validate_patch(result_v, result_t, self.domain)
+                output = {tuple(sorted(map(tuple, result_v[face]))) for face in result_t}
+                for face in t[-2:]:
+                    self.assertIn(tuple(sorted(map(tuple, v[face]))), output)
 
     def test_physical_hole_in_disk_interior_is_preserved(self):
         hole = box(5, 3, 7, 5)

@@ -52,6 +52,20 @@ def buffered_slanted_domain():
 
 
 class CavityGeometryTests(unittest.TestCase):
+    def test_roundoff_repair_finds_noded_edges_and_excludes_point_contacts(self):
+        from mesher.mesher_utls.mpi_remesh import _roundoff_chords, _roundoff_owners
+        x, y = -1900000., 3700000.
+        ulp = np.spacing(y)
+        chord = LineString([(x, y), (x+2000, y)])
+        edges = [(0, [(x-200, y+ulp), (x+500, y+ulp)]),
+                 (1, [(x+500, y), (x+1000, y)]),
+                 (2, [(x+2000, y), (x+2100, y+300)]),
+                 (3, [(x+500, y-100), (x+500, y+100)]),
+                 (4, [(x+500, y+20*ulp), (x+1000, y+20*ulp)])]
+        self.assertEqual(_roundoff_owners([chord], edges), [0, 1])
+        # A narrow physical polygon wider than coordinate roundoff is retained.
+        self.assertFalse(_roundoff_chords(box(x, y, x+2000, y+20*ulp)))
+
     def test_precision_selection_distinguishes_incidence_roundoff_and_resolved_gaps(self):
         x, y = -1500000., 3400000.
         boundary = LineString([(x, y), (x+100, y)])

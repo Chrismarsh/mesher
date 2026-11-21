@@ -81,6 +81,12 @@ class PatchQualityError(PatchError):
         super().__init__(message)
 
 
+class PatchBoundaryRoundoff(PatchError):
+    def __init__(self, message, chords):
+        self.chords = chords
+        super().__init__(message)
+
+
 class PatchPrecisionError(PatchError):
     def __init__(self, interface_ids, epsilon):
         self.interface_ids = np.unique(interface_ids)
@@ -266,13 +272,61 @@ def _coordinate_tolerance(domain):
     return max(1e-10, 64 * np.finfo(float).eps * scale)
 
 
-def _physical_boundary_band(domain):
-    # A refined point on a sloping physical edge need not be exactly collinear
-    # in double precision. Use a roundoff-sized band only to classify complete
-    # physical edges, never to join vertices or waive internal edge pairing.
-    boundary = domain.boundary.buffer(_coordinate_tolerance(domain))
-    prepare(boundary)
-    return boundary
+def _roundoff_chords(cavity):
+    """Find standalone rings whose transverse displacement fits one coordinate ULP."""
+    components = [cavity] if cavity.geom_type == 'Polygon' else cavity.geoms
+    chords = []
+    for part in components:
+        if part.is_empty or part.interiors:
+            continue
+        ulp = float(np.spacing(max(map(abs, part.bounds))))
+        if part.area > part.length * ulp:
+            continue
+        xy = np.asarray(part.exterior.coords[:-1])
+        axis = np.ptp(xy, axis=0).argmax()
+        start, end = xy[xy[:, axis].argmin()], xy[xy[:, axis].argmax()]
+        dx, dy = end - start
+        offsets = xy - start
+        if np.max(np.abs(dx * offsets[:, 1] - dy * offsets[:, 0])) <= math.hypot(dx, dy) * ulp:
+            chords.append(LineString([start, end]))
+    return chords
+
+
+def _roundoff_owners(chords, edges):
+    """Find boundary edges following a chord over a shared longitudinal interval."""
+    # An overlay-created endpoint can round off the original retained edge.
+    # Use this allowance solely to choose whole faces to remesh.
+    tolerances = [2 * np.spacing(max(map(abs, chord.bounds))) for chord in chords]
+    envelopes = []
+    for chord, tol in zip(chords, tolerances):
+        x0, y0, x1, y1 = chord.bounds
+        envelopes.append(box(x0-tol, y0-tol, x1+tol, y1+tol))
+    tree = STRtree(envelopes)
+    owners = set()
+    for face, coordinates in edges:
+        if face in owners:
+            continue
+        edge = LineString(coordinates)
+        for i in tree.query(edge):
+            chord, tol = chords[i], tolerances[i]
+            lo, hi = sorted(chord.project(Point(xy)) for xy in coordinates)
+            if (hi-lo > tol and edge.distance(chord.interpolate(lo)) <= tol
+                    and edge.distance(chord.interpolate(hi)) <= tol):
+                owners.add(face)
+                break
+    return sorted(owners)
+
+
+class _PhysicalBoundary:
+    def __init__(self, domain):
+        # Buffer individual rings: combining point-touching rings in one tiny
+        # GEOS buffer can erase entire components at projected coordinates.
+        rings = line_parts(domain.boundary)
+        epsilon = _coordinate_tolerance(domain)
+        self.index = STRtree([*rings, *(ring.buffer(epsilon) for ring in rings)])
+
+    def covers(self, edge):
+        return self.index.query(edge, predicate='covered_by').size > 0
 
 
 def validate_patch(vertices, triangles, domain, physical_constraints=()):
@@ -424,6 +478,10 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
             quality_path = Path(str(output) + '.quality.json')
             if quality_path.exists():
                 raise PatchQualityError(message, json.loads(quality_path.read_text())['faces'])
+            if 'n == zone.fh' in tail and 'Refine_edges.h' in tail:
+                chords = _roundoff_chords(domain)
+                if chords:
+                    raise PatchBoundaryRoundoff(message, chords)
             raise PatchError(message)
         io_started = time.perf_counter()
         data = json.loads(output.read_text())
@@ -676,7 +734,7 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
     # neighbour. Boundary points that CGAL inserted therefore trigger a retry.
     if len(kept):
         if physical_boundary is None:
-            physical_boundary = _physical_boundary_band(domain)
+            physical_boundary = _PhysicalBoundary(domain)
         old_neighbours = (build_neighbours(kept, len(result_v), result_v)
                           if retained_neighbours is None else retained_neighbours)
         faces, slots = np.nonzero(old_neighbours < 0)
@@ -725,7 +783,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     if keep.shape != (len(joined_t),):
         raise PatchError('Initial cavity selection does not match the working faces')
     neighbours = build_neighbours(joined_t, len(joined_v), joined_v) if len(joined_t) else None
-    physical_boundary = _physical_boundary_band(domain)
+    physical_boundary = _PhysicalBoundary(domain)
     growth_rings, interface_recovery = 1, False
     label = f' [{Path(context).name}]' if context else ''
     last_error = None
@@ -875,6 +933,20 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 record[key] = record.get(key, 0) + value
             record['rejection'] = str(exc)
             debug_log(options, f'Remesh candidate rejected{label}: {exc}')
+            if isinstance(exc, PatchBoundaryRoundoff):
+                # A rounded subdivision on a physical boundary is excluded
+                # from fixed. Its owner can be anywhere on the retained rim.
+                if len(retained) and attempt+1 < attempts:
+                    affected = _roundoff_owners(exc.chords, (
+                        (f, joined_v[retained[f, [(s+1)%3, (s+2)%3]], :2]) for f, s in zip(faces, slots)))
+                    if affected:
+                        keep[retained_ids[affected]] = False
+                        record['roundoff_parents_released'] = len(affected)
+                        debug_log(options, f'Releasing {len(affected)} retained faces along a roundoff-width boundary{label}')
+                        continue
+                # The matching owner may still be on disk. Preserve the
+                # specific failure and geometry for the outer merge worker.
+                raise
             if (attempt+1 == attempts or not len(retained) or isinstance(exc, BackendTerminated)
                     or 'Patch vertex budget exceeded' in str(exc)):
                 break
