@@ -330,7 +330,82 @@ class _PhysicalBoundary:
         return self.index.query(edge, predicate='covered_by').size > 0
 
 
-def validate_patch(vertices, triangles, domain, physical_constraints=()):
+def split_edge_chain(a, b, adjacent, epsilon=None):
+    """Follow a unique monotone mesh-edge chain between exact input endpoints."""
+    if a not in adjacent or b not in adjacent:
+        return None
+    dx, dy = b[0]-a[0], b[1]-a[1]
+    length = math.hypot(dx, dy)
+    if epsilon is None:
+        epsilon = np.spacing(max(1., *map(abs, a), *map(abs, b)))
+    chain = [a]
+    position = 0.
+    while chain[-1] != b:
+        steps = []
+        for xy in adjacent[chain[-1]]:
+            x, y = xy[0]-a[0], xy[1]-a[1]
+            along = (x*dx + y*dy) / length
+            if xy == b or (position < along < length and abs(dx*y - dy*x) <= epsilon*length):
+                steps.append((xy, along))
+        if len(steps) != 1:
+            return None
+        xy, position = steps[0]
+        chain.append(xy)
+    return chain
+
+
+def _validate_stream_edges(vertices, triangles, neighbours, domain, constraints, constrained_edges):
+    lines = [part for line in constraints for part in line_parts(line.intersection(domain))]
+    if not lines:
+        return
+    # Limit the native path to edges explicitly marked constrained by CGAL.
+    # For custom meshers only the output triangle connectivity is available.
+    if constrained_edges is None:
+        selected = None
+    else:
+        declared = np.asarray(constrained_edges, dtype=np.int64).reshape(-1, 2)
+        if np.any(declared < 0) or np.any(declared >= len(vertices)):
+            raise PatchError('Invalid vertex in a declared physical constraint')
+        selected = {tuple(sorted(edge)) for edge in declared}
+        endpoints = np.zeros(len(vertices), dtype=bool)
+        endpoints[declared] = True
+    adjacent, vertex_ids = {}, {}
+    face_ids = np.arange(len(triangles))
+    for slot in range(3):
+        unique = (neighbours[:, slot] < 0) | (neighbours[:, slot] > face_ids)
+        left, right = (slot+1) % 3, (slot+2) % 3
+        if selected is not None:
+            unique &= endpoints[triangles[:, left]] & endpoints[triangles[:, right]]
+        for i, j in triangles[unique][:, [left, right]]:
+            if selected is not None:
+                edge = (i, j) if i < j else (j, i)
+                if edge not in selected:
+                    continue
+                selected.remove(edge)
+            a, b = tuple(vertices[i, :2]), tuple(vertices[j, :2])
+            if vertex_ids.setdefault(a, i) != i or vertex_ids.setdefault(b, j) != j:
+                raise PatchError('Distinct stream graph vertices have coincident coordinates')
+            adjacent.setdefault(a, set()).add(b)
+            adjacent.setdefault(b, set()).add(a)
+    if selected:
+        raise PatchError('A declared physical constraint edge is missing from the output triangles')
+    epsilon = _coordinate_tolerance(domain)
+    exact_edges = None
+    for line in lines:
+        for a, b in zip(line.coords[:-1], line.coords[1:]):
+            if a == b or split_edge_chain(a[:2], b[:2], adjacent, epsilon) is not None:
+                continue
+            # An external mesh may represent a clipped segment as part of a
+            # longer straight edge, with no vertex at the clip point.
+            if constrained_edges is None and (a[:2] not in adjacent or b[:2] not in adjacent):
+                if exact_edges is None:
+                    exact_edges = union_all([polygon.boundary for polygon in polygons(vertices[triangles, :2])])
+                if exact_edges.covers(LineString([a, b])):
+                    continue
+            raise PatchError(f'A physical constraint is missing from the replacement mesh: {a} to {b}')
+
+
+def validate_patch(vertices, triangles, domain, physical_constraints=(), constrained_edges=None):
     """Check degeneracy, positive-area overlaps and exact intended coverage."""
     neighbours = build_neighbours(triangles, len(vertices), vertices)
     geometries = polygons(vertices[triangles, :2])
@@ -343,12 +418,7 @@ def validate_patch(vertices, triangles, domain, physical_constraints=()):
         raise PatchError('Replacement triangles do not cover exactly the cavity domain')
     # Constraints must lie on triangle edges, not merely inside the covered area.
     if physical_constraints:
-        edges = union_all([g.boundary for g in geometries])
-        length_tolerance = max(1e-10, epsilon / max(1.0, domain.length))
-        for line in physical_constraints:
-            clipped = line.intersection(domain)
-            if clipped.difference(edges).length > length_tolerance:
-                raise PatchError('A physical constraint is missing from the replacement mesh')
+        _validate_stream_edges(vertices, triangles, neighbours, domain, physical_constraints, constrained_edges)
     return neighbours
 
 
@@ -446,7 +516,8 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
     try:
         (work / 'domain.json').write_text(json.dumps(mapping(domain)))
         (work / 'constraints.json').write_text(json.dumps({'type': 'FeatureCollection', 'features': features}))
-        (work / 'interfaces.json').write_text(json.dumps({'edges': [list(line.coords) for line in fixed_edges]}))
+        (work / 'interfaces.json').write_text(json.dumps({'edges': [list(line.coords) for line in fixed_edges],
+            'export_constrained_edges': bool(constraints)}))
         output = work / 'mesh.json'
         command = _mesher_arguments(options) + ['--domain-file', str(work / 'domain.json'),
                    '--interior-plgs-file', str(work / 'constraints.json'), '--patch-output', str(output),
@@ -500,7 +571,7 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
         io_seconds = time.perf_counter() - io_started
         validation_started = time.perf_counter()
         try:
-            validate_patch(vertices, triangles, domain, constraints)
+            validate_patch(vertices, triangles, domain, constraints, data.get('constrained_edges'))
         finally:
             stats.update(io_seconds=io_seconds, validation_seconds=time.perf_counter()-validation_started)
         stats.update(data.get('stats', {}))
@@ -854,7 +925,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                      interface_recovery=interface_recovery, attempt_stats=history,
                      elapsed_seconds=time.perf_counter()-started)
         for key in ('backend_seconds', 'preparation_seconds', 'validation_seconds', 'stitch_seconds',
-                    'io_seconds', 'repair_seconds', 'refinement_seconds', 'refinement_steps', 'raster_seconds', 'raster_evaluations'):
+                    'io_seconds', 'repair_seconds', 'refinement_seconds', 'refinement_steps',
+                    'quality_repair_vertices', 'raster_seconds', 'raster_evaluations'):
             stats[key] = sum(record.get(key, 0) for record in history)
         debug_log(options, f'Merge complete{label}: original_retained={stats["original_triangles_retained"]}, '
                   f'generated_reused={stats["generated_triangles_reused"]}, '
@@ -865,6 +937,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         if prepared_domain is not None and len(joined_t) > options.get('remesh_max_active_faces', 2000000):
             raise PatchError('Seam active-face budget exceeded during local repair; '
                              'increase mpi_remesh_max_active_faces only if memory permits')
+        if attempt > 0 and attempt+1 == attempts and not interface_recovery:
+            final_recovery()
         record = {'attempt': attempt+1}
         history.append(record)
         prepare_started = time.perf_counter()
@@ -959,8 +1033,6 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 record.update(stitch_seconds=time.perf_counter()-stitch_started,
                               generated_preserved=preserved, failed_subdivisions=failed,
                               candidate_interface_faces=len(changed_faces))
-                if attempt+2 == attempts:
-                    final_recovery()
                 continue
             output_v, output_t = _stitch(joined_v, retained, patch_v, patch_t, domain, physical_boundary,
                                          retained_neighbours=adjacency)
@@ -991,9 +1063,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                     or 'Patch vertex budget exceeded' in str(exc)):
                 break
             if attempt+2 == attempts:
-                final_recovery()
-                if interface_recovery:
-                    continue
+                continue  # The final attempt handles all remaining artificial interfaces.
             local_faces = np.empty(0, dtype=np.int64)
             if isinstance(exc, InterfaceChanged):
                 local_faces = exc.faces

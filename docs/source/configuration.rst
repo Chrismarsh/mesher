@@ -856,6 +856,25 @@ usual collars. It then loads the connected disk interiors touching each collar
 if they fit the remaining active-face budget. Unrelated components stay on
 disk. The final mesh goes through the usual topology checks.
 
+When a rejected local solve leaves no mesh to reuse, the final seam attempt
+opens the remaining connected disk regions at the artificial cuts where they
+fit the active-face budget. A small tile pair can therefore be loaded in full.
+
+CGAL can finish its refinement queue while a face near a constrained edge
+still fails the minimum angle. Mesher audits every interior face. For residual
+shape failures it bisects the longest available unconstrained edge of each
+face and reruns constrained refinement and the audit. Recovery continues
+while the failure count decreases or, at equal count, the worst angle improves.
+The vertex budget applies throughout. The quality report identifies a
+``constrained_corner`` when two constraint rays enclose an in-domain angle
+below the required minimum. Such a sector requires a change to a retained
+interface or to the input geometry to meet that minimum.
+
+Stream verification follows a connected chain of CGAL-constrained output
+edges between the exact input vertices of each clipped stream segment.
+Intermediate vertices may deviate from the segment by coordinate roundoff.
+Missing links and disconnected endpoints fail validation.
+
 Global topology checks and final compaction still make sequential passes over
 the mesh, using disk-backed tables and bounded edge-sorting runs. NPZ output is
 still readable by existing tools and old completed NPZ meshes can be reused.

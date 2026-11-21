@@ -269,6 +269,22 @@ class CavityGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(PatchError, 'physical constraint'):
             validate_patch(v, t, box(0, 0, 2, 2), [LineString([(0, .3), (2, .3)])])
 
+    def test_stream_validation_requires_every_declared_link(self):
+        v, t = grid(0, 4, 0, 4)
+        domain = box(0, 0, 4, 4)
+        stream = [LineString([(0, 2), (4, 2)])]
+        chain = [[10, 11], [11, 12], [12, 13], [13, 14]]
+        validate_patch(v, t, domain, stream, chain)
+        with self.assertRaisesRegex(PatchError, 'physical constraint'):
+            validate_patch(v, t, domain, stream, chain[:2] + chain[3:])
+        with self.assertRaisesRegex(PatchError, 'output triangles'):
+            validate_patch(v, t, domain, stream, [[10, 14]])
+        # A separate parallel feature within the coordinate allowance has
+        # different endpoints. It cannot stand in for the requested stream.
+        shifted = [LineString([(0, 2+np.spacing(2.)), (4, 2+np.spacing(2.))])]
+        with self.assertRaisesRegex(PatchError, 'physical constraint'):
+            validate_patch(v, t, domain, shifted, chain)
+
     def test_quality_failure_selects_only_touching_interface_owners_at_large_coordinates(self):
         # From the production cavity: a refined point is about 2e-10 m off
         # the sloping interface after rounding. Selection may tolerate that;
@@ -744,6 +760,59 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         self.assertEqual(audit(v, t)['components'], 1)
 
+    def assert_angles_pass(self, vertices, triangles):
+        xy = vertices[triangles, :2]
+        for corner in range(3):
+            left = xy[:, (corner+1) % 3] - xy[:, corner]
+            right = xy[:, (corner+2) % 3] - xy[:, corner]
+            dot = (left * right).sum(axis=1)
+            cross = abs(left[:, 0]*right[:, 1] - left[:, 1]*right[:, 0])
+            self.assertGreaterEqual(np.arctan2(cross, dot).min(), np.arcsin(np.sqrt(.125)))
+
+    def test_tvc_residual_shape_repaired_with_interface_lineage(self):
+        fixture = Path(__file__).parent / 'fixtures' / 'tvc_residual_shape.geojson'
+        domain = shape(json.loads(fixture.read_text()))
+        # Production interface edges in this component, in their original order.
+        ring = list(domain.exterior.coords)
+        fixed = [LineString([ring[i], ring[i+1]]) for i in [4, 15, 7, 14, 13, 8, 9, 10, 11, 12]]
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((-1806500, 50, 0, 3546000, 0, -50))
+        ds = None
+        result = remesh_domain(domain, [], dict(self.options, max_area=6250000,
+                               min_area=2500, max_tolerance=20), self.work, fixed)
+        self.assertGreater(result.stats['quality_repair_vertices'], 0)
+        v, t = result
+        self.assert_angles_pass(v, t)
+        self.assertTrue(audit(v, t)['valid'])
+        self.assertEqual(len(result.interfaces), len(fixed))
+        for edge in result.interfaces:
+            coords = v[edge['vertices'], :2]
+            np.testing.assert_array_equal(coords[[0,-1]], fixed[edge['id']].coords)
+
+    def test_oblique_crossing_streams_at_projected_coordinates(self):
+        x, y = -1805000., 3543000.
+        domain = box(x, y, x+1800, y+1400)
+        lines = [LineString([(x, y+311.1234567), (x+1800, y+938.7654321)]),
+                 LineString([(x+756.729123, y), (x+1062.321874, y+1400)])]
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((x-200, 50, 0, y+6000, 0, -50))
+        ds = None
+        v, t = remesh_domain(domain, lines, dict(self.options, max_area=9000, min_area=25), self.work)
+        validate_patch(v, t, domain, lines)
+        self.assert_angles_pass(v, t)
+        junction = lines[0].intersection(lines[1])
+        self.assertEqual(np.count_nonzero((v[:, :2] == junction.coords[0]).all(axis=1)), 1)
+
+    def test_acute_stream_junction_identifies_constrained_corner(self):
+        domain = box(0, 0, 20, 20)
+        lines = [LineString([(8, 8), (18, 8)]), LineString([(8, 8), (18, 9)])]
+        with self.assertRaises(PatchQualityError) as failure:
+            self.mesh(domain, lines)
+        corners = [face['vertices'][face['constrained_corner']] for face in failure.exception.failures
+                   if 'constrained_corner' in face]
+        self.assertIn([8, 8], corners)
+        self.assertFalse(list(self.work.glob('cavity-*/mesh.json')))
+
     def notch_options(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)
         ds.SetGeoTransform((0, 50, 0, 6000, 0, -50)); ds = None
@@ -832,10 +901,8 @@ class CgalCavityTests(unittest.TestCase):
                                              failure.exception.failures, cavity)
         counts = Counter(p for i in selected for p in fixed[i].coords)
         tips = {p for p, n in counts.items() if n == 2}
-        self.assertEqual(tips, {(-1841272.9628440002, 3568726.228346006),
-                               (-1841262.2013740074, 3524189.7361516776),
-                               (-1811932.3164176506, 3582881.746913484)})
-        # A controlled local recovery removes just the three retained tips.
+        self.assertEqual(tips, {(-1841262.2013740074, 3524189.7361516776)})
+        # Native repair resolved two tips. Release the remaining owner.
         # Original parent connectivity is unavailable, so this checks the real
         # selector and the resulting patch, not a replay of the full MPI retry.
         ears = []
@@ -846,7 +913,8 @@ class CgalCavityTests(unittest.TestCase):
                     ears.append(Polygon([ring[i-1], p, ring[(i+1) % len(ring)]]))
         added = union_all(ears)
         grown = cavity.union(added)
-        self.assertAlmostEqual(added.area, 663626.2876659185, places=5)
+        self.assertEqual(len(ears), 1)
+        self.assertLess(added.area, 663626.2876659185)
         self.assertEqual(cavity.difference(grown).area, 0)
         v, t = remesh_domain(grown, [], options, self.work, interfaces(grown))
         validate_patch(v, t, grown)
@@ -859,7 +927,7 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(coverage.union(retained).symmetric_difference(group).area, 0)
         self.assertEqual(coverage.intersection(retained).area, 0)
 
-    def test_96_rank_production_tip_rejection_and_controlled_recovery(self):
+    def test_96_rank_production_tips_recover_in_original_cavity(self):
         # Exact stage0_r2_c1 files supplied from the 96-rank (then 81-tile) run.
         # The supplied constraints are the cavity boundary, with no extra streams.
         # Reproduce shape failures without requiring the production raster files.
@@ -869,39 +937,12 @@ class CgalCavityTests(unittest.TestCase):
             (fixtures / 'retained_tip_96_rank_interfaces.json').read_text())['edges']]
         options = dict(self.options, max_area=6250000, min_area=2500,
                        max_tolerance=-1, remesh_max_vertices=500000)
-        with self.assertRaises(PatchQualityError) as failure:
-            remesh_domain(cavity, [], options, self.work, fixed)
-        self.assertIn('vertices=287', str(failure.exception))
-        faces = sorted(failure.exception.failures, key=lambda f: f['area'])
-        self.assertEqual(len(faces), 2)
-        for face, area, angle in zip(faces, [172.26259115514745, 1081.066388135949],
-                                    [10.281353831886987, 4.7294415356002952]):
-            self.assertEqual(face['reason'], 'angle')
-            self.assertAlmostEqual(face['area'], area)
-            self.assertAlmostEqual(face['min_angle_degrees'], angle)
-        selected = _quality_interface_faces(fixed, np.arange(len(fixed)), faces, cavity)
-        self.assertEqual(selected.tolist(), [281, 282])
-        tip = (-1798664.728450245, 3632549.068582979)
-        self.assertIn(tip, set(fixed[281].coords) & set(fixed[282].coords))
-        self.assertAlmostEqual(tip[1] - cavity.bounds[1], 10.297953645232, places=6)
-        for hole in cavity.interiors:
-            ring = list(hole.coords[:-1])
-            if tip in ring:
-                index = ring.index(tip)
-                ear = Polygon([ring[index-1], tip, ring[(index+1) % len(ring)]])
-                break
-        grown = cavity.union(ear)
-        self.assertAlmostEqual(grown.area - cavity.area, 920115.4222841263, places=4)
-        new_interfaces = [LineString([a, b]) for hole in grown.interiors
-                          for a, b in zip(hole.coords[:-1], hole.coords[1:])]
-        v, t = remesh_domain(grown, [], options, self.work, new_interfaces)
-        validate_patch(v, t, grown)
+        result = remesh_domain(cavity, [], options, self.work, fixed)
+        self.assertGreater(result.stats['quality_repair_vertices'], 0)
+        v, t = result
+        validate_patch(v, t, cavity)
         self.assertTrue(audit(v, t)['valid'])
-        group = Polygon(cavity.exterior)
-        remaining = group.difference(grown)
-        coverage = mesh_coverage(v, t)
-        self.assertEqual(coverage.union(remaining).symmetric_difference(group).area, 0)
-        self.assertEqual(coverage.intersection(remaining).area, 0)
+        self.assert_angles_pass(v, t)
 
     def test_96_rank_tip_full_merge_recovers_locally_and_preserves_original_work(self):
         # Use the exact reported tip in a complete merge, with a controlled
@@ -938,8 +979,6 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
 
     def test_production_near_touch_is_rejected_before_backend_and_local_growth_succeeds(self):
-        from collections import Counter
-        from shapely import union_all
         fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
         cavity = shape(json.loads(fixture.read_text()))
         def interfaces(domain):
@@ -964,25 +1003,12 @@ class CgalCavityTests(unittest.TestCase):
         ring = list(cavity.interiors[0].coords[:-1])
         ear = Polygon([ring[41], ring[42], ring[43]])
         grown = cavity.union(ear)
-        # The precision fix must not accept the remaining ordinary angle
-        # failures. These select three more retained tips for local growth.
-        with self.assertRaises(PatchQualityError) as quality:
-            remesh_domain(grown, [], options, self.work, interfaces(grown))
-        self.assertEqual(len(quality.exception.failures), 3)
-        self.assertTrue(all(f['reason'] == 'angle' for f in quality.exception.failures))
-        fixed = interfaces(grown)
-        ids = _quality_interface_faces(fixed, np.arange(len(fixed)), quality.exception.failures, grown)
-        counts = Counter(p for i in ids for p in fixed[i].coords)
-        tips = {p for p, count in counts.items() if count == 2}
-        self.assertEqual(len(tips), 3)
-        ears = []
-        for hole in grown.interiors:
-            ring = list(hole.coords[:-1])
-            ears.extend(Polygon([ring[i-1], p, ring[(i+1) % len(ring)]])
-                        for i, p in enumerate(ring) if p in tips)
-        grown = grown.union(union_all(ears))
-        v, t = remesh_domain(grown, [], options, self.work, interfaces(grown))
+        # Releasing only the precision-conflicting ear now suffices.
+        result = remesh_domain(grown, [], options, self.work, interfaces(grown))
+        self.assertGreater(result.stats['quality_repair_vertices'], 0)
+        v, t = result
         validate_patch(v, t, grown)
+        self.assert_angles_pass(v, t)
         self.assertTrue(audit(v, t)['valid'])
         group = Polygon(cavity.exterior)
         remaining = group.difference(grown)

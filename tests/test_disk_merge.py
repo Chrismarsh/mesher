@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 from shapely import union_all
-from shapely.geometry import box, mapping, Polygon, shape
+from shapely.geometry import box, LineString, mapping, Polygon, shape
 from osgeo import gdal, osr
 
 from mesher.mesher_utls import disk_merge, mpi_remesh
@@ -195,6 +195,43 @@ class DiskMergeTests(unittest.TestCase):
         self.assertTrue(report['seam_attempt_reports'][-1]['closing_disk_components'])
         self.assertLessEqual(report['peak_loaded_faces'], 530)
         self.assertGreater(report['disk_interior_faces'], 1100)
+        self.assert_valid()
+
+    def test_final_solve_after_rejected_candidate_closes_disk_cuts(self):
+        # A rejection leaves no cached seam to extend. The final solve must
+        # still close affordable cuts even if the new local mesh splits them.
+        original = mpi_remesh.merge_cavity
+        coverage = disk_merge.inactive_coverage
+        cuts, loaded = {}, []
+        def observe_cut(vertices, *args):
+            result = coverage(vertices, *args)
+            cuts[id(vertices)] = result[1]
+            return result
+
+        def reject_then_split(av, at, ba, bv, bt, bb, domain, constraints, options, directory, **kwargs):
+            loaded.append(len(at)+len(bt))
+            if len(loaded) == 1:
+                raise mpi_remesh.PatchError('Local cavity rejected')
+            for edges in cuts.values():
+                if edges:
+                    # Require a short segment of an actual disk edge. The
+                    # native solver produces a valid local mesh, but the disk
+                    # parent cannot absorb this split at the required angle.
+                    a, b = min(edges)
+                    near = np.asarray(a) + (np.asarray(b)-a)/32
+                    segment = LineString([a, near, b])
+                    region = kwargs['prepared_domain']
+                    v, t = mpi_remesh.remesh_domain(region, [segment], options, directory)
+                    return v, t, {}
+            return original(av, at, ba, bv, bt, bb, domain, constraints, options, directory, **kwargs)
+
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=reject_then_split), \
+             patch.object(disk_merge, 'inactive_coverage', side_effect=observe_cut):
+            report = self.merge(remesh_max_attempts=2, remesh_max_active_faces=1600)
+        self.assertEqual(loaded[-1], 1600)
+        self.assertLess(loaded[0], 400)
+        self.assertEqual(report['seam_attempts'], 2)
+        self.assertEqual(report['disk_interior_faces'], 0)
         self.assert_valid()
 
     def test_exhausted_moving_cut_names_inputs_and_preserves_previous_output(self):

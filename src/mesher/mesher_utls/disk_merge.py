@@ -146,29 +146,6 @@ def extend_cached_region(cached, inputs, pending):
     return np.vstack(vertices), np.vstack(triangles), np.concatenate(keep)
 
 
-def split_edge_chain(a, b, adjacent):
-    """Follow an existing boundary chain between exact disk endpoints."""
-    if a not in adjacent or b not in adjacent:
-        return None
-    dx, dy = b[0]-a[0], b[1]-a[1]
-    length = math.hypot(dx, dy)
-    epsilon = np.spacing(max(1., *map(abs, a), *map(abs, b)))
-    chain = [a]
-    position = 0.
-    while chain[-1] != b:
-        steps = []
-        for xy in adjacent[chain[-1]]:
-            x, y = xy[0]-a[0], xy[1]-a[1]
-            along = (x*dx + y*dy) / length
-            if xy == b or (position < along < length and abs(dx*y - dy*x) <= epsilon*length):
-                steps.append((xy, along))
-        if len(steps) != 1:
-            return None
-        xy, position = steps[0]
-        chain.append(xy)
-    return chain
-
-
 def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangles, boundary_ids, keys, options, directory):
     """Fit disk parents to verified seam edges, committing only a complete repair."""
     limit = options.get('remesh_max_active_faces', 2000000)
@@ -191,7 +168,7 @@ def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangl
                     ids[a] = len(vertices) + len(extra)
                     extra.append(points[i])
                 if tuple(sorted((a, b))) in edges:
-                    chain = split_edge_chain(a, b, adjacent)
+                    chain = remesh.split_edge_chain(a, b, adjacent)
                     if chain is None:
                         return None
                     ring.extend(chain[:-1])
@@ -337,9 +314,23 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             return count
 
         for attempt in range(limit):
+            selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
             coverage, cuts, cut_vertices = [], [], []
             for values, selection in zip(inputs, active):
                 polygon, interfaces, endpoints = inactive_coverage(*values, selection)
+                # A rejected local solve or a roundoff retry has no cached seam
+                # and no reliable list of failing edges. On its final solve,
+                # eliminate connected artificial cuts that fit before loading
+                # faces. Components disconnected from the cut stay on disk.
+                if attempt > 0 and attempt+1 == limit and cached is None and interfaces:
+                    seeds = np.unique(list(interfaces.values()))
+                    added = grow_active(selection, values[2], seeds, len(selection),
+                                        max_faces=max_active-selected_count)
+                    if added is not None and len(added):
+                        selected_count += len(added)
+                        debug_log(options, f'Final seam recovery [{Path(output).stem}]: '
+                                  f'loaded {len(added)} faces touching the disk interface')
+                        polygon, interfaces, endpoints = inactive_coverage(*values, selection)
                 coverage.append(polygon)
                 cuts.append(interfaces)
                 cut_vertices.append(endpoints)
@@ -347,7 +338,6 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             if outside.difference(target).area > remesh.area_tolerance(target):
                 raise remesh.PatchError('Immutable interiors extend beyond the merge domain')
             local_domain = remesh.polygon_domain(target.difference(outside))
-            selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
             active_count = (selected_count if cached is None
                             else len(cached[1]) + sum(len(added) for added, _ in pending))
             peak_active = max(peak_active, active_count)
