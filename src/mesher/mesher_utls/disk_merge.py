@@ -313,7 +313,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 debug_log(options, f'Remeshing {count} disk faces along a roundoff-width boundary')
             return count
 
-        for attempt in range(limit):
+        attempt = 0
+        while attempt < limit:
             selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
             coverage, cuts, cut_vertices = [], [], []
             for values, selection in zip(inputs, active):
@@ -344,7 +345,7 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             if active_count > max_active:
                 raise remesh.PatchError(f'Seam active-face budget exceeded: {active_count} > {max_active}; '
                                        'increase mpi_remesh_max_active_faces only if memory permits')
-            if not outside.is_empty and attempt+1 < limit:
+            if not outside.is_empty:
                 chords = remesh._roundoff_chords(local_domain)
                 if chords and release_disk_parents(chords):
                     cached = None
@@ -399,7 +400,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                               for endpoints in cut_vertices]
                     cached = lv, lt, shared
             except remesh.PatchBoundaryRoundoff as exc:
-                if attempt+1 == limit or not release_disk_parents(exc.chords):
+                if not exc.preflight_only:
+                    attempt += 1
+                if attempt == limit or not release_disk_parents(exc.chords):
                     raise
                 cached = None
                 continue
@@ -472,4 +475,5 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 report['active_faces'] = active_count
                 report['disk_expansion_faces'] = count
                 report['closing_disk_components'] = close_components
+            attempt += 1
         raise remesh.PatchError('No conforming seam-region replacement')

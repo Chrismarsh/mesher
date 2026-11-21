@@ -66,6 +66,14 @@ class CavityGeometryTests(unittest.TestCase):
         # A narrow physical polygon wider than coordinate roundoff is retained.
         self.assertFalse(_roundoff_chords(box(x, y, x+2000, y+20*ulp)))
 
+    def test_one_ulp_physical_square_has_no_forced_bad_corner(self):
+        from mesher.mesher_utls.mpi_remesh import _roundoff_chords
+        x, y = -1500000., 3400000.
+        ulp = np.spacing(y)
+        island = box(x, y, x+ulp, y+ulp)
+        self.assertTrue(_roundoff_chords(island))
+        self.assertFalse(_roundoff_chords(island, acute_only=True))
+
     def test_precision_selection_distinguishes_incidence_roundoff_and_resolved_gaps(self):
         x, y = -1500000., 3400000.
         boundary = LineString([(x, y), (x+100, y)])
@@ -651,6 +659,20 @@ class CgalCavityTests(unittest.TestCase):
                 self.assertLess(next_cavities[0].area, domain.area/5)
                 for actual, expected in zip((a, ta, b, tb), originals):
                     np.testing.assert_array_equal(actual, expected)
+
+    def test_coarse_tvc_without_source_owners_reports_unmeshable_rings(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+        path = Path(__file__).parent / 'fixtures' / 'tvc_coarse_roundoff.geojson'
+        domain = shape(json.loads(path.read_text()))
+        with patch.object(remesh, '_run_backend') as backend:
+            with self.assertRaises(remesh.PatchBoundaryRoundoff) as caught:
+                remesh_domain(domain, [], self.options, self.work)
+            backend.assert_not_called()
+        self.assertTrue(caught.exception.preflight_only)
+        self.assertEqual(len(caught.exception.chords), 2)
+        bundle, = self.work.glob('cavity-*')
+        self.assertTrue(shape(json.loads((bundle/'domain.json').read_text())).equals(domain))
+        self.assertIn('no matching local faces', (bundle/'backend.log').read_text())
 
     def test_r2c1_roundoff_preflight_precedes_native_refinement(self):
         from mesher.mesher_utls import mpi_remesh as remesh

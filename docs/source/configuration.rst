@@ -685,7 +685,11 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     Maximum number of attempts within a loaded seam region, including final
     interface recovery. The same limit applies separately to the number of
     seam-region attempts, including the first solve. A value of 1 allows a
-    single solve at each level. Exhaustion leaves any previous output intact.
+    single solve at each level. Before a solve, the merge can release whole
+    faces bordering roundoff-width rings and recompute the cavity. These
+    geometry-only passes count against the active-face budget when they load
+    disk faces. They do not consume a refinement attempt. Exhaustion leaves
+    any previous output intact.
 
 .. confval:: mpi_remesh_max_vertices
 

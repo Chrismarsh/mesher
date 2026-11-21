@@ -82,7 +82,9 @@ class PatchQualityError(PatchError):
 
 
 class PatchBoundaryRoundoff(PatchError):
-    def __init__(self, message, chords, owners=None):
+    """Carry the unresolved geometry to the layer that owns its boundary faces."""
+    def __init__(self, message, chords, owners=None, *, preflight_only=False):
+        self.preflight_only = preflight_only
         self.chords = chords
         self.owners = owners
         super().__init__(message)
@@ -122,6 +124,18 @@ def load_domain(path):
     return polygon_domain(union_all(pieces))
 
 
+def _acute_corners(points):
+    """Convex corners below CGAL's squared-sine bound, with interior on the left."""
+    a, b = np.roll(points, 1, axis=0), np.roll(points, -1, axis=0)
+    u, v = a-points, b-points
+    lengths = np.linalg.norm(u, axis=1), np.linalg.norm(v, axis=1)
+    cross = u[:, 0]*v[:, 1] - u[:, 1]*v[:, 0]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acute = (cross < 0) & (np.sum(u*v, axis=1) > 0) & ((cross / lengths[0] / lengths[1])**2 < .125)
+    return [(points[i], a[i], b[i], min(lengths[0][i], lengths[1][i]))
+            for i in np.flatnonzero(acute)]
+
+
 def _acute_clip_corners(clipped, domain):
     """Find convex corners below the backend shape bound with an artificial edge."""
     candidates = []
@@ -129,16 +143,8 @@ def _acute_clip_corners(clipped, domain):
     for part in parts:
         part = orient(part)  # Domain interior lies to the left of every ring.
         for ring in [part.exterior, *part.interiors]:
-            points = np.asarray(ring.coords[:-1])
-            a, b = np.roll(points, 1, axis=0), np.roll(points, -1, axis=0)
-            u, v = a-points, b-points
-            lengths = np.linalg.norm(u, axis=1), np.linalg.norm(v, axis=1)
-            cross = u[:, 0]*v[:, 1] - u[:, 1]*v[:, 0]
-            # Same squared-sine bound as Criteria(0.125, ...) in meshercxx.
-            with np.errstate(divide='ignore', invalid='ignore'):
-                acute = (cross < 0) & (np.sum(u*v, axis=1) > 0) & ((cross / lengths[0] / lengths[1])**2 < .125)
-            candidates.extend((points[i], a[i], b[i], min(lengths[0][i], lengths[1][i])/4)
-                              for i in np.flatnonzero(acute))
+            for p, a, b, length in _acute_corners(np.asarray(ring.coords[:-1])):
+                candidates.append((p, a, b, length/4))
     if not candidates:
         return []
     epsilon = _coordinate_tolerance(domain)
@@ -273,7 +279,7 @@ def _coordinate_tolerance(domain):
     return max(1e-10, 64 * np.finfo(float).eps * scale)
 
 
-def _roundoff_chords(cavity):
+def _roundoff_chords(cavity, *, acute_only=False):
     """Find standalone rings whose transverse displacement fits one coordinate ULP."""
     components = [cavity] if cavity.geom_type == 'Polygon' else cavity.geoms
     chords = []
@@ -289,7 +295,10 @@ def _roundoff_chords(cavity):
         dx, dy = end - start
         offsets = xy - start
         if np.max(np.abs(dx * offsets[:, 1] - dy * offsets[:, 0])) <= math.hypot(dx, dy) * ulp:
-            chords.append(LineString([start, end]))
+            # With no mesh owner, refuse only a pinned corner that cannot
+            # meet the shape bound. A tiny well-shaped physical island can.
+            if not acute_only or _acute_corners(np.asarray(orient(part).exterior.coords[:-1])):
+                chords.append(LineString([start, end]))
     return chords
 
 
@@ -536,12 +545,16 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
                 'interface_ids': precision_ids.tolist(), 'coordinate_tolerance': epsilon}))
             (work / 'backend.log').write_text(f'Backend not started: {error}\n')
             raise error
-        if retained_edges is not None:
-            chords = _roundoff_chords(domain)
-            affected = _roundoff_owners(chords, retained_edges) if chords else []
-            if affected:
-                error = PatchBoundaryRoundoff(
-                    f'{len(affected)} retained faces border a roundoff-width cavity', chords, affected)
+        chords = _roundoff_chords(domain)
+        if chords:
+            affected = _roundoff_owners(chords, retained_edges) if retained_edges is not None else []
+            if not affected:
+                chords = _roundoff_chords(domain, acute_only=True)
+            if chords:
+                detail = (f'{len(affected)} matching retained faces' if affected else
+                          'no matching local faces and a boundary angle below the mesh shape bound')
+                error = PatchBoundaryRoundoff(f'{len(chords)} roundoff-width cavity components: {detail}',
+                                             chords, affected, preflight_only=True)
                 stats['preparation_seconds'] = time.perf_counter() - started
                 (work / 'backend.log').write_text(f'Backend not started: {error}\n')
                 raise error
@@ -933,14 +946,17 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                   f'subdivided={stats["subdivided_parents"]}, elapsed={stats["elapsed_seconds"]:.2f}s')
         return v, t, stats
 
-    for attempt in range(attempts):
+    attempts_used = 0
+    while attempts_used < attempts:
+        attempt = attempts_used
         if prepared_domain is not None and len(joined_t) > options.get('remesh_max_active_faces', 2000000):
             raise PatchError('Seam active-face budget exceeded during local repair; '
                              'increase mpi_remesh_max_active_faces only if memory permits')
-        if attempt > 0 and attempt+1 == attempts and not interface_recovery:
-            final_recovery()
-        record = {'attempt': attempt+1}
-        history.append(record)
+        if len(history) == attempt:
+            if attempt > 0 and attempt+1 == attempts and not interface_recovery:
+                final_recovery()
+            history.append({'attempt': attempt+1})
+        record = history[attempt]
         prepare_started = time.perf_counter()
         retained_ids = np.flatnonzero(keep)
         retained, retained_sources = joined_t[keep], sources[keep]
@@ -958,9 +974,10 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             if not physical_boundary.covers(line) and cavity_boundary.covers(line):
                 fixed.append(line)
                 owners.append(f)
-        record['preparation_seconds'] = time.perf_counter()-prepare_started
+        record['preparation_seconds'] = record.get('preparation_seconds', 0) + (time.perf_counter()-prepare_started)
+        attempts_used += 1
         try:
-            if mesher is remesh_domain and len(retained) and attempt+1 < attempts:
+            if mesher is remesh_domain and len(retained):
                 boundary = _retained_boundary_edges(joined_v, retained, adjacency)
                 patch = mesher(cavity, constraints, options, directory, fixed, retained_edges=boundary)
             else:
@@ -1043,22 +1060,25 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             last_error = exc
             for key, value in getattr(exc, 'stats', {}).items():
                 record[key] = record.get(key, 0) + value
+            if isinstance(exc, PatchBoundaryRoundoff):
+                # A subdivided physical perimeter can form a one-ULP ring
+                # even when there are no fixed interfaces. Release whole rim
+                # faces before spending a refinement attempt. Every pass
+                # strictly shrinks keep, including on the final allowed solve.
+                affected = exc.owners
+                if affected is None and len(retained):
+                    affected = _roundoff_owners(exc.chords, _retained_boundary_edges(joined_v, retained, adjacency))
+                if affected and (exc.preflight_only or attempt+1 < attempts):
+                    keep[retained_ids[affected]] = False
+                    record['roundoff_parents_released'] = record.get('roundoff_parents_released', 0) + len(affected)
+                    debug_log(options, f'Releasing {len(affected)} retained faces along a roundoff-width boundary{label}')
+                    if exc.preflight_only:
+                        attempts_used = attempt
+                    continue
+                exc.preflight_only = attempt == 0 and exc.preflight_only
+                raise
             record['rejection'] = str(exc)
             debug_log(options, f'Remesh candidate rejected{label}: {exc}')
-            if isinstance(exc, PatchBoundaryRoundoff):
-                # A rounded subdivision on a physical boundary is excluded
-                # from fixed. Its owner can be anywhere on the retained rim.
-                if len(retained) and attempt+1 < attempts:
-                    affected = exc.owners or _roundoff_owners(exc.chords,
-                        _retained_boundary_edges(joined_v, retained, adjacency))
-                    if affected:
-                        keep[retained_ids[affected]] = False
-                        record['roundoff_parents_released'] = len(affected)
-                        debug_log(options, f'Releasing {len(affected)} retained faces along a roundoff-width boundary{label}')
-                        continue
-                # The matching owner may still be on disk. Preserve the
-                # specific failure and geometry for the outer merge worker.
-                raise
             if (attempt+1 == attempts or not len(retained) or isinstance(exc, BackendTerminated)
                     or 'Patch vertex budget exceeded' in str(exc)):
                 break
