@@ -660,6 +660,23 @@ class CgalCavityTests(unittest.TestCase):
                 for actual, expected in zip((a, ta, b, tb), originals):
                     np.testing.assert_array_equal(actual, expected)
 
+    def test_standalone_tvc_corner_identifies_failing_edge_without_publishing(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+        path = Path(__file__).parent/'fixtures'/'tvc_r2c1_unbisectable_corner.geojson'
+        cavity = shape(json.loads(path.read_text()))
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((-1821000, 1000, 0, 3678000, 0, -1000))
+        ds = None
+        with self.assertRaises(remesh.PatchBoundaryRoundoff) as caught:
+            remesh_domain(cavity, [], dict(self.options, max_area=6250000, min_area=2500,
+                                           max_tolerance=20), self.work)
+        bundle, = self.work.glob('cavity-*')
+        edge = json.loads((bundle/'mesh.json.edge.json').read_text())['edge']
+        self.assertEqual(list(caught.exception.chords[0].coords), list(map(tuple, edge)))
+        a, b = cavity.exterior.coords[:2]
+        self.assertTrue(any(xy in (a, b) for xy in map(tuple, edge)))
+        self.assertFalse((bundle/'mesh.json').exists())
+
     def test_coarse_tvc_without_source_owners_reports_unmeshable_rings(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         path = Path(__file__).parent / 'fixtures' / 'tvc_coarse_roundoff.geojson'
@@ -700,6 +717,42 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(caught.exception.owners, list(range(56)))
         self.assertEqual(len(caught.exception.chords), 26)
 
+    def test_alternating_parent_failures_enlarge_the_existing_cavity(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+        vertices, faces = grid(0, 20, 0, 8, 2)
+        domain = box(0, 0, 20, 8)
+        # The two retry states each have a missing triangle. Subdivision
+        # fails on its same-cell neighbour and stages the other gap. Reindex
+        # and rotate the staged faces to exercise geometric parent identity.
+        gaps = [26, 32]
+        keep = np.arange(len(faces)) != gaps[0]
+        staged = []
+        original = remesh._repair_candidate
+
+        def alternate(v, retained, *args):
+            if len(staged) == 3:
+                return original(v, retained, *args)
+            current = len(staged) % 2
+            parent = set(map(tuple, vertices[faces[gaps[current]+1], :2]))
+            owner, = [i for i, face in enumerate(retained) if set(map(tuple, v[face, :2])) == parent]
+            staged.append(owner)
+            order = np.arange(len(faces))[::-1] if current == 0 else np.arange(len(faces))
+            t = np.roll(faces[order], 1, axis=1)
+            return (vertices, t, order, order != gaps[1-current],
+                    remesh.build_neighbours(t, len(vertices), vertices), {}, 0, [owner])
+
+        options = dict(self.options, max_area=20, max_tolerance=-1, remesh_max_attempts=6)
+        with patch.object(remesh, '_repair_candidate', side_effect=alternate):
+            v, t, report = merge_cavity(vertices, faces, [0, 0, 10, 8], vertices[:0], faces[:0],
+                [10, 0, 20, 8], domain, [], options, self.work, initial_keep=keep)
+        validate_patch(v, t, domain)
+        self.assertTrue(audit(v, t)['valid'])
+        self.assertEqual(len(staged), 3)
+        self.assertGreater(report['attempt_stats'][2]['repeated_parent_growth_faces'], 0)
+        self.assertGreater(report['attempt_stats'][3]['cavity_area'], report['attempt_stats'][2]['cavity_area'])
+        self.assertFalse(report['interface_recovery'])
+        self.assertGreater(report['original_triangles_retained'], 0)
+
     def test_staged_hanging_node_recovers_without_widening(self):
         from mesher.mesher_utls import mpi_remesh as remesh
 
@@ -727,7 +780,7 @@ class CgalCavityTests(unittest.TestCase):
             if staged:
                 return original_repair(*args)
             staged.append(True)
-            return v, t, sources, keep.copy(), neighbours, {}, 0, 1
+            return v, t, sources, keep.copy(), neighbours, {}, 0, [0]
 
         with patch.object(remesh, '_repair_candidate', side_effect=repair):
             rv, rt, report = merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
@@ -811,6 +864,35 @@ class CgalCavityTests(unittest.TestCase):
             coords = v[edge['vertices'], :2]
             np.testing.assert_array_equal(coords[[0,-1]], fixed[edge['id']].coords)
 
+    def test_projected_stream_survives_coarse_and_fine_raster_tolerances_across_tile_cuts(self):
+        from mesher.mesher_utls.disk_merge import merge_disk_cavity
+        x, y = -1817361., 3677022.
+        domain = box(x, y, x+1800, y+800)
+        stream = LineString([(x, y+210.), (x+1800, y+530.)])
+        ds = gdal.Open(str(self.dem), gdal.GA_Update)
+        ds.SetGeoTransform((x-50, 15, 0, y+900, 0, -15))
+        yy, xx = np.indices((ds.RasterYSize, ds.RasterXSize))
+        ds.GetRasterBand(1).WriteArray(500*np.exp(-((xx-62.)**2+(yy-38.)**2)/40.))
+        ds = None
+        for offset in (735., 960.):
+            for tolerance in (20, 30):
+                with self.subTest(offset=offset, tolerance=tolerance):
+                    options = dict(self.options, max_area=45000, min_area=150, max_tolerance=tolerance,
+                                   remesh_band_width=150, remesh_max_attempts=6)
+                    bounds = ([x, y, x+offset, y+800], [x+offset, y, x+1800, y+800])
+                    paths = [self.work/'left.npz', self.work/'right.npz']
+                    for core, path in zip(bounds, paths):
+                        region = tile_domain(domain, core, 150.)
+                        v, t = remesh_domain(region, [stream], options, self.work)
+                        np.savez(path, verts=v, tris=t)
+                    output = self.work/'merged.npz'
+                    merge_disk_cavity(paths[0], bounds[0], paths[1], bounds[1], domain, [stream], options, output)
+                    with np.load(output) as mesh:
+                        v, t = mesh['verts'], mesh['tris']
+                    validate_patch(v, t, domain, [stream])
+                    self.assertTrue(audit(v, t)['valid'])
+                    self.assert_angles_pass(v, t)
+
     def test_oblique_crossing_streams_at_projected_coordinates(self):
         x, y = -1805000., 3543000.
         domain = box(x, y, x+1800, y+1400)
@@ -833,7 +915,40 @@ class CgalCavityTests(unittest.TestCase):
         corners = [face['vertices'][face['constrained_corner']] for face in failure.exception.failures
                    if 'constrained_corner' in face]
         self.assertIn([8, 8], corners)
+        bundle, = self.work.glob('cavity-*')
+        stats = json.loads((bundle/'mesh.json.stats.json').read_text())
+        self.assertEqual(stats['refinement_steps'], 0)
+        self.assertEqual(stats['raster_evaluations'], 0)
+        sector, = [f for f in failure.exception.failures if f['vertices'][f['constrained_corner']] == [8, 8]]
+        self.assertAlmostEqual(sector['input_sector_degrees'], np.degrees(np.arctan(.1)))
+        self.assertEqual(sector['input_interface_ids'], [])
         self.assertFalse(list(self.work.glob('cavity-*/mesh.json')))
+
+    def test_input_sector_names_its_retained_ray_and_excludes_unrelated_interfaces(self):
+        domain = box(0, 0, 20, 20)
+        tip = (8, 8)
+        # Two successive narrow sectors share a stream ray.
+        # A long unrelated interface shares the same tip in the reflex sector.
+        fixed = [LineString([tip, (18, 8)]), LineString([tip, (3, 14)])]
+        streams = [LineString([tip, (18, 9)]), LineString([tip, (18, 10)])]
+        with self.assertRaises(PatchQualityError) as error:
+            remesh_domain(domain, streams, self.options, self.work, fixed)
+        ids = [i for face in error.exception.failures for i in face['input_interface_ids']]
+        self.assertEqual(ids, [0])
+        self.assertEqual(_quality_interface_faces(fixed, [12, 13], error.exception.failures, domain).tolist(), [12])
+
+    def test_physical_stream_angle_stops_after_one_merge_attempt(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+        domain = box(0, 0, 20, 20)
+        tip = (10, 10)
+        streams = [LineString([tip, (15, 10)]), LineString([tip, (15, 10.5)])]
+        a, ta = grid(0, 10, 0, 20, 2)
+        b, tb = grid(10, 20, 0, 20, 2)
+        with patch.object(remesh, '_run_backend', wraps=remesh._run_backend) as backend:
+            with self.assertRaisesRegex(remesh.PhysicalConstraintAngle, '5.71059 degrees'):
+                merge_cavity(a, ta, [0, 0, 10, 20], b, tb, [10, 0, 20, 20],
+                    domain, streams, dict(self.options, remesh_band_width=8), self.work)
+            self.assertEqual(backend.call_count, 1)
 
     def notch_options(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)

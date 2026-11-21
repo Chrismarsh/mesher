@@ -81,12 +81,22 @@ class PatchQualityError(PatchError):
         super().__init__(message)
 
 
+class PhysicalConstraintAngle(PatchQualityError):
+    """An in-domain sector bounded by two immutable physical features."""
+
+
 class PatchBoundaryRoundoff(PatchError):
     """Carry the unresolved geometry to the layer that owns its boundary faces."""
     def __init__(self, message, chords, owners=None, *, preflight_only=False):
         self.preflight_only = preflight_only
         self.chords = chords
         self.owners = owners
+        super().__init__(message)
+
+
+class PatchEdgeError(PatchError):
+    def __init__(self, message, edge):
+        self.edge = edge
         super().__init__(message)
 
 
@@ -302,11 +312,25 @@ def _roundoff_chords(cavity, *, acute_only=False):
     return chords
 
 
+def _unbisectable_edges(lines):
+    """Return distinct endpoints whose computed midpoint rounds to an endpoint."""
+    xy, line = get_coordinates(lines, return_index=True)
+    a, b = xy[:-1], xy[1:]
+    midpoint = a + (b-a)*.5
+    collapsed = ((midpoint == a).all(axis=1) | (midpoint == b).all(axis=1))
+    select = (line[:-1] == line[1:]) & (a != b).any(axis=1) & collapsed
+    return list(linestrings(np.stack((a[select], b[select]), axis=1)))
+
+
 def _roundoff_owners(chords, edges):
     """Find boundary edges following a chord over a shared longitudinal interval."""
     # An overlay-created endpoint can round off the original retained edge.
     # Use this allowance solely to choose whole faces to remesh.
+    # A midpoint can round onto an endpoint at a junction of independently
+    # cut edges. Select the incident rim faces at that point. For long
+    # slivers, continue to require a shared interval along the chord.
     tolerances = [2 * np.spacing(max(map(abs, chord.bounds))) for chord in chords]
+    point_contacts = [chord.length <= tol for chord, tol in zip(chords, tolerances)]
     envelopes = []
     for chord, tol in zip(chords, tolerances):
         x0, y0, x1, y1 = chord.bounds
@@ -319,6 +343,11 @@ def _roundoff_owners(chords, edges):
         edge = LineString(coordinates)
         for i in tree.query(edge):
             chord, tol = chords[i], tolerances[i]
+            if point_contacts[i]:
+                if edge.distance(chord) <= tol:
+                    owners.add(face)
+                    break
+                continue
             lo, hi = sorted(chord.project(Point(xy)) for xy in coordinates)
             if (hi-lo > tol and edge.distance(chord.interpolate(lo)) <= tol
                     and edge.distance(chord.interpolate(hi)) <= tol):
@@ -506,7 +535,7 @@ def _precision_interface_ids(linework, fixed_edges, epsilon):
     return np.unique(np.concatenate((np.repeat(owners, 2)[forward[0]], owners[reverse[1]])))
 
 
-def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, retained_edges=None):
+def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, retained_edges=None, disk_coverage=None):
     """Invoke the real C++ refinement criteria, including raster constraints."""
     started = time.perf_counter()
     domain = polygon_domain(domain)
@@ -536,6 +565,25 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
             'tile': options.get('tile_prefix'), 'merge': options.get('out_prefix'),
             'core_bbox': options.get('core_bbox', options.get('tile_bbox')),
             'domain_bounds': list(domain.bounds), 'domain_area': domain.area}, indent=2))
+        tiny = _unbisectable_edges(noded)
+        chords = _roundoff_chords(domain)
+        if tiny:
+            # Inspect this potentially large boundary iterator once, selecting
+            # whole owners for either kind of precision defect in this cavity.
+            witnesses = [*tiny, *chords]
+            affected = _roundoff_owners(witnesses, retained_edges) if retained_edges is not None else []
+            retained_edges = None
+            on_disk = False
+            if not affected and disk_coverage is not None and not disk_coverage.is_empty:
+                rim = disk_coverage.boundary
+                on_disk = any(rim.distance(edge) <= 2*np.spacing(max(map(abs, edge.bounds))) for edge in tiny)
+            if affected or on_disk:
+                error = PatchBoundaryRoundoff(
+                    f'Constraint midpoint rounds to an endpoint at {list(tiny[0].coords)}; '
+                    f'{len(affected)} matching local faces', witnesses, affected, preflight_only=True)
+                stats['preparation_seconds'] = time.perf_counter() - started
+                (work / 'backend.log').write_text(f'Backend not started: {error}\n')
+                raise error
         epsilon = _coordinate_tolerance(domain)
         precision_ids = _precision_interface_ids(linework, fixed_edges, epsilon)
         if len(precision_ids):
@@ -545,7 +593,6 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
                 'interface_ids': precision_ids.tolist(), 'coordinate_tolerance': epsilon}))
             (work / 'backend.log').write_text(f'Backend not started: {error}\n')
             raise error
-        chords = _roundoff_chords(domain)
         if chords:
             affected = _roundoff_owners(chords, retained_edges) if retained_edges is not None else []
             if not affected:
@@ -572,8 +619,17 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
             quality_path = Path(str(output) + '.quality.json')
             if quality_path.exists():
                 raise PatchQualityError(message, json.loads(quality_path.read_text())['faces'])
+            edge_report = Path(str(output) + '.edge.json')
+            if edge_report.exists():
+                edge = LineString(json.loads(edge_report.read_text())['edge'])
+                message = f'Constrained edge refinement failed at {list(edge.coords)}. {message}'
+                if tiny or chords:
+                    raise PatchBoundaryRoundoff(message, [edge, *tiny, *chords])
+                raise PatchEdgeError(message, edge)
             if 'n == zone.fh' in tail and 'Refine_edges.h' in tail:
-                chords = _roundoff_chords(domain)
+                if tiny:
+                    message = f'Constraint midpoint rounds to an endpoint at {list(tiny[0].coords)}. {message}'
+                chords = [*tiny, *_roundoff_chords(domain)]
                 if chords:
                     raise PatchBoundaryRoundoff(message, chords)
             raise PatchError(message)
@@ -634,6 +690,9 @@ def _quality_interface_faces(fixed_edges, owners, failures, domain):
     epsilon = _coordinate_tolerance(domain)
     affected = set()
     for failure in failures:
+        if 'input_interface_ids' in failure:
+            affected.update(owners[i] for i in failure['input_interface_ids'])
+            continue
         triangle = Polygon(failure['vertices'])
         x0, y0, x1, y1 = triangle.bounds
         candidates = tree.query(box(x0-epsilon, y0-epsilon, x1+epsilon, y1+epsilon))
@@ -641,6 +700,21 @@ def _quality_interface_faces(fixed_edges, owners, failures, domain):
             if fixed_edges[edge].distance(triangle) <= epsilon:
                 affected.add(owners[edge])
     return np.asarray(sorted(affected), dtype=np.int64)
+
+
+def _physical_sector(failures, source_domain, constraints):
+    """Certify both rays against source geometry before ruling out seam repair."""
+    perimeter = None
+    for face in failures:
+        if 'input_rays' not in face:
+            continue
+        if perimeter is None:
+            perimeter = source_domain.boundary
+        tip = face['vertices'][face['constrained_corner']]
+        rays = [LineString([tip, end]) for end in face['input_rays']]
+        if all(perimeter.covers(ray) or any(line.covers(ray) for line in constraints) for ray in rays):
+            return tip, face['input_sector_degrees']
+    return None
 
 
 def _retained_neighbours(neighbours, keep):
@@ -813,7 +887,7 @@ def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, opti
         for owner in failed:
             seeds.extend(old_to_new[len(old_t) + np.asarray(sorted(adjacent[owner]), dtype=np.int64)])
         _grow_cavity(keep, neighbours, seeds, 1)
-    return combined_v, result_t, sources, keep, neighbours, repairs['stats'], len(accepted), len(failed)
+    return combined_v, result_t, sources, keep, neighbours, repairs['stats'], len(accepted), failed
 
 
 def _retained_boundary_edges(vertices, triangles, adjacency):
@@ -875,7 +949,7 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
 
 def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bounds_b,
                  domain, constraints, options, directory, mesher=remesh_domain,
-                 *, prepared_domain=None, initial_keep=None):
+                 *, prepared_domain=None, initial_keep=None, disk_coverage=None):
     """Repair a private working mesh; publish only a conforming complete result."""
     started = time.perf_counter()
     axis, seam = _shared_interface(bounds_a, bounds_b)
@@ -887,6 +961,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     if not np.isfinite(width) or width <= 0 or attempts < 1:
         raise PatchError('Remesh band width and attempt count must be positive')
     context = options.get('out_prefix') or options.get('tile_prefix')
+    source_domain = domain
     core_area = domain.intersection(box(*bounds)).area
     # Intermediate group boxes can recreate the same acute cuts as initial
     # tiles. Give only those corners local halos; ownership boxes never change.
@@ -909,6 +984,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     label = f' [{Path(context).name}]' if context else ''
     last_error = None
     history = []
+    failed_parent_shapes = set()
+    grow_failed_parents = False
     lineage_available = mesher is remesh_domain
     totals = {'subdivided_parents': 0, 'local_repairs': 0, 'patch_triangles_generated': 0,
               'failed_subdivision_parents': 0, 'candidate_interface_faces': 0}
@@ -977,9 +1054,9 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         record['preparation_seconds'] = record.get('preparation_seconds', 0) + (time.perf_counter()-prepare_started)
         attempts_used += 1
         try:
-            if mesher is remesh_domain and len(retained):
+            if mesher is remesh_domain:
                 boundary = _retained_boundary_edges(joined_v, retained, adjacency)
-                patch = mesher(cavity, constraints, options, directory, fixed, retained_edges=boundary)
+                patch = mesher(cavity, constraints, options, directory, fixed, retained_edges=boundary, disk_coverage=disk_coverage)
             else:
                 patch = mesher(cavity, constraints, options, directory, fixed)
             patch_v, patch_t = patch
@@ -1002,7 +1079,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                     record['repair_seconds'] = time.perf_counter()-repair_started
             stitch_started = time.perf_counter()
             if repair is not None:
-                v, t, provenance, selection, candidate_neighbours, repair_stats, accepted, failed = repair
+                v, t, provenance, selection, candidate_neighbours, repair_stats, accepted, failed_owners = repair
+                failed = len(failed_owners)
                 for key, value in repair_stats.items():
                     record[key] = record.get(key, 0) + value
                 changed_faces = np.empty(0, dtype=np.int64)
@@ -1026,6 +1104,25 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                         return finish(output_v, output_t, provenance, attempt, len(patch_t))
                 if attempt+1 == attempts:
                     raise PatchError(f'{failed} parent subdivisions require another local repair')
+                if failed:
+                    # Generated face IDs change with every candidate. An exact
+                    # XY triangle identifies the same failed parent across
+                    # generations even when its index or orientation changes.
+                    if not grow_failed_parents:
+                        shapes = {tuple(sorted(map(tuple, joined_v[retained[i], :2]))) for i in failed_owners}
+                        grow_failed_parents = not failed_parent_shapes.isdisjoint(shapes)
+                        failed_parent_shapes.update(shapes)
+                    if grow_failed_parents:
+                        # Keep the previously validated remainder, and enlarge
+                        # its cavity. A failed candidate can no longer put back
+                        # the parents we just released and repeat the cycle.
+                        removed = _grow_cavity(keep, neighbours, retained_ids[failed_owners], growth_rings)
+                        record['repeated_parent_growth_faces'] = removed
+                        totals['failed_subdivision_parents'] += failed
+                        growth_rings = min(2*growth_rings, 4)
+                        debug_log(options, f'Growing cavity after repeated parent failure{label}: '
+                                  f'failed_parents={failed}, removed={removed}')
+                        continue
                 # Validate the staged remainder BEFORE promoting it. Every
                 # preserved generated triangle passed backend quality; all
                 # children passed both quality and exact footprint checks.
@@ -1079,6 +1176,13 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 raise
             record['rejection'] = str(exc)
             debug_log(options, f'Remesh candidate rejected{label}: {exc}')
+            if isinstance(exc, PatchQualityError):
+                physical = _physical_sector(exc.failures, source_domain, constraints)
+                if physical is not None:
+                    tip, degrees = physical
+                    raise PhysicalConstraintAngle(
+                        f'Physical constraints at {tip} enclose {degrees:.6g} degrees, below the mesh shape bound. '
+                        f'{exc}', exc.failures) from exc
             if (attempt+1 == attempts or not len(retained) or isinstance(exc, BackendTerminated)
                     or 'Patch vertex budget exceeded' in str(exc)):
                 break
@@ -1089,6 +1193,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 local_faces = exc.faces
             elif isinstance(exc, PatchQualityError):
                 local_faces = _quality_interface_faces(fixed, owners, exc.failures, domain)
+            elif isinstance(exc, PatchEdgeError):
+                local_faces = _roundoff_owners([exc.edge], _retained_boundary_edges(joined_v, retained, adjacency))
             elif isinstance(exc, PatchPrecisionError):
                 local_faces = np.unique(np.asarray(owners)[exc.interface_ids])
             if len(local_faces):

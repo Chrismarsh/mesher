@@ -346,7 +346,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 raise remesh.PatchError(f'Seam active-face budget exceeded: {active_count} > {max_active}; '
                                        'increase mpi_remesh_max_active_faces only if memory permits')
             if not outside.is_empty:
-                chords = remesh._roundoff_chords(local_domain)
+                chords = [*remesh._roundoff_chords(local_domain),
+                          *remesh._unbisectable_edges(remesh.line_parts(local_domain.boundary))]
                 if chords and release_disk_parents(chords):
                     cached = None
                     continue
@@ -368,7 +369,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                       f'interiors_on_disk={total-selected_count}')
             try:
                 lv, lt, report = remesh.merge_cavity(av, at, bounds_a, bv, bt, bounds_b,
-                    domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep)
+                    domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep,
+                    disk_coverage=outside)
                 # Local checks preserve the target footprint; verify the disk-facing
                 # interface by exact endpoints before treating it as a completed merge.
                 if len(lt):
@@ -406,6 +408,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                     raise
                 cached = None
                 continue
+            except remesh.PhysicalConstraintAngle:
+                raise
             except remesh.PatchError as exc:
                 cause = exc
                 while cause is not None:

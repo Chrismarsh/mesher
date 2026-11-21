@@ -1,7 +1,10 @@
 // Local constrained remeshing with the same Criteria as ordinary Mesher.
 // Included after read_json() in mesher.cpp.
 #pragma once
+#include <array>
 #include <limits>
+#include <map>
+#include <set>
 #include <memory>
 #include <cstdio>
 #include <chrono>
@@ -92,7 +95,8 @@ void mark_patch_domain(Triangulation& cdt, OGRGeometry* domain) {
 // The input sector containing this face is bounded by the first constrained
 // ray on each side of the vertex. Traversing the fan distinguishes an acute
 // sector from its reflex complement, including at an interior stream junction.
-bool acute_constraint_sector(const PatchCDT& cdt, Face_handle face, int corner, double bound) {
+bool acute_constraint_sector(const PatchCDT& cdt, Face_handle face, int corner, double bound,
+                             std::array<Vertex_handle, 2>* rays = nullptr) {
     const auto vertex = face->vertex(corner);
     auto ray = [&](int direction) -> Vertex_handle {
         auto current = face;
@@ -113,8 +117,10 @@ bool acute_constraint_sector(const PatchCDT& cdt, Face_handle face, int corner, 
     if (CGAL::orientation(p, a, b) != CGAL::LEFT_TURN || CGAL::angle(a, p, b) != CGAL::ACUTE)
         return false;
     const double twice_area = 2 * CGAL::to_double(CGAL::area(p, a, b));
-    return twice_area * twice_area < bound * CGAL::to_double(
+    const bool blocked = twice_area * twice_area < bound * CGAL::to_double(
         CGAL::squared_distance(p, a) * CGAL::squared_distance(p, b));
+    if (blocked && rays) *rays = {cw, ccw};
+    return blocked;
 }
 
 struct PatchFailure {
@@ -122,6 +128,9 @@ struct PatchFailure {
     double area, angle;
     const char* reason;
     int constrained_corner;
+    std::set<size_t> input_interfaces;
+    double input_sector_degrees = -1.;
+    std::array<Vertex_handle, 2> input_rays{};
 };
 
 // Bisect only existing, unconstrained edges. The midpoint must still locate
@@ -166,6 +175,58 @@ struct PatchAudit {
     double worst_angle = 180;
 };
 
+// Walk each in-domain sector once, starting on its clockwise constrained
+// ray. Splitting either ray or adding interior vertices cannot increase the
+// angle between its prescribed directions. Record the actual constraint
+// hierarchy IDs so recovery can release the faces that imposed the angle.
+PatchAudit audit_input_sectors(const PatchCDT& cdt, double bound,
+                              const std::vector<PatchCDT::Constraint_id>& interfaces) {
+    std::map<PatchCDT::Constraint_id, size_t> ids;
+    for (size_t i = 0; i < interfaces.size(); ++i) ids.emplace(interfaces[i], i);
+    PatchAudit audit;
+    for (auto f = cdt.finite_faces_begin(); f != cdt.finite_faces_end(); ++f) {
+        if (!f->is_in_domain()) continue;
+        ++audit.faces;
+        PatchFailure failure{f, 0., 180., "angle", -1};
+        for (int i = 0; i < 3; ++i) {
+            if (!f->is_constrained((i+2)%3)) continue;
+            std::array<Vertex_handle, 2> rays;
+            if (!acute_constraint_sector(cdt, f, i, bound, &rays)) continue;
+            const auto vertex = f->vertex(i);
+            const auto u = rays[0]->point() - vertex->point();
+            const auto v = rays[1]->point() - vertex->point();
+            const double sector = std::atan2(CGAL::to_double(u.x()*v.y()-u.y()*v.x()),
+                                             CGAL::to_double(u*v)) * 180. / std::acos(-1.);
+            if (failure.constrained_corner < 0 || sector < failure.input_sector_degrees) {
+                failure.input_sector_degrees = sector;
+                failure.constrained_corner = i;
+                failure.input_rays = rays;
+            }
+            for (auto ray : rays) {
+                auto end = cdt.contexts_end(vertex, ray);
+                for (auto it = cdt.contexts_begin(vertex, ray); it != end; ++it) {
+                    const auto id = ids.find(it->id());
+                    if (id != ids.end()) failure.input_interfaces.insert(id->second);
+                }
+            }
+        }
+        if (failure.constrained_corner < 0) continue;
+        const auto& a = f->vertex(0)->point();
+        const auto& b = f->vertex(1)->point();
+        const auto& c = f->vertex(2)->point();
+        failure.area = CGAL::to_double(CGAL::area(a, b, c));
+        for (int i = 0; i < 3; ++i) {
+            const auto p = f->vertex(i)->point();
+            const auto u = f->vertex((i+1)%3)->point() - p;
+            const auto v = f->vertex((i+2)%3)->point() - p;
+            const double angle = std::atan2(2*failure.area, CGAL::to_double(u*v)) * 180. / std::acos(-1.);
+            failure.angle = std::min(failure.angle, angle);
+        }
+        audit.failures.push_back(std::move(failure));
+    }
+    return audit;
+}
+
 PatchAudit audit_patch_faces(PatchCDT& cdt, const Criteria& criteria) {
     PatchAudit audit;
     auto is_bad = criteria.is_bad_object();
@@ -208,6 +269,23 @@ void require_patch_quality(const PatchAudit& audit, const std::string& output) {
                        << ",\"min_angle_degrees\":" << failure.angle;
         if (failure.constrained_corner >= 0)
             quality_report << ",\"constrained_corner\":" << failure.constrained_corner;
+        if (failure.input_sector_degrees >= 0.) {
+            quality_report << ",\"input_sector_degrees\":" << failure.input_sector_degrees
+                           << ",\"input_rays\":[";
+            for (size_t i = 0; i < failure.input_rays.size(); ++i) {
+                const auto& p = failure.input_rays[i]->point();
+                if (i) quality_report << ',';
+                quality_report << '[' << p.x() << ',' << p.y() << ']';
+            }
+            quality_report << "],\"input_interface_ids\":[";
+            bool first = true;
+            for (auto id : failure.input_interfaces) {
+                if (!first) quality_report << ',';
+                quality_report << id;
+                first = false;
+            }
+            quality_report << ']';
+        }
         quality_report << ",\"vertices\":[";
         for (int i = 0; i < 3; ++i) {
             if (i) quality_report << ',';
@@ -234,6 +312,12 @@ void require_patch_quality(const PatchAudit& audit, const std::string& output) {
     // caller can enlarge the cavity; small physical angles may still fail.
     throw std::runtime_error("Patch has " + std::to_string(bad) +
         " triangles failing Mesher criteria (or an empty domain)");
+}
+
+void record_failed_patch_edge(const std::string& output, const Point& a, const Point& b) {
+    std::ofstream report(output + ".edge.json");
+    report << std::setprecision(std::numeric_limits<double>::max_digits10)
+           << "{\"edge\":[[" << a.x() << ',' << a.y() << "],[" << b.x() << ',' << b.y() << "]]}\n";
 }
 
 int mesh_patch(const std::string& domain_file, const std::string& constraints_file,
@@ -301,6 +385,10 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
     if (input_vertices > max_vertices) throw budget_error();
     std::cout << "Patch input: vertices=" << input_vertices << ", budget=" << max_vertices << std::endl;
 
+    mark_patch_domain(cdt, domain.get());
+    const auto input_audit = audit_input_sectors(cdt, criteria.bound(), interfaces);
+    if (!input_audit.failures.empty()) require_patch_quality(input_audit, output);
+
     const auto refine_started = PatchClock::now();
     auto progress = refine_started;
     patch_stats.refinement_started = refine_started;
@@ -309,12 +397,32 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
     size_t previous_count = std::numeric_limits<size_t>::max();
     double previous_angle = 0;
     while (true) {
-        mark_patch_domain(cdt, domain.get());
         PatchMesher mesher(cdt, criteria);
         mesher.init(true);
         while (!mesher.is_refinement_done()) {
             if (cdt.number_of_vertices() >= max_vertices) throw budget_error();
-            mesher.step_by_step_refine_mesh();
+            const auto before = cdt.number_of_vertices();
+            if (mesher.is_edges_refinement_done()) {
+                mesher.try_one_step_refine_mesh();
+            } else {
+                const auto edge = mesher.next_encroached_edge();
+                // Copy the coordinates: a failed insertion can invalidate
+                // face handles. Never call next_refinement_point() merely
+                // to preview a split, since it updates CGAL cluster state.
+                const auto a = edge.first->vertex((edge.second+1)%3)->point();
+                const auto b = edge.first->vertex((edge.second+2)%3)->point();
+                if (std::nextafter(a.x(), b.x()) == b.x() && std::nextafter(a.y(), b.y()) == b.y()) {
+                    record_failed_patch_edge(output, a, b);
+                    throw std::runtime_error("Required constraint split has no representable interior point");
+                }
+                try {
+                    mesher.try_one_step_refine_mesh();
+                } catch (const CGAL::Assertion_exception&) {
+                    record_failed_patch_edge(output, a, b);
+                    throw;
+                }
+            }
+            if (cdt.number_of_vertices() == before) continue;
             ++steps;
             ++patch_stats.refinement_steps;
             if ((steps % 128) == 0 && patch_seconds(progress) >= 10) {
@@ -339,6 +447,7 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
         const auto inserted = bisect_patch_edges(cdt, audit.failures, max_vertices);
         if (!inserted) break;
         patch_stats.quality_repair_vertices += inserted;
+        mark_patch_domain(cdt, domain.get());
     }
     const double refinement_seconds = patch_seconds(refine_started);
     patch_stats.refinement_seconds = refinement_seconds;

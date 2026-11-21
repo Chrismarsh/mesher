@@ -370,6 +370,41 @@ class DiskMergeTests(unittest.TestCase):
                 for face in t[-2:]:
                     self.assertIn(tuple(sorted(map(tuple, v[face]))), output)
 
+    def test_unbisectable_corner_releases_its_parent_before_native_refinement(self):
+        cavity = shape(json.loads((Path(__file__).parent/'fixtures'/'tvc_r2c1_unbisectable_corner.geojson').read_text()))
+        a, b, c, *others = cavity.exterior.coords[:-1]
+        self.assertEqual(np.nextafter(a[0], b[0]), b[0])
+        self.assertEqual(a[1], b[1])
+        # Reconstruct a parent whose subtraction leaves the exact reported
+        # 11-vertex cavity, including its one-coordinate-increment bevel.
+        far = (b[0]+3000, b[1])
+        self.domain = Polygon([a, far, c, *others])
+        parent = Polygon([b, far, c])
+        self.assertTrue(self.domain.difference(parent).equals(cavity))
+        v = np.column_stack((parent.exterior.coords[:-1], np.zeros(3)))
+        t = np.array([[0, 1, 2]])
+        self.bounds = ([-1821000, 3667000, -1810000, 3678000], [-1810000, 3667000, -1800000, 3678000])
+        np.savez(self.inputs[0], verts=v, tris=t)
+        np.savez(self.inputs[1], verts=v[:0], tris=t[:0])
+        ds = gdal.Open(self.options['dem_path'], gdal.GA_Update)
+        ds.SetGeoTransform((-1821000, 1000, 0, 3678000, 0, -1000))
+        ds = None
+        opts = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=20, remesh_max_attempts=1)
+
+        for disk in (False, True):
+            with self.subTest(disk=disk), patch.object(mpi_remesh, '_run_backend', wraps=mpi_remesh._run_backend) as backend:
+                if disk:
+                    report = self.merge(**opts)
+                    self.assertEqual(report['roundoff_disk_parents'], 1)
+                    result_v, result_t = self.assert_valid()
+                else:
+                    result_v, result_t, report = mpi_remesh.merge_cavity(v, t, self.bounds[0],
+                        v[:0], t[:0], self.bounds[1], self.domain, [], opts, self.root)
+                    self.assertEqual(report['attempt_stats'][0]['roundoff_parents_released'], 1)
+                self.assertEqual(backend.call_count, 1)
+                self.assertEqual(report['attempts'], 1)
+                mpi_remesh.validate_patch(result_v, result_t, self.domain)
+
     def test_physical_hole_in_disk_interior_is_preserved(self):
         hole = box(5, 3, 7, 5)
         self.domain = self.domain.difference(hole)

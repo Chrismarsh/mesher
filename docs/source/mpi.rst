@@ -197,6 +197,23 @@ resolved gaps are left alone. This tolerance only selects whole triangles for
 removal; it never snaps vertices, fills physical holes or relaxes acceptance
 criteria. The physical domain and constraints stay unchanged.
 
+A short segment can also occur in a large, otherwise well-shaped cavity.
+When its midpoint rounds to an endpoint, the merge looks for incident faces
+on both the local and disk-backed boundaries. Releasing those faces rebuilds
+the cavity from the enclosing domain. Each pass must release a whole face,
+and disk expansion observes the active-face budget.
+
+Before refinement the native backend checks the in-domain angle between
+successive constrained rays, including at stream junctions. Subdividing the
+rays cannot increase this angle. A failure report identifies the corner,
+the two rays and their retained interface IDs. If both rays lie on the
+original physical perimeter or prescribed streams, widening the seam cannot
+satisfy the shape criterion. Mesher reports the location and angle.
+
+When a failed parent triangle recurs after a partial repair, the worker grows
+the cavity around its owners in the previous working mesh. This prevents
+successive incomplete patches from reintroducing the same failed parent.
+
 Optimized CMake builds retain CGAL structural assertions (``CGAL_DEBUG``).
 This prevents refinement from continuing with invalid handles after a failed
 invariant: the patch entry point catches the exception and writes diagnostics.
@@ -237,7 +254,8 @@ reported in the exception. It contains ``domain.json``, ``constraints.json``,
 Python merge/retry messages and tracebacks remain in the MPI job's stdout/stderr
 (or the scheduler job log). Output from different ranks can be interleaved;
 match the tile/merge label and ``invocation.json`` before associating a cavity
-folder with a later traceback.
+folder with a later traceback. When refinement fails while splitting a
+constrained edge, ``mesh.json.edge.json`` records its endpoints.
 For a precision rejection, ``precision.json`` records interface IDs and the
 coordinate tolerance, and ``backend.log`` explicitly says the backend was not
 started. The same reproduction inputs are retained for inspection.
