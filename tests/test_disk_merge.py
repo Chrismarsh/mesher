@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -5,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from shapely.geometry import box
+from shapely.geometry import box, mapping
 from osgeo import gdal, osr
 
 from mesher.mesher_utls import disk_merge, mpi_remesh
@@ -71,6 +72,25 @@ class DiskMergeTests(unittest.TestCase):
                     if np.all(vv[face, 0] < 30) or np.all(vv[face, 0] > 50):
                         self.assertIn(tuple(sorted(map(tuple, vv[face]))), output_faces)
 
+    def test_merge_worker_publishes_numpy_face_count_as_json_integer(self):
+        from mesher.mesher_utls.MPI_merge_tiles import merge_tiles
+        domain = self.root / 'domain.geojson'
+        domain.write_text(json.dumps(mapping(self.domain)))
+        tiles = []
+        for path, bounds in zip(self.inputs, self.bounds):
+            marker = path.with_suffix('.json')
+            marker.write_text(json.dumps({'core_bbox': bounds, 'merge_method': 'remesh'}))
+            tiles.append({'npz': str(path), 'meta': str(marker)})
+        count = np.count_nonzero
+        with patch.object(np, 'count_nonzero', side_effect=lambda a: np.int64(count(a))):
+            merge_tiles(dict(self.options, tile_a=tiles[0], tile_b=tiles[1], constraints=[],
+                             outer_polygon_shp=str(domain), out_prefix=str(self.output.with_suffix(''))))
+        report = json.loads(self.output.with_suffix('.json').read_text())['remesh_report']
+        self.assertIs(type(report['peak_loaded_faces']), int)
+        self.assertGreater(report['peak_loaded_faces'], 0)
+        _, triangles = self.assert_valid()
+        self.assertEqual(report['output_faces'], len(triangles))
+
     def test_growing_only_the_interiors_does_not_grow_the_loaded_region(self):
         small = self.merge()
         self.bounds = ([0,0,400,10], [400,0,800,10])
@@ -105,8 +125,9 @@ class DiskMergeTests(unittest.TestCase):
             return v, t, report
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary):
             report = self.merge()
-        self.assertGreater(len(calls), 1)
-        self.assertIsNotNone(calls[1])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report['attempts'], 1)
+        self.assertEqual(report['original_triangles_retained'], np.count_nonzero(calls[1]))
         self.assertGreater(report['seam_work_reused'], 0)
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()

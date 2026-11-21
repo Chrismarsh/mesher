@@ -30,6 +30,8 @@ void mandatory_raster_cases()
     require(bad(q) == IMPERATIVELY_BAD, "Preserve weighted failure when CGAL reads cached Quality");
     q._area = 1;
     require(bad(q) == NOT_BAD, "Minimum area still stops raster refinement");
+    q._sine = .25;
+    require(std::abs(q.min_angle_degrees() - 30.) < 1e-12, "Angle uses the square root of the shape metric");
     q._sine = .01;
     require(bad(q) == BAD, "Shape-only refinement remains nonmandatory even below minimum area");
     q._area = 101;

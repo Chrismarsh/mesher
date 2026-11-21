@@ -195,8 +195,7 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
         if (quality.area() > criteria.maxarea()) { reason = "area"; ++bad_area; }
         else if (quality.sine() < criteria.bound()) { reason = "angle"; ++bad_angle; }
         else ++bad_raster;
-        const double angle = std::asin(std::sqrt(std::max(0.0, std::min(1.0, quality.sine()))))
-                           * 180 / std::acos(-1.0);
+        const double angle = quality.min_angle_degrees();
         quality_report << "{\"reason\":\"" << reason << "\",\"area\":" << quality.area()
                        << ",\"min_angle_degrees\":" << angle << ",\"vertices\":[";
         for (int i = 0; i < 3; ++i) {

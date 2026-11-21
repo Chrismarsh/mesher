@@ -303,6 +303,19 @@ class CavityGeometryTests(unittest.TestCase):
             self.assertEqual((work / 'joined.npz').read_bytes(), b'previous mesh')
             self.assertEqual((work / 'joined.json').read_bytes(), b'previous metadata')
 
+            def unencodable_report(*args):
+                Path(args[-1]).write_bytes(b'new mesh')
+                return {'output_faces': 1, 'invalid': object()}
+
+            with patch('mesher.mesher_utls.mpi_remesh.load_domain', return_value=box(0, 0, 2, 1)), \
+                 patch('mesher.mesher_utls.disk_merge.merge_disk_cavity', side_effect=unencodable_report):
+                with self.assertRaisesRegex(TypeError, 'not JSON serializable'):
+                    merge_tiles({'tile_a': inputs[0], 'tile_b': inputs[1], 'merge_method': 'remesh',
+                                 'outer_polygon_shp': 'unused', 'constraints': [], 'max_area': 1, 'out_prefix': str(work / 'joined')})
+            self.assertEqual((work / 'joined.npz').read_bytes(), b'previous mesh')
+            self.assertEqual((work / 'joined.json').read_bytes(), b'previous metadata')
+            self.assertFalse(list(work.glob('merge-output-*')))
+
 
 @unittest.skipUnless(os.environ.get('MESHER_TEST_EXE'), 'Set MESHER_TEST_EXE to the rebuilt meshercxx')
 class CgalCavityTests(unittest.TestCase):

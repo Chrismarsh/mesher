@@ -37,19 +37,22 @@ def selected_boundary(vertices, triangles, neighbours, active):
                 face = lo + int(local)
                 tri = triangles[face]
                 p, q, r = vertices[tri, :2]
-                a, b = vertices[tri[[(slot+1) % 3, (slot+2) % 3]], :2]
+                i, j = tri[(slot+1) % 3], tri[(slot+2) % 3]
+                a, b = vertices[i, :2], vertices[j, :2]
                 if (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0]) < 0:
-                    a, b = b, a
-                yield face, (tuple(a), tuple(b)), adjacent[local] >= 0
+                    i, j, a, b = j, i, b, a
+                yield face, (i, j), (tuple(a), tuple(b)), adjacent[local] >= 0
 
 
 def inactive_coverage(vertices, triangles, neighbours, active):
     directed, edges, interfaces = set(), [], {}
-    for face, pair, internal in selected_boundary(vertices, triangles, neighbours, active):
+    cut_vertices = {}
+    for face, ids, pair, internal in selected_boundary(vertices, triangles, neighbours, active):
         directed.add(pair)
         edges.append(LineString(pair))
         if internal:
             interfaces[tuple(sorted(pair))] = face
+            cut_vertices.update(zip(ids, pair))
     pieces = []
     for polygon in polygonize(edges):
         coords = list(polygon.exterior.coords)
@@ -65,7 +68,7 @@ def inactive_coverage(vertices, triangles, neighbours, active):
         total += .5*np.abs(u[:, 0]*v[:, 1]-u[:, 1]*v[:, 0]).sum()
     if abs(total-coverage.area) > remesh.area_tolerance(coverage):
         raise remesh.PatchError('Disk interior has inconsistent boundary coverage')
-    return coverage, interfaces
+    return coverage, interfaces, cut_vertices
 
 
 def grow_active(active, neighbours, seeds, rings):
@@ -91,13 +94,34 @@ def compact_region(vertices, triangles, active):
     return vertices[used], inverse.reshape(-1, 3), ids
 
 
-def boundary_keys(vertices, triangles):
+def boundary_index(vertices, triangles):
     if not len(triangles):
-        return set()
+        return set(), {}
     neighbours = build_neighbours(triangles, len(vertices), vertices)
     faces, slots = np.nonzero(neighbours < 0)
-    return {tuple(sorted(map(tuple, vertices[triangles[f, [(s+1) % 3, (s+2) % 3]], :2])))
-            for f, s in zip(faces, slots)}
+    pairs = triangles[faces[:, None], (slots[:, None] + [1, 2]) % 3]
+    points = {i: tuple(vertices[i, :2]) for i in np.unique(pairs)}
+    edges = {tuple(sorted((points[a], points[b]))) for a, b in pairs}
+    return edges, {xy: i for i, xy in points.items()}
+
+
+def extend_cached_region(cached, inputs, pending):
+    """Restore shared IDs along the previous disk cut when loading its next ring."""
+    local_v, local_t, shared = cached
+    vertices, triangles = [local_v], [local_t]
+    keep = [np.ones(len(local_t), dtype=bool)]
+    offset = len(local_v)
+    for (v, t, _), (added, removed), cut_ids in zip(inputs, pending, shared):
+        used, inverse = np.unique(t[added], return_inverse=True)
+        ids = np.fromiter((cut_ids.get(i, -1) for i in used), dtype=np.int64, count=len(used))
+        new = ids < 0
+        new_vertices = v[used[new]]
+        vertices.append(new_vertices)
+        ids[new] = offset + np.arange(len(new_vertices))
+        offset += len(new_vertices)
+        triangles.append(ids[inverse].reshape(-1, 3))
+        keep.append(~np.isin(added, removed))
+    return np.vstack(vertices), np.vstack(triangles), np.concatenate(keep)
 
 
 def stream_join(inputs, active, local_v, local_t, work):
@@ -125,11 +149,8 @@ def stream_join(inputs, active, local_v, local_t, work):
         raise remesh.PatchError('Local merge contains coincident vertex IDs')
     local_ids = np.full(len(local_v), -1, dtype=np.int64)
     for (vertices, triangles, neighbours), selection, ids in zip(inputs, active, mappings):
-        for face, pair, _ in selected_boundary(vertices, triangles, neighbours, selection):
-            for old in triangles[face]:
-                key = tuple(vertices[old, :2])
-                if key not in pair:
-                    continue
+        for _, endpoints, pair, _ in selected_boundary(vertices, triangles, neighbours, selection):
+            for old, key in zip(endpoints, pair):
                 local = lookup.get(key)
                 if local is not None:
                     if local_ids[local] >= 0 and local_ids[local] != ids[old]:
@@ -138,7 +159,7 @@ def stream_join(inputs, active, local_v, local_t, work):
     added = np.flatnonzero(local_ids < 0)
     local_ids[added] = sum(counts) + np.arange(len(added))
     out_v = disk_array(work/'verts.npy', (sum(counts)+len(added), 3))
-    nfaces = sum(sum(np.count_nonzero(~selection[lo:hi]) for lo, hi in batches(len(selection)))
+    nfaces = sum(sum(int(np.count_nonzero(~selection[lo:hi])) for lo, hi in batches(len(selection)))
                  for selection in active) + len(local_t)
     out_t = disk_array(work/'tris.npy', (nfaces, 3), np.int64)
     offset = 0
@@ -159,7 +180,8 @@ def stream_join(inputs, active, local_v, local_t, work):
 
 def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, options, output):
     started = time.perf_counter()
-    directory = str(Path(output).parent)
+    # Keep failed native reproductions beside the final mesh even when staging its archive.
+    directory = str(Path(options.get('out_prefix') or output).parent)
     width = options.get('remesh_band_width')
     width = float(2*math.sqrt(options['max_area']) if width is None else width)
     limit = int(options.get('remesh_max_attempts', 12))
@@ -200,15 +222,18 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         peak_active = 0
         reused = 0
         for attempt in range(limit):
-            coverage, cuts = [], []
+            coverage, cuts, cut_vertices = [], [], []
             for values, selection in zip(inputs, active):
-                polygon, interfaces = inactive_coverage(*values, selection)
-                coverage.append(polygon); cuts.append(interfaces)
+                polygon, interfaces, endpoints = inactive_coverage(*values, selection)
+                coverage.append(polygon)
+                cuts.append(interfaces)
+                cut_vertices.append(endpoints)
             outside = remesh.polygon_domain(union_all(coverage))
             if outside.difference(target).area > remesh.area_tolerance(target):
                 raise remesh.PatchError('Immutable interiors extend beyond the merge domain')
             local_domain = remesh.polygon_domain(target.difference(outside))
-            active_count = (sum(np.count_nonzero(selection) for selection in active) if cached is None
+            selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
+            active_count = (selected_count if cached is None
                             else len(cached[1]) + sum(len(added) for added, _ in pending))
             peak_active = max(peak_active, active_count)
             if active_count > max_active:
@@ -219,20 +244,12 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 bv, bt, _ = compact_region(*inputs[1][:2], active[1])
                 initial_keep = None
             else:
-                av, at = cached
-                reused += len(at)
-                new_v, new_t, new_keep, offset = [], [], [], 0
-                for (v, t, _), (added, removed) in zip(inputs, pending):
-                    faces = t[added]
-                    used, inverse = np.unique(faces, return_inverse=True)
-                    new_v.append(v[used]); new_t.append(inverse.reshape(-1, 3)+offset)
-                    offset += len(used)
-                    new_keep.append(~np.isin(added, removed))
-                bv = np.vstack(new_v); bt = np.vstack(new_t)
-                initial_keep = np.concatenate((np.ones(len(at), dtype=bool), *new_keep))
-            active_count = len(at)+len(bt)
+                reused += len(cached[1])
+                av, at, initial_keep = extend_cached_region(cached, inputs, pending)
+                # The expanded seam is already indexed as a single working mesh.
+                bv, bt = av[:0], at[:0]
             debug_log(options, f'Seam region [{Path(output).stem}]: active={active_count}, '
-                      f'interiors_on_disk={total-sum(np.count_nonzero(a) for a in active)}')
+                      f'interiors_on_disk={total-selected_count}')
             try:
                 lv, lt, report = remesh.merge_cavity(av, at, bounds_a, bv, bt, bounds_b,
                     domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep)
@@ -244,11 +261,14 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                         raise remesh.PatchError('Seam region has inconsistent target coverage')
                 elif not local_domain.is_empty:
                     raise remesh.PatchError('Seam region is unexpectedly empty')
-                keys = boundary_keys(lv, lt)
+                keys, boundary_ids = boundary_index(lv, lt)
                 affected = [sorted({face for edge, face in interfaces.items() if edge not in keys})
                             for interfaces in cuts]
                 reports.append(report)
-                cached = lv, lt
+                if any(affected):
+                    shared = [{i: boundary_ids[xy] for i, xy in endpoints.items() if xy in boundary_ids}
+                              for endpoints in cut_vertices]
+                    cached = lv, lt, shared
             except remesh.PatchError as exc:
                 cause = exc
                 while cause is not None:

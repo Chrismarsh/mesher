@@ -1,5 +1,7 @@
 import os
 import sys
+import tempfile
+from pathlib import Path
 try:
     from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 except ModuleNotFoundError:
@@ -55,16 +57,23 @@ def merge_tiles(args):
     from mesher.mesher_utls.disk_merge import merge_disk_cavity
     bounds_a, bounds_b = meta_a['core_bbox'], meta_b['core_bbox']
     prefix = args['out_prefix']
-    report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
-        load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
-        args, prefix + '.npz')
-    # Geometry and disk-facing interfaces passed before the archive was published.
-    # Metadata remains the completion marker and is written last.
-    with open(prefix + '.json.tmp', 'w') as stream:
-        json.dump({'core_bbox': bbox_union(bounds_a, bounds_b),
-                   'tile_bbox': bbox_union(bounds_a, bounds_b), 'band_width': 0,
-                   'empty_tile': report['output_faces'] == 0, 'merge_method': 'remesh', 'remesh_report': report}, stream)
-    os.replace(prefix + '.json.tmp', prefix + '.json')
+    archive = Path(prefix + '.npz')
+    marker = Path(prefix + '.json')
+    with tempfile.TemporaryDirectory(dir=archive.parent, prefix='merge-output-') as directory:
+        staged_archive = Path(directory) / archive.name
+        staged_marker = Path(directory) / marker.name
+        report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
+            load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
+            args, staged_archive)
+        bounds = bbox_union(bounds_a, bounds_b)
+        with staged_marker.open('w') as stream:
+            json.dump({'core_bbox': bounds, 'tile_bbox': bounds, 'band_width': 0,
+                       'empty_tile': report['output_faces'] == 0, 'merge_method': 'remesh',
+                       'remesh_report': report}, stream)
+        # Invalidate an earlier completion marker only after both new files are ready.
+        marker.unlink(missing_ok=True)
+        os.replace(staged_archive, archive)
+        os.replace(staged_marker, marker)
 
 
 def main(pickle_file: str, disconnect: bool, expected_workers=None):

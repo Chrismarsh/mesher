@@ -19,6 +19,7 @@
 #include <CGAL/Delaunay_mesh_criteria_2.h>
 #include <utility>
 #include <ostream>
+#include <limits>
 #include <algorithm>
 #include <map>
 #include <boost/shared_ptr.hpp>
@@ -147,6 +148,12 @@ struct MesherRasterTimer {
             const double &sine() const
             { return _sine; }
 
+
+            double min_angle_degrees() const
+            {
+                const double sine = std::sqrt(std::max(0.0, std::min(1.0, _sine)));
+                return std::asin(sine) * 180.0 / std::acos(-1.0);
+            }
 
         // q1<q2 means q1 is prioritised over q2
         // ( q1 == *this, q2 == q )
@@ -626,12 +633,10 @@ struct MesherRasterTimer {
 
                 if (q.sine() < this->B)
                 {
-                    double min_angle_rad = std::asin(std::max(-1.0, std::min(1.0, q.sine())));
-                    double min_angle_deg = min_angle_rad * 180.0 / std::acos(-1.0);
                     if (debug)
-                        std::cout << "Is_bad angle reject: sine=" << q.sine()
-                                  << " min_angle_deg=" << min_angle_deg
-                                  << " bound_sine=" << this->B << std::endl;
+                        std::cout << "Is_bad angle reject: squared_sine=" << q.sine()
+                                  << " min_angle_deg=" << q.min_angle_degrees()
+                                  << " bound_squared_sine=" << this->B << std::endl;
                     return CGAL::Mesh_2::BAD;
                 }
 
@@ -692,11 +697,15 @@ struct MesherRasterTimer {
                 const Point_2 &pb = fh->vertex(1)->point();
                 const Point_2 &pc = fh->vertex(2)->point();
                 if (debug)
+                {
+                    auto precision = std::cout.precision(std::numeric_limits<double>::max_digits10);
                     std::cout << "Is_bad triangle: ("
                               << CGAL::to_double(pa.x()) << "," << CGAL::to_double(pa.y()) << ") ("
                               << CGAL::to_double(pb.x()) << "," << CGAL::to_double(pb.y()) << ") ("
                               << CGAL::to_double(pc.x()) << "," << CGAL::to_double(pc.y()) << ")"
                               << std::endl;
+                    std::cout.precision(precision);
+                }
 
                 double a = CGAL::to_double(squared_distance(pb, pc));
                 double b = CGAL::to_double(squared_distance(pc, pa));
