@@ -154,6 +154,17 @@ class CavityGeometryTests(unittest.TestCase):
                 with self.assertRaisesRegex(PatchError, 'retained interface'):
                     _stitch(v, t, p, q, box(x, y, x+2, y+1))
 
+    def test_staged_coincident_vertices_release_incident_faces_in_candidate_indices(self):
+        from mesher.mesher_utls.mpi_remesh import _conforming_remainder
+        from mesher.mesh_topology import build_neighbours
+        v = np.array([[0,0], [1,0], [0,1], [1+1e-9,0], [2,0], [2,-1],
+                      [4,0], [5,0], [5,1], [6,0], [7,0], [7,1]], dtype=float)
+        t = np.array([[9,10,11], [0,1,2], [6,7,8], [3,4,5]])
+        keep = np.array([False, True, True, True])
+        remaining = _conforming_remainder(v, t, build_neighbours(t, len(v), v), keep)
+        np.testing.assert_array_equal(keep, [False, False, True, False])
+        self.assertTrue(remaining.equals(Polygon(v[t[2]])))
+
     def test_boundary_roundoff_allowance_does_not_accept_a_real_gap(self):
         x, y = -1934381.4845238777, 3429022.4631309444
         v = np.array([[x, y, 0], [x+1, y, 0], [x+1, y+1-1e-5, 0], [x, y+1-1e-5, 0]])
@@ -624,6 +635,74 @@ class CgalCavityTests(unittest.TestCase):
                 self.assertLess(next_cavities[0].area, domain.area/5)
                 for actual, expected in zip((a, ta, b, tb), originals):
                     np.testing.assert_array_equal(actual, expected)
+
+    def test_r2c1_roundoff_preflight_precedes_native_refinement(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+        path = Path(__file__).parent / 'fixtures' / 'r2c1_roundoff_cavity.geojson'
+        domain = shape(json.loads(path.read_text()))
+        fixed, edges = [], []
+        for part in domain.geoms:
+            xy = np.asarray(part.exterior.coords)
+            segments = list(zip(xy[:-1], xy[1:]))
+            if part.area > 1:
+                # The first edge of the northern nine-sided patch was physical.
+                fixed.extend(LineString(pair) for pair in segments
+                             if tuple(pair[0]) != (-1878887.5214298817, 3681754.46017431))
+                continue
+            chord = np.linalg.norm(np.diff(xy, axis=0), axis=1).argmax()
+            for j, pair in enumerate(segments):
+                if j != chord:
+                    edges.append((len(edges), pair))
+        self.assertEqual((len(domain.geoms), len(fixed), len(edges)), (31, 51, 56))
+        self.assertAlmostEqual(domain.area, 9467461.553711953, places=6)
+        with patch.object(remesh, '_run_backend') as backend:
+            with self.assertRaises(remesh.PatchBoundaryRoundoff) as caught:
+                remesh_domain(domain, [], self.options, self.work, fixed, retained_edges=edges)
+            backend.assert_not_called()
+        self.assertEqual(caught.exception.owners, list(range(56)))
+        self.assertEqual(len(caught.exception.chords), 26)
+
+    def test_staged_hanging_node_recovers_without_widening(self):
+        from mesher.mesher_utls import mpi_remesh as remesh
+
+        domain = box(0, 0, 40, 20)
+        a, ta = grid(0, 20, 0, 20, 2)
+        b, tb = grid(20, 40, 0, 20, 2)
+        # Put a T-junction into a staged candidate: one side subdivides a
+        # shared edge while the coarse owner on the other side survives.
+        v, t = grid(0, 40, 0, 20, 2)
+        t = t.copy()
+        face = int(np.flatnonzero((v[t[:, 0], 0] == 20) & (v[t[:, 0], 1] == 10))[0])
+        i, j, k = t[face]
+        midpoint = len(v)
+        v = np.vstack((v, (v[i]+v[k])/2))
+        t[face] = [i, j, midpoint]
+        t = np.vstack((t, [midpoint, j, k]))
+        neighbours = remesh.build_neighbours(t, len(v), v)
+        keep = np.ones(len(t), dtype=bool)
+        keep[:2] = False  # Already opened for a separate failed parent.
+        sources = np.where(v[t, 0].mean(axis=1) < 20, 0, -1)
+        original_repair = remesh._repair_candidate
+        staged = []
+
+        def repair(*args):
+            if staged:
+                return original_repair(*args)
+            staged.append(True)
+            return v, t, sources, keep.copy(), neighbours, {}, 0, 1
+
+        with patch.object(remesh, '_repair_candidate', side_effect=repair):
+            rv, rt, report = merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
+                                          domain, [], self.options, self.work)
+        self.assertEqual(report['attempt_stats'][0]['staged_boundary_faces_released'], 3)
+        self.assertEqual(report['band_width'], self.options['remesh_band_width'])
+        self.assertGreater(report['original_triangles_retained'], 0)
+        self.assertGreater(report['generated_triangles_reused'], 0)
+        validate_patch(rv, rt, domain)
+        self.assertTrue(audit(rv, rt)['valid'])
+        output = {tuple(sorted(map(tuple, rv[f]))) for f in rt}
+        for f in t[[5, -3]]:
+            self.assertIn(tuple(sorted(map(tuple, v[f]))), output)
 
     def test_backend_signal_stops_retry_and_keeps_diagnostics(self):
         from mesher.mesher_utls.mpi_remesh import BackendTerminated

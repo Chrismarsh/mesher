@@ -203,6 +203,12 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     inside an unmatched edge, within tolerance in XY, are considered. This is a
     geometric candidate search, not proof that the edge is an MPI seam.
     """
+    coincident, subdivisions = boundary_node_conflicts(vertices, triangles, neighbours, tolerance)
+    return len(coincident), subdivisions
+
+
+def boundary_node_conflicts(vertices, triangles, neighbours, tolerance):
+    """Return coincident boundary vertex IDs and the same edge subdivision iterator."""
     from scipy.spatial import cKDTree
 
     if not np.isfinite(tolerance) or tolerance < 0:
@@ -212,11 +218,11 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     b = triangles[faces, (slots + 2) % 3]
     ids = np.unique(np.concatenate((a, b)))
     if len(ids) < 2:
-        return 0, iter(())
+        return ids[:0], iter(())
     xy = vertices[ids, :2]
     tree = cKDTree(xy)
     distances, _ = tree.query(xy, k=2)
-    coincident = int(np.count_nonzero(distances[:, 1] <= tolerance))
+    coincident = ids[distances[:, 1] <= tolerance]
 
     def subdivisions():
         for face, slot, va, vb in zip(faces, slots, a, b):

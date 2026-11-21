@@ -222,6 +222,19 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         peak_active = 0
         reused = 0
         roundoff_parents = [set(), set()]
+
+        def release_disk_parents(chords):
+            count = 0
+            for values, selection, released in zip(inputs, active, roundoff_parents):
+                boundary = selected_boundary(*values, selection)
+                seeds = remesh._roundoff_owners(chords, ((face, xy) for face, _, xy, _ in boundary))
+                selection[seeds] = True
+                released.update(seeds)
+                count += len(seeds)
+            if count:
+                debug_log(options, f'Remeshing {count} disk faces along a roundoff-width boundary')
+            return count
+
         for attempt in range(limit):
             coverage, cuts, cut_vertices = [], [], []
             for values, selection in zip(inputs, active):
@@ -240,6 +253,11 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             if active_count > max_active:
                 raise remesh.PatchError(f'Seam active-face budget exceeded: {active_count} > {max_active}; '
                                        'increase mpi_remesh_max_active_faces only if memory permits')
+            if not outside.is_empty and attempt+1 < limit:
+                chords = remesh._roundoff_chords(local_domain)
+                if chords and release_disk_parents(chords):
+                    cached = None
+                    continue
             if cached is None:
                 av, at, a_ids = compact_region(*inputs[0][:2], active[0])
                 bv, bt, b_ids = compact_region(*inputs[1][:2], active[1])
@@ -276,17 +294,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                               for endpoints in cut_vertices]
                     cached = lv, lt, shared
             except remesh.PatchBoundaryRoundoff as exc:
-                affected = []
-                for values, selection in zip(inputs, active):
-                    boundary = selected_boundary(*values, selection)
-                    affected.append(remesh._roundoff_owners(exc.chords, ((face, xy) for face, _, xy, _ in boundary)))
-                if not any(affected) or attempt+1 == limit:
+                if attempt+1 == limit or not release_disk_parents(exc.chords):
                     raise
-                for selection, released, seeds in zip(active, roundoff_parents, affected):
-                    selection[seeds] = True
-                    released.update(seeds)
                 cached = None
-                debug_log(options, f'Remeshing {sum(map(len, affected))} disk faces along a roundoff-width boundary')
                 continue
             except remesh.PatchError as exc:
                 cause = exc

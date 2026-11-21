@@ -24,7 +24,7 @@ from shapely.geometry import LineString, Point, Polygon, box, mapping
 from shapely.geometry.polygon import orient
 from shapely.ops import polygonize
 
-from mesher.mesh_topology import MeshTopologyError, build_neighbours, boundary_subdivisions
+from mesher.mesh_topology import MeshTopologyError, build_neighbours, boundary_subdivisions, boundary_node_conflicts
 from mesher.mesher_utls.mpi_progress import debug_log
 
 ogr.UseExceptions()
@@ -82,8 +82,9 @@ class PatchQualityError(PatchError):
 
 
 class PatchBoundaryRoundoff(PatchError):
-    def __init__(self, message, chords):
+    def __init__(self, message, chords, owners=None):
         self.chords = chords
+        self.owners = owners
         super().__init__(message)
 
 
@@ -426,7 +427,7 @@ def _precision_interface_ids(linework, fixed_edges, epsilon):
     return np.unique(np.concatenate((np.repeat(owners, 2)[forward[0]], owners[reverse[1]])))
 
 
-def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
+def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, retained_edges=None):
     """Invoke the real C++ refinement criteria, including raster constraints."""
     started = time.perf_counter()
     domain = polygon_domain(domain)
@@ -464,6 +465,15 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=()):
                 'interface_ids': precision_ids.tolist(), 'coordinate_tolerance': epsilon}))
             (work / 'backend.log').write_text(f'Backend not started: {error}\n')
             raise error
+        if retained_edges is not None:
+            chords = _roundoff_chords(domain)
+            affected = _roundoff_owners(chords, retained_edges) if chords else []
+            if affected:
+                error = PatchBoundaryRoundoff(
+                    f'{len(affected)} retained faces border a roundoff-width cavity', chords, affected)
+                stats['preparation_seconds'] = time.perf_counter() - started
+                (work / 'backend.log').write_text(f'Backend not started: {error}\n')
+                raise error
         preparation_seconds = time.perf_counter() - started
         code, backend_seconds = _run_backend(command, work, options)
         stats_path = Path(str(output) + '.stats.json')
@@ -722,6 +732,33 @@ def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, opti
     return combined_v, result_t, sources, keep, neighbours, repairs['stats'], len(accepted), len(failed)
 
 
+def _retained_boundary_edges(vertices, triangles, adjacency):
+    for face, slot in zip(*np.nonzero(adjacency < 0)):
+        yield face, vertices[triangles[face, [(slot+1)%3, (slot+2)%3]], :2]
+
+
+def _conforming_remainder(vertices, triangles, neighbours, keep):
+    """Open local cavities around both sides of every staged boundary conflict."""
+    while True:
+        face_ids = np.flatnonzero(keep)
+        remaining = triangles[face_ids]
+        adjacency = _retained_neighbours(neighbours, keep)
+        coincident, hanging = boundary_node_conflicts(vertices, remaining, adjacency, 1e-8)
+        nodes = set(coincident)
+        coarse_faces = []
+        for face, _, interior_nodes in hanging:
+            coarse_faces.append(face)
+            nodes.update(interior_nodes)
+        if not nodes:
+            return mesh_coverage(vertices, remaining, adjacency)
+        # IDs from the audit index the compact remainder. Remove the edge's
+        # owner and every surviving triangle incident to an offending node.
+        # Re-audit the newly exposed boundary before promoting the candidate.
+        remove = np.isin(remaining, list(nodes)).any(axis=1)
+        remove[coarse_faces] = True
+        keep[face_ids[remove]] = False
+
+
 def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=None,
             retained_neighbours=None, result_neighbours=None):
     # Only exact XY equality to a retained vertex authorizes reusing its ID.
@@ -841,16 +878,19 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         record.update(cavity_area=cavity.area, retained_triangles=len(retained))
         debug_log(options, f'Remesh attempt {attempt+1}{label}: width={width:g}, retained={len(retained)}, cavity_area={cavity.area:g}')
         fixed, owners = [], []
-        if len(retained):
-            faces, slots = np.nonzero(adjacency < 0)
-            for f, s in zip(faces, slots):
-                line = LineString(joined_v[retained[f, [(s+1)%3, (s+2)%3]], :2])
-                if not physical_boundary.covers(line) and cavity.boundary.covers(line):
-                    fixed.append(line)
-                    owners.append(f)
+        cavity_boundary = cavity.boundary
+        for f, coords in _retained_boundary_edges(joined_v, retained, adjacency):
+            line = LineString(coords)
+            if not physical_boundary.covers(line) and cavity_boundary.covers(line):
+                fixed.append(line)
+                owners.append(f)
         record['preparation_seconds'] = time.perf_counter()-prepare_started
         try:
-            patch = mesher(cavity, constraints, options, directory, fixed)
+            if mesher is remesh_domain and len(retained) and attempt+1 < attempts:
+                boundary = _retained_boundary_edges(joined_v, retained, adjacency)
+                patch = mesher(cavity, constraints, options, directory, fixed, retained_edges=boundary)
+            else:
+                patch = mesher(cavity, constraints, options, directory, fixed)
             patch_v, patch_t = patch
             if isinstance(patch, PatchResult):
                 lineage_available = True
@@ -898,14 +938,14 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 # Validate the staged remainder BEFORE promoting it. Every
                 # preserved generated triangle passed backend quality; all
                 # children passed both quality and exact footprint checks.
-                remaining = t[selection]
-                remaining_neighbours = _retained_neighbours(candidate_neighbours, selection)
-                remainder = mesh_coverage(v, remaining, remaining_neighbours)
+                before = np.count_nonzero(selection)
+                remainder = _conforming_remainder(v, t, candidate_neighbours, selection)
+                boundary_faces = int(before - np.count_nonzero(selection))
+                if boundary_faces:
+                    record['staged_boundary_faces_released'] = boundary_faces
+                    debug_log(options, f'Releasing {boundary_faces} staged faces at boundary conflicts{label}')
                 if remainder.difference(domain).area > area_tolerance(domain):
                     raise PatchError('Staged repair extends beyond the domain')
-                coincident, hanging = boundary_subdivisions(v, remaining, remaining_neighbours, 1e-8)
-                if coincident or next(hanging, None) is not None:
-                    raise PatchError('Staged repair has unresolved hanging nodes')
                 joined_v, joined_t, sources, keep = v, t, provenance, selection
                 neighbours = candidate_neighbours
                 totals['local_repairs'] += 1
@@ -937,8 +977,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
                 # A rounded subdivision on a physical boundary is excluded
                 # from fixed. Its owner can be anywhere on the retained rim.
                 if len(retained) and attempt+1 < attempts:
-                    affected = _roundoff_owners(exc.chords, (
-                        (f, joined_v[retained[f, [(s+1)%3, (s+2)%3]], :2]) for f, s in zip(faces, slots)))
+                    affected = exc.owners or _roundoff_owners(exc.chords,
+                        _retained_boundary_edges(joined_v, retained, adjacency))
                     if affected:
                         keep[retained_ids[affected]] = False
                         record['roundoff_parents_released'] = len(affected)
