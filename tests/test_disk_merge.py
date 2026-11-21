@@ -1,4 +1,5 @@
 import json
+from itertools import product
 import os
 from pathlib import Path
 import tempfile
@@ -296,9 +297,12 @@ class DiskMergeTests(unittest.TestCase):
         cavity = shape(json.loads(path.read_text()))
         main, *slivers = cavity.geoms
         self.assertAlmostEqual(cavity.area, 992000646.605899, places=5)
-        self.check_roundoff_merge(cavity, slivers, [main], box(-1510000, 3560000, -1509800, 3560200),
-            ([-1524150.8290839698, 3516737.591255273, -1420000, 3574638.1809423035],
-             [-1420000, 3516737.591255273, -1400819.7600370413, 3574638.1809423035]), 30)
+        bounds = ([-1524150.8290839698, 3516737.591255273, -1420000, 3574638.1809423035],
+                  [-1420000, 3516737.591255273, -1400819.7600370413, 3574638.1809423035])
+        for tolerance in (0.25, 30, 500):
+            with self.subTest(tolerance_m=tolerance):
+                self.check_roundoff_merge(cavity, slivers, [main], box(-1510000, 3560000, -1509800, 3560200),
+                                          bounds, tolerance)
 
     def check_roundoff_merge(self, cavity, slivers, resolved_parts, island, bounds, tolerance):
         self.assertEqual(len(mpi_remesh._roundoff_chords(cavity)), len(slivers))
@@ -389,10 +393,11 @@ class DiskMergeTests(unittest.TestCase):
         ds = gdal.Open(self.options['dem_path'], gdal.GA_Update)
         ds.SetGeoTransform((-1821000, 1000, 0, 3678000, 0, -1000))
         ds = None
-        opts = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=20, remesh_max_attempts=1)
-
-        for disk in (False, True):
-            with self.subTest(disk=disk), patch.object(mpi_remesh, '_run_backend', wraps=mpi_remesh._run_backend) as backend:
+        for tolerance, disk in product((0.25, 20, 500), (False, True)):
+            opts = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=tolerance,
+                        remesh_max_attempts=1)
+            with self.subTest(tolerance_m=tolerance, disk=disk), patch.object(
+                    mpi_remesh, '_run_backend', wraps=mpi_remesh._run_backend) as backend:
                 if disk:
                     report = self.merge(**opts)
                     self.assertEqual(report['roundoff_disk_parents'], 1)

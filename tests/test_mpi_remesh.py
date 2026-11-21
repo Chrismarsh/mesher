@@ -944,11 +944,14 @@ class CgalCavityTests(unittest.TestCase):
         streams = [LineString([tip, (15, 10)]), LineString([tip, (15, 10.5)])]
         a, ta = grid(0, 10, 0, 20, 2)
         b, tb = grid(10, 20, 0, 20, 2)
-        with patch.object(remesh, '_run_backend', wraps=remesh._run_backend) as backend:
-            with self.assertRaisesRegex(remesh.PhysicalConstraintAngle, '5.71059 degrees'):
-                merge_cavity(a, ta, [0, 0, 10, 20], b, tb, [10, 0, 20, 20],
-                    domain, streams, dict(self.options, remesh_band_width=8), self.work)
-            self.assertEqual(backend.call_count, 1)
+        for tolerance in (0.25, 1, 20, 30, 100, 500):
+            options = dict(self.options, remesh_band_width=8, max_tolerance=tolerance)
+            with self.subTest(tolerance_m=tolerance), patch.object(
+                    remesh, '_run_backend', wraps=remesh._run_backend) as backend:
+                with self.assertRaisesRegex(remesh.PhysicalConstraintAngle, '5.71059 degrees'):
+                    merge_cavity(a, ta, [0, 0, 10, 20], b, tb, [10, 0, 20, 20],
+                                 domain, streams, options, self.work)
+                self.assertEqual(backend.call_count, 1)
 
     def notch_options(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)

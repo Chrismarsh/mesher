@@ -1,0 +1,35 @@
+name: Remesh tolerances
+
+on: [pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 30
+    steps:
+      - name: Install native and Python test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates cmake g++ make \
+            libcgal-dev libgdal-dev libboost-filesystem-dev libboost-program-options-dev \
+            libmetis-dev python3-gdal python3-numpy python3-scipy python3-shapely
+      - uses: actions/checkout@v4
+      - name: Build and test the native backend
+        run: |
+          cmake -S . -B build -DBUILD_TESTING=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Check terrain tolerances and TVC regressions
+        env:
+          PYTHONPATH: src:tests
+          OPENBLAS_NUM_THREADS: 1
+        run: |
+          export MESHER_TEST_EXE="$PWD/build/build-bin/meshercxx"
+          python3 -m unittest -v test_remesh_tolerances \
+            test_disk_merge.DiskMergeTests.test_coarse_tvc_roundoff_before_only_permitted_solve \
+            test_disk_merge.DiskMergeTests.test_unbisectable_corner_releases_its_parent_before_native_refinement \
+            test_mpi_remesh.CgalCavityTests.test_physical_stream_angle_stops_after_one_merge_attempt
