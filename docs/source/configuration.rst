@@ -682,13 +682,10 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     :type: int
     :default: 12
 
-    Maximum cavity attempts within one loaded seam region, including final
-    interface recovery, and maximum expansions of that region. Recovery absorbs
-    connected retained components only inside the loaded region. A changed
-    interface with a disk-backed interior loads additional neighbouring faces;
-    a completed local result is reused during that expansion. The vertex and
-    active-face budgets and all quality checks still apply. A value of 1 allows
-    no recovery or expansion. Exhaustion fails without publishing a candidate.
+    Maximum number of attempts within a loaded seam region, including final
+    interface recovery. The same limit applies separately to the number of
+    seam-region attempts, including the first solve. A value of 1 allows a
+    single solve at each level. Exhaustion leaves any previous output intact.
 
 .. confval:: mpi_remesh_max_vertices
 
@@ -850,11 +847,14 @@ The cavity is the exact target domain minus their coverage. An outer-interface
 check requires identical edge endpoints before joining the local result to the
 interiors; no approximate welding or relaxed quality criteria are used.
 
-If that check finds a split edge, the owning outside faces and neighbours are
-loaded. Valid local work is retained for the next attempt. Strict failures may
-require a larger region; the active-face limit prevents an unbounded fallback
-to loading the whole model. Physical holes, constraints and disconnected pieces
-remain part of the same coverage checks.
+If a disk edge has been split, Mesher first tries to subdivide its owning
+triangle using the exact vertices from the seam. Each child must satisfy the
+native quality criteria, and the new boundary must match the remaining disk
+edges. When this repair fails, Mesher loads neighbouring faces and reuses the
+completed local mesh. On the last expansion it first reserves space for the
+usual collars. It then loads the connected disk interiors touching each collar
+if they fit the remaining active-face budget. Unrelated components stay on
+disk. The final mesh goes through the usual topology checks.
 
 Global topology checks and final compaction still make sequential passes over
 the mesh, using disk-backed tables and bounded edge-sorting runs. NPZ output is
@@ -867,7 +867,10 @@ Merge metadata reports ``disk_interior_faces``, ``peak_loaded_faces`` (input
 region size, excluding subsequently generated candidates), ``seam_attempts``
 and ``seam_work_reused`` (faces carried into expansion attempts, not unique final
 faces). Existing refinement counters describe the final local repair, with
-prior successful local reports under ``seam_attempt_reports``.
+prior successful local reports under ``seam_attempt_reports``. Each report counts
+``unmatched_disk_edges`` before disk-side repair. A successful subdivision
+records ``disk_parents_subdivided``. Expansions record ``disk_expansion_faces``
+and whether they closed affected disk components (``closing_disk_components``).
 
 ``tests/benchmark_streaming.py`` measures export heap allocations separately
 from process RSS. In a synthetic 100,000 versus 1,000,000-face export, traced

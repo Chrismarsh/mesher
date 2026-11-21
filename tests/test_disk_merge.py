@@ -104,6 +104,44 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(large['disk_interior_faces'], 15000)
         self.assert_valid()
 
+    @staticmethod
+    def split_left_cut(v, t, fraction):
+        # Split one actual boundary edge on the left side of the seam. The
+        # adjacent disk triangle has its right angle at the lower endpoint.
+        neighbours = mpi_remesh.build_neighbours(t, len(v), v)
+        for face, slot in zip(*np.nonzero(neighbours < 0)):
+            a, b = t[face, [(slot+1) % 3, (slot+2) % 3]]
+            if not (20 < v[a, 0] < 40 and v[a, 0] == v[b, 0]):
+                continue
+            low, high = sorted((a, b), key=lambda i: v[i, 1])
+            point = v[low] + fraction * (v[high] - v[low])
+            tip = t[face, slot]
+            child = len(v)
+            return (np.vstack((v, point)),
+                    np.vstack((np.delete(t, face, axis=0), [[tip, a, child], [tip, child, b]])), point)
+        return v, t, None
+
+    def test_split_disk_parent_matches_seam_in_one_attempt(self):
+        original = mpi_remesh.merge_cavity
+        points = []
+        def split_boundary(*args, **kwargs):
+            v, t, report = original(*args, **kwargs)
+            if not points:
+                # Bisect the 45 degree angle of the disk triangle.
+                v, t, point = self.split_left_cut(v, t, np.sqrt(2) - 1)
+                self.assertIsNotNone(point)
+                points.append(point)
+            return v, t, report
+
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary):
+            report = self.merge()
+        self.assertEqual(report['seam_attempts'], 1)
+        self.assertEqual(report['disk_parents_subdivided'], 1)
+        self.assertEqual(report['unmatched_disk_edges'], 1)
+        self.assertGreater(report['disk_interior_faces'], 1200)
+        v, _ = self.assert_valid()
+        self.assertEqual(np.count_nonzero((v == points[0]).all(axis=1)), 1)
+
     def test_changed_outer_interface_expands_and_reuses_generated_work(self):
         original = mpi_remesh.merge_cavity
         calls = []
@@ -111,18 +149,9 @@ class DiskMergeTests(unittest.TestCase):
             calls.append(kwargs.get('initial_keep'))
             v, t, report = original(*args, **kwargs)
             if len(calls) == 1:
-                neighbours = mpi_remesh.build_neighbours(t, len(v), v)
-                faces, slots = np.nonzero(neighbours < 0)
-                for f, s in zip(faces, slots):
-                    a, b = t[f, [(s+1)%3, (s+2)%3]]
-                    if np.all((v[[a,b], 0] > 1) & (v[[a,b], 0] < 79)) and v[a,0] == v[b,0]:
-                        midpoint = (v[a]+v[b])/2
-                        nv = len(v)
-                        v = np.vstack((v, midpoint))
-                        t = np.vstack((np.delete(t, f, axis=0), [[t[f,s], a, nv], [t[f,s], nv, b]]))
-                        break
-                else:
-                    self.fail('fixture has no disk interface')
+                # The midpoint would create a disk child below the angle bound.
+                v, t, point = self.split_left_cut(v, t, .5)
+                self.assertIsNotNone(point)
             return v, t, report
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary):
             report = self.merge()
@@ -132,6 +161,52 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['seam_work_reused'], 0)
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
+
+    def moving_cut(self, splits):
+        original = mpi_remesh.merge_cavity
+        def split_boundary(*args, **kwargs):
+            v, t, report = original(*args, **kwargs)
+            v, t, point = self.split_left_cut(v, t, .5)
+            splits.append(point is not None)
+            return v, t, report
+        return patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary)
+
+    def test_repeated_moving_cut_closes_only_affected_interior_within_budget(self):
+        splits = []
+        with self.moving_cut(splits):
+            report = self.merge(remesh_max_attempts=3, remesh_max_active_faces=1000)
+        self.assertEqual(splits, [True, True, False])
+        self.assertEqual(report['seam_attempts'], 3)
+        self.assertTrue(report['seam_attempt_reports'][-1]['closing_disk_components'])
+        self.assertLessEqual(report['peak_loaded_faces'], 1000)
+        self.assertGreater(report['disk_interior_faces'], 600)
+        self.assert_valid()
+
+    def test_disconnected_interior_on_same_tile_does_not_consume_recovery_budget(self):
+        gap = box(19, 0, 20, 10)
+        self.domain = self.domain.difference(gap)
+        with np.load(self.inputs[0]) as tile:
+            v, t = tile['verts'], tile['tris']
+        x = v[t, 0].mean(axis=1)
+        np.savez(self.inputs[0], verts=v, tris=t[(x < 19) | (x > 20)])
+
+        with self.moving_cut([]):
+            report = self.merge(remesh_max_attempts=3, remesh_max_active_faces=530)
+        self.assertTrue(report['seam_attempt_reports'][-1]['closing_disk_components'])
+        self.assertLessEqual(report['peak_loaded_faces'], 530)
+        self.assertGreater(report['disk_interior_faces'], 1100)
+        self.assert_valid()
+
+    def test_exhausted_moving_cut_names_inputs_and_preserves_previous_output(self):
+        splits = []
+        self.output.write_bytes(b'previous completed mesh')
+        with self.moving_cut(splits), self.assertRaises(mpi_remesh.PatchError) as failure:
+            self.merge(remesh_max_attempts=3, remesh_max_active_faces=500)
+        self.assertRegex(str(failure.exception), r'Seam-region expansion exhausted.*merged.*unmatched disk edges')
+        for path in self.inputs:
+            self.assertIn(str(path), str(failure.exception))
+        self.assertEqual(splits, [True, True, True])
+        self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 
     def test_active_budget_is_checked_before_materialization_and_keeps_previous_output(self):
         self.output.write_bytes(b'previous completed mesh')
