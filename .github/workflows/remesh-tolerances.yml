@@ -30,6 +30,7 @@ jobs:
         run: |
           export MESHER_TEST_EXE="$PWD/build/build-bin/meshercxx"
           python3 -m unittest -v test_remesh_tolerances \
+            test_disk_merge.DiskMergeTests.test_final_cached_repair_handles_a_new_cut_on_the_other_tile \
             test_disk_merge.DiskMergeTests.test_coarse_tvc_roundoff_before_only_permitted_solve \
             test_disk_merge.DiskMergeTests.test_unbisectable_corner_releases_its_parent_before_native_refinement \
             test_mpi_remesh.CgalCavityTests.test_physical_stream_angle_stops_after_one_merge_attempt

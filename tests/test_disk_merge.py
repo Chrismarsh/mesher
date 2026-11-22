@@ -106,13 +106,12 @@ class DiskMergeTests(unittest.TestCase):
         self.assert_valid()
 
     @staticmethod
-    def split_left_cut(v, t, fraction):
-        # Split one actual boundary edge on the left side of the seam. The
-        # adjacent disk triangle has its right angle at the lower endpoint.
+    def split_vertical_cut(v, t, fraction, x_range=(20, 40)):
+        # Split one vertical boundary edge strictly inside the requested tile.
         neighbours = mpi_remesh.build_neighbours(t, len(v), v)
         for face, slot in zip(*np.nonzero(neighbours < 0)):
             a, b = t[face, [(slot+1) % 3, (slot+2) % 3]]
-            if not (20 < v[a, 0] < 40 and v[a, 0] == v[b, 0]):
+            if not (x_range[0] < v[a, 0] < x_range[1] and v[a, 0] == v[b, 0]):
                 continue
             low, high = sorted((a, b), key=lambda i: v[i, 1])
             point = v[low] + fraction * (v[high] - v[low])
@@ -129,7 +128,7 @@ class DiskMergeTests(unittest.TestCase):
             v, t, report = original(*args, **kwargs)
             if not points:
                 # Bisect the 45 degree angle of the disk triangle.
-                v, t, point = self.split_left_cut(v, t, np.sqrt(2) - 1)
+                v, t, point = self.split_vertical_cut(v, t, np.sqrt(2) - 1)
                 self.assertIsNotNone(point)
                 points.append(point)
             return v, t, report
@@ -151,7 +150,7 @@ class DiskMergeTests(unittest.TestCase):
             v, t, report = original(*args, **kwargs)
             if len(calls) == 1:
                 # The midpoint would create a disk child below the angle bound.
-                v, t, point = self.split_left_cut(v, t, .5)
+                v, t, point = self.split_vertical_cut(v, t, .5)
                 self.assertIsNotNone(point)
             return v, t, report
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary):
@@ -167,7 +166,7 @@ class DiskMergeTests(unittest.TestCase):
         original = mpi_remesh.merge_cavity
         def split_boundary(*args, **kwargs):
             v, t, report = original(*args, **kwargs)
-            v, t, point = self.split_left_cut(v, t, .5)
+            v, t, point = self.split_vertical_cut(v, t, .5)
             splits.append(point is not None)
             return v, t, report
         return patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary)
@@ -181,6 +180,36 @@ class DiskMergeTests(unittest.TestCase):
         self.assertTrue(report['seam_attempt_reports'][-1]['closing_disk_components'])
         self.assertLessEqual(report['peak_loaded_faces'], 1000)
         self.assertGreater(report['disk_interior_faces'], 600)
+        self.assert_valid()
+
+    def test_final_cached_repair_handles_a_new_cut_on_the_other_tile(self):
+        # A cached candidate split the left disk cut. On its last solve CGAL
+        # can instead split the previously matching right cut. Both collars
+        # fit, but an unrelated island on the right must stay on disk.
+        gap = box(60, 0, 61, 10)
+        self.domain = self.domain.difference(gap)
+        with np.load(self.inputs[1]) as tile:
+            v, t = tile['verts'], tile['tris']
+        x = v[t, 0].mean(axis=1)
+        np.savez(self.inputs[1], verts=v, tris=t[(x < 60) | (x > 61)])
+        island_faces = int((x > 61).sum())
+
+        original = mpi_remesh.merge_cavity
+        splits = []
+        def split_opposite_sides(*args, **kwargs):
+            v, t, report = original(*args, **kwargs)
+            side = (20, 40) if not splits else (40, 60)
+            v, t, point = self.split_vertical_cut(v, t, .5, side)
+            splits.append(point is not None)
+            return v, t, report
+
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_opposite_sides):
+            report = self.merge(remesh_max_attempts=2, remesh_max_active_faces=1300)
+        self.assertEqual(splits, [True, False])
+        self.assertEqual(report['seam_attempts'], 2)
+        self.assertGreater(report['seam_work_reused'], 0)
+        self.assertLessEqual(report['peak_loaded_faces'], 1300)
+        self.assertEqual(report['disk_interior_faces'], island_faces)
         self.assert_valid()
 
     def test_disconnected_interior_on_same_tile_does_not_consume_recovery_budget(self):
@@ -243,6 +272,7 @@ class DiskMergeTests(unittest.TestCase):
         self.assertRegex(str(failure.exception), r'Seam-region expansion exhausted.*merged.*unmatched disk edges')
         for path in self.inputs:
             self.assertIn(str(path), str(failure.exception))
+        self.assertIn('active_face_limit=500', str(failure.exception))
         self.assertEqual(splits, [True, True, True])
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 

@@ -310,10 +310,13 @@ and criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
 ``mpi_global_lloyd`` from MPI configurations; ``mpi_global_lloyd=0`` remains a
 compatibility no-op. Serial Lloyd smoothing is still available via ``lloyd_itr``.
 
-This change addresses seam geometry and correctness. Pairwise stages still load
-the two tile/group arrays, and the final export remains in memory. It does not
-yet implement streaming assembly. Large cavities and complex boundaries can be
-expensive; the logs expose retries rather than silently accepting a bad join.
+Pairwise merges keep unaffected interiors on disk. Before the last seam
+attempt, the worker checks both input tiles for remaining artificial cuts,
+including edges that matched the previous candidate. It loads cut-connected
+faces that fit within ``mpi_remesh_max_active_faces``, counting the cached mesh
+and its pending expansion against that limit. Disconnected interiors stay on
+disk. The worker publishes the merged archive after verifying the interface
+edges and the joined mesh topology.
 
 Validation tests
 ~~~~~~~~~~~~~~~
