@@ -112,6 +112,9 @@ def regularize_inputs(args):
             except RuntimeError:
                 print(f'Rebuilding unreadable projected parameter: {out_name}', flush=True)
 
+        if reuse_projected_parameters == 'resume':
+            raise RuntimeError(f'Missing or unreadable projected parameter required for resume: {out_name}')
+
         # Publish only after warp and optional filling succeed, including when two ranks
         # use the same source and settings for different parameters.
         with tempfile.TemporaryDirectory(dir=parameter_dir) as work_dir:

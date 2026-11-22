@@ -15,6 +15,10 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import argparse
+from contextlib import ExitStack
+from pathlib import Path
+
 from osgeo import gdal, ogr, osr
 import subprocess
 import re
@@ -37,6 +41,7 @@ from mpi4py import MPI
 
 
 from . import mesher_utls
+from .mesher_utls import mpi_resume
 from .mesh_store import (BATCH_SIZE, batches, disk_array, copy_array, open_mesh_arrays,
                          check_boundary_geometry, dump_json, write_vtu)
 from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
@@ -55,17 +60,20 @@ MESH_PATCH = "0"
 
 
 def main():
-    # load user configurable parameters here
-    # Check user defined configuration file
+    parser = argparse.ArgumentParser(description='Generate a terrain mesh')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--resume', dest='resume', action='store_const', const='resume',
+                       help='continue an interrupted MPI tiling or merge run')
+    modes.add_argument('--resume-legacy', dest='resume', action='store_const', const='legacy',
+                       help='adopt older MPI intermediates using their original configuration')
+    parser.add_argument('configfile')
+    args = parser.parse_args()
+    with ExitStack() as resources:
+        _run(args.configfile, args.resume, resources)
 
-    if len(sys.argv) == 1:
-        print('ERROR: meshgen.py requires one argument [configuration file] (i.e. meshgen.py Bow.py)')
-        return
 
+def _run(configfile, resume, resources):
     run_started = time.perf_counter()
-    # Get name of configuration file/module
-    configfile = sys.argv[-1]
-
     # Read configuration
     X, bufferDist, clip_to_shp, constraints, dem_filename, do_smoothing, errormetric, extent, fill_holes, \
         initial_conditions, lloyd_itr, max_area, max_smooth_iter, max_tolerance, mesher_path, no_simplify_buffer,\
@@ -92,11 +100,43 @@ def main():
     parameter_dir = os.path.join(base_dir, 'projected_parameters')
     reuse_projected_parameters = getattr(X, 'reuse_projected_parameters', False)
 
+    if resume and (not mpi_mesh or reuse_mesh):
+        raise ValueError('Partial resume requires mpi_mesh=True and reuse_mesh=False')
+    if resume and not os.path.isdir(base_dir):
+        raise ValueError(f'No interrupted MPI run in {base_dir}')
+    if mpi_mesh:
+        resources.enter_context(mpi_resume.output_lock(base_dir))
+    checkpoint_path = Path(base_dir) / (base_name + '_mpi_checkpoint.json')
+    layout_path = Path(base_dir) / (base_name + '_mpi_layout.json')
+    if mpi_mesh and reuse_mesh and checkpoint_path.exists() and not layout_path.exists():
+        raise ValueError('This MPI merge is incomplete. Set reuse_mesh=False and use --resume.')
+    previous = mpi_resume.read_plan(checkpoint_path, resume)
+    source_recipe = None
+    if mpi_mesh and not reuse_mesh:
+        sources = [dem_filename] + ([clip_to_shp] if clip_to_shp else [])
+        sources.extend(data['file'] for data in constraints.values())
+        parameter_sources = {}
+        for key, data in parameter_files.items():
+            files = data['file'] if isinstance(data['file'], list) else [data['file']]
+            sources.extend(files)
+            parameter_sources[key] = [files, data['method']]
+        sources.extend(data['file'] for data in initial_conditions.values() if 'tolerance' in data)
+        source_recipe = dict(files=mpi_resume.input_files(sources), dem=os.path.realpath(dem_filename),
+                             parameters=parameter_sources,
+                             boundary=[os.fspath(clip_to_shp) if clip_to_shp else None,
+                                       list(map(float, extent)) if extent is not None else None,
+                                       bool(simplify), float(simplify_tol), bool(no_simplify_buffer), float(bufferDist)],
+                             projection=[bool(use_input_prj), wkt_out],
+                             smoothing=[bool(do_smoothing), int(max_smooth_iter), float(scaling_factor), bool(fill_holes)],
+                             constraints=[[key, data['file'], data.get('simplify')] for key, data in constraints.items()])
+        if previous and previous['recipe']['sources'] != source_recipe:
+            raise ValueError('MPI checkpoint is incompatible with the source inputs or preprocessing settings')
+
     if not os.path.isdir(base_dir) and reuse_mesh:
         raise Exception(f"Using reuse_mesh=True, however the directory {base_dir} does not exist")
 
     # A fresh mesh needs fresh intermediates, even when the parameter rasters are reused.
-    if os.path.isdir(base_dir) and not reuse_mesh:
+    if os.path.isdir(base_dir) and not (reuse_mesh or resume):
         if os.path.islink(os.path.normpath(base_dir)):
             raise OSError(f'Cannot clean a symlinked mesh directory: {base_dir}')
         for entry in os.scandir(base_dir):
@@ -139,36 +179,9 @@ def main():
     else:
         output_file_name = '_projected.tif'
 
-    ext_str = ''
-
-    # clip to a user-specified extent
-    if extent is not None:
-        wkt = src_ds.GetProjection()
-        srs = osr.SpatialReference()
-
-        srs.ImportFromWkt(wkt)
-
-        ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
-
-    cutline_cmd = ''
-    if clip_to_shp:
-        cutline_cmd = f' -cutline {clip_to_shp} -crop_to_cutline '
-
-    e = 'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 %s -t_srs \"%s\"' + ext_str
-    subprocess.check_call([e % (gdal_prefix,
-                                dem_filename, base_dir + base_name + output_file_name, cutline_cmd, srs_out.ExportToProj4())],
-                          shell=True)
-
-    # fill NoData holes in the source DEM
-    # default is 5 * resolution
-    if fill_holes:
-        gt = src_ds.GetGeoTransform()
-
-        pixel_width = gt[1]
-        pixel_height = gt[5]
-
-        dist = max([pixel_height, pixel_width]) * 5
-        fill_nodata(base_dir + base_name + output_file_name, int(dist))
+    if not resume:
+        project_dem(src_ds, dem_filename, base_dir + base_name + output_file_name, gdal_prefix,
+                    extent, clip_to_shp, srs_out, fill_holes)
 
     src_ds = gdal.Open(base_dir + base_name + output_file_name)
 
@@ -191,7 +204,7 @@ def main():
 
 
     # DEM smoothing passes
-    if do_smoothing:
+    if do_smoothing and not resume:
         for itr in range(max_smooth_iter):
 
             in_name = base_dir + base_name + '_projected_%d.tif' % itr
@@ -238,8 +251,9 @@ def main():
     total_weights_param, use_weights_param = regularize_inputs(parameter_dir, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
                                                                srs_out, xmax, xmin, ymax, ymin, fill_holes,
-                                                               MPI_exec_str, MPI_nworkers, reuse_projected_parameters,
-                                                               nworkers_gdal, getattr(X, 'MPI_gdal_exec_str', None))
+                                                               MPI_exec_str, MPI_nworkers, 'resume' if resume else reuse_projected_parameters,
+                                                               nworkers_gdal, getattr(X, 'MPI_gdal_exec_str', None),
+                                                               prepared=previous['recipe']['parameters'] if previous else None)
 
     total_weights_ic, use_weights_ic = 0, False
 
@@ -262,6 +276,217 @@ def main():
 
     dem = src_ds.GetRasterBand(1)
 
+    if resume:
+        buffered = simplify and not no_simplify_buffer
+        outputBufferfn = base_dir + ('buffered_' if buffered else '') + plgs_shp
+        for data in constraints.values():
+            stem = Path(data['file']).stem
+            data['filename'] = base_dir + ('clip_' if buffered else '') + 'constraint_' + stem + '.geojson'
+    else:
+        outputBufferfn, poly_file = prepare_domain_files(base_dir, base_name, plgs_shp, src_ds, dem,
+            gdal_prefix, srs_out, wkt_out, simplify, simplify_tol, no_simplify_buffer, bufferDist, constraints)
+
+    print(f'Preprocessing took {time.perf_counter() - run_started:.2f} s')
+    meshing_started = time.perf_counter()
+    final_npz_path = None
+    if mpi_mesh and reuse_mesh:
+        final_npz_path = compute_mpi_final_npz_path(base_dir, base_name, MPI_nworkers)
+        if not os.path.exists(final_npz_path):
+            raise RuntimeError(
+                f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
+                'Ensure the previous MPI mesh run completed; legacy outputs without a layout manifest require the original MPI_nworkers.'
+            )
+        validate_mpi_mesh_metadata(final_npz_path)
+
+    # if we aren't reusing the mesh, generate a new one
+    if not reuse_mesh:
+        print(f'mpi_mesh={mpi_mesh}')
+        if mpi_mesh:
+            final_npz_path = run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax,
+                                             mesher_path, outputBufferfn, constraints, parameter_files,
+                                             initial_conditions, max_area, min_area, max_tolerance,
+                                             errormetric, use_weights, topo_weight,
+                                             weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
+                                             mesher_debug=mesher_debug, remesh_options=mpi_remesh_options,
+                                             num_tiles=num_tiles, resume=resume, previous=previous,
+                                             source_recipe=source_recipe)
+        else:
+            execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
+                      (mesher_path,
+                       base_dir + poly_file,
+                       max_tolerance,
+                       base_dir + base_name + '_projected.tif',
+                       max_area,
+                       min_area,
+                       errormetric,
+                       lloyd_itr,
+                       base_dir + 'interior_PLGS.geojson'
+                       )
+
+            if is_geographic:
+                execstr += ' --is-geographic true'
+
+            if use_weights:
+                execstr += ' --weight %s' % topo_weight
+                execstr += ' --weight-threshold %s' % weight_threshold
+            if mesher_debug:
+                execstr += ' --debug true'
+
+            for key, data in parameter_files.items():
+                if 'tolerance' in data:
+                    if data['method'] == 'mode':
+                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data[
+                            'tolerance'])  # we need [0] on raster as it's been made iterable by this point
+                    else:
+                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
+                if use_weights and 'weight' in data:
+                    execstr += ' --weight %s' % data['weight']
+
+            for key, data in initial_conditions.items():
+                if 'tolerance' in data:
+                    if data['method'] == 'mode':
+                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
+                    else:
+                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
+                if use_weights and 'weight' in data:
+                    execstr += ' --weight %s' % data['weight']
+
+            print(execstr)
+            subprocess.check_call(execstr, shell=True)
+
+    mesh_action = 'Mesh reuse' if reuse_mesh else 'Meshing'
+    print(f'{mesh_action} took {time.perf_counter() - meshing_started:.2f} s')
+    mesh_preparation_started = time.perf_counter()
+
+    # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
+    # remove them
+    keys_to_drop = []
+    for key, data in parameter_files.items():
+        if 'drop' in data and data['drop'] == True:
+            keys_to_drop.append(key)
+    for key in keys_to_drop:
+        print('Dropping parameter ' + key + ' and not writing to mesh due to user request')
+        del parameter_files[key]
+
+    # The preparation store lives through export; workers map the same files.
+    with tempfile.TemporaryDirectory(prefix='mesher-prepared-', dir=base_dir) as preparation_dir:
+        if mpi_mesh:
+            if final_npz_path is None:
+                raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
+            with open_mesh_arrays(final_npz_path, preparation_dir) as (verts, tris):
+                mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose,
+                                              directory=preparation_dir)
+        else:
+            mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs,
+                                               is_geographic, verbose, directory=preparation_dir)
+
+        print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
+        ics = {key: [] for key in initial_conditions}
+
+        gt = src_ds.GetGeoTransform()
+
+
+        print('Computing parameters and initial conditions')
+
+        # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
+        start_time = time.perf_counter()
+
+        parameter_args = {
+            'gt': gt,
+            'is_geographic': is_geographic,
+            'parameter_files': parameter_files,
+            'initial_conditions': initial_conditions,
+            'RasterXSize': src_ds.RasterXSize,
+            'RasterYSize': src_ds.RasterYSize,
+            'srs_proj4': srs_out.ExportToProj4(),
+            'use_exactextract': use_exactextract,
+            'batch_size': parameter_batch_size,
+        }
+        params = run_parameterization(mesh, parameter_args, base_dir,
+                                      MPI_exec_str, MPI_nworkers, configfile,
+                                      output_dir=preparation_dir)
+
+        for key, data in parameter_files.items():
+            parameter_files[key]['file'] = None
+
+        for key, data in initial_conditions.items():
+            initial_conditions[key]['file'] = None
+
+        mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
+
+        print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
+
+        export_started = time.perf_counter()
+        output_name = base_name + '_mpi' if mpi_mesh else base_name
+
+        if output_write_vtu:
+            print('Writing vtu file...')
+            write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
+
+        if output_write_shp:
+            print('Writing shp file...')
+            write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
+
+
+        print('Saving mesh to file ' + output_name + '.mesh')
+        with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
+            dump_json(mesh, outfile)
+
+        # pdb.set_trace()
+        if write_param_per_file:
+            print('Saving parameters to individual files')
+            for key, data in params.items():
+                out_path = user_output_dir + f'{output_name}.param.{key}.json'
+                with open(out_path, 'w') as outfile:
+                    dump_json({key: data}, outfile)
+        else:
+            print('Saving parameters to file ' + output_name + '.param')
+            with open(user_output_dir + output_name + '.param', 'w') as outfile:
+                dump_json(params, outfile)
+
+        print('Saving initial conditions  to file ' + output_name + '.ic')
+        with open(user_output_dir + output_name + '.ic', 'w') as outfile:
+            dump_json(ics, outfile)
+        print(f'Export took {time.perf_counter() - export_started:.2f} s')
+        print(f'Total run took {time.perf_counter() - run_started:.2f} s')
+        print('Done')
+
+
+def project_dem(src_ds, dem_filename, output, gdal_prefix, extent, clip_to_shp, srs_out, fill_holes):
+    ext_str = ''
+
+    # clip to a user-specified extent
+    if extent is not None:
+        wkt = src_ds.GetProjection()
+        srs = osr.SpatialReference()
+
+        srs.ImportFromWkt(wkt)
+
+        ext_str = ' -te %s %s %s %s -te_srs \"%s\" ' % (extent[0], extent[1], extent[2], extent[3], srs.ExportToProj4())
+
+    cutline_cmd = ''
+    if clip_to_shp:
+        cutline_cmd = f' -cutline {clip_to_shp} -crop_to_cutline '
+
+    e = 'GDAL_CACHEMAX=\"5%%\" %sgdalwarp %s %s -ot Float32 -multi -overwrite -dstnodata -9999 %s -t_srs \"%s\"' + ext_str
+    subprocess.check_call([e % (gdal_prefix,
+                                dem_filename, output, cutline_cmd, srs_out.ExportToProj4())],
+                          shell=True)
+
+    # fill NoData holes in the source DEM
+    # default is 5 * resolution
+    if fill_holes:
+        gt = src_ds.GetGeoTransform()
+
+        pixel_width = gt[1]
+        pixel_height = gt[5]
+
+        dist = max([pixel_height, pixel_width]) * 5
+        fill_nodata(output, int(dist))
+
+
+def prepare_domain_files(base_dir, base_name, plgs_shp, src_ds, dem, gdal_prefix, srs_out, wkt_out,
+                         simplify, simplify_tol, no_simplify_buffer, bufferDist, constraints):
     # Create a mask raster that has a uniform value for all cells read all elevation data. Might be worth changing to
     # the for-loop approach we use below so we don't have to read in all into ram. some raster
     Z = dem.ReadAsArray()
@@ -522,169 +747,7 @@ def main():
 
         f.write('0\n')
 
-    print(f'Preprocessing took {time.perf_counter() - run_started:.2f} s')
-    meshing_started = time.perf_counter()
-    final_npz_path = None
-    if mpi_mesh and reuse_mesh:
-        final_npz_path = compute_mpi_final_npz_path(base_dir, base_name, MPI_nworkers)
-        if not os.path.exists(final_npz_path):
-            raise RuntimeError(
-                f'reuse_mesh=True and mpi_mesh=True, but stitched mesh not found at {final_npz_path}. '
-                'Ensure the previous MPI mesh run completed; legacy outputs without a layout manifest require the original MPI_nworkers.'
-            )
-        validate_mpi_mesh_metadata(final_npz_path)
-
-    # if we aren't reusing the mesh, generate a new one
-    if not reuse_mesh:
-        print(f'mpi_mesh={mpi_mesh}')
-        if mpi_mesh:
-            final_npz_path = run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax,
-                                             mesher_path, outputBufferfn, constraints, parameter_files,
-                                             initial_conditions, max_area, min_area, max_tolerance,
-                                             errormetric, use_weights, topo_weight,
-                                             weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                                             mesher_debug=mesher_debug, remesh_options=mpi_remesh_options,
-                                             num_tiles=num_tiles)
-        else:
-            execstr = '%s --poly-file %s --tolerance %s --raster %s --area %s --min-area %s --error-metric %s --lloyd %d --interior-plgs-file %s' % \
-                      (mesher_path,
-                       base_dir + poly_file,
-                       max_tolerance,
-                       base_dir + base_name + '_projected.tif',
-                       max_area,
-                       min_area,
-                       errormetric,
-                       lloyd_itr,
-                       base_dir + 'interior_PLGS.geojson'
-                       )
-
-            if is_geographic:
-                execstr += ' --is-geographic true'
-
-            if use_weights:
-                execstr += ' --weight %s' % topo_weight
-                execstr += ' --weight-threshold %s' % weight_threshold
-            if mesher_debug:
-                execstr += ' --debug true'
-
-            for key, data in parameter_files.items():
-                if 'tolerance' in data:
-                    if data['method'] == 'mode':
-                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'][0], data[
-                            'tolerance'])  # we need [0] on raster as it's been made iterable by this point
-                    else:
-                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
-                if use_weights and 'weight' in data:
-                    execstr += ' --weight %s' % data['weight']
-
-            for key, data in initial_conditions.items():
-                if 'tolerance' in data:
-                    if data['method'] == 'mode':
-                        execstr += ' --category-raster %s --category-frac %s' % (data['filename'], data['tolerance'])
-                    else:
-                        execstr += ' --raster %s --tolerance %s' % (data['filename'][0], data['tolerance'])
-                if use_weights and 'weight' in data:
-                    execstr += ' --weight %s' % data['weight']
-
-            print(execstr)
-            subprocess.check_call(execstr, shell=True)
-
-    mesh_action = 'Mesh reuse' if reuse_mesh else 'Meshing'
-    print(f'{mesh_action} took {time.perf_counter() - meshing_started:.2f} s')
-    mesh_preparation_started = time.perf_counter()
-
-    # some paramters we want to use to constrain the mesh but don't actually want in the output. This let's use
-    # remove them
-    keys_to_drop = []
-    for key, data in parameter_files.items():
-        if 'drop' in data and data['drop'] == True:
-            keys_to_drop.append(key)
-    for key in keys_to_drop:
-        print('Dropping parameter ' + key + ' and not writing to mesh due to user request')
-        del parameter_files[key]
-
-    # The preparation store lives through export; workers map the same files.
-    with tempfile.TemporaryDirectory(prefix='mesher-prepared-', dir=base_dir) as preparation_dir:
-        if mpi_mesh:
-            if final_npz_path is None:
-                raise RuntimeError('mpi_mesh=True but no stitched mesh was produced')
-            with open_mesh_arrays(final_npz_path, preparation_dir) as (verts, tris):
-                mesh = build_mesh_from_arrays(verts, tris, src_ds, dem, srs, is_geographic, verbose,
-                                              directory=preparation_dir)
-        else:
-            mesh = load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs,
-                                               is_geographic, verbose, directory=preparation_dir)
-
-        print(f'Mesh preparation took {time.perf_counter() - mesh_preparation_started:.2f} s')
-        ics = {key: [] for key in initial_conditions}
-
-        gt = src_ds.GetGeoTransform()
-
-
-        print('Computing parameters and initial conditions')
-
-        # prepare the meta data bundle so the parallel ranks can produce their subset to work on in parallel
-        start_time = time.perf_counter()
-
-        parameter_args = {
-            'gt': gt,
-            'is_geographic': is_geographic,
-            'parameter_files': parameter_files,
-            'initial_conditions': initial_conditions,
-            'RasterXSize': src_ds.RasterXSize,
-            'RasterYSize': src_ds.RasterYSize,
-            'srs_proj4': srs_out.ExportToProj4(),
-            'use_exactextract': use_exactextract,
-            'batch_size': parameter_batch_size,
-        }
-        params = run_parameterization(mesh, parameter_args, base_dir,
-                                      MPI_exec_str, MPI_nworkers, configfile,
-                                      output_dir=preparation_dir)
-
-        for key, data in parameter_files.items():
-            parameter_files[key]['file'] = None
-
-        for key, data in initial_conditions.items():
-            initial_conditions[key]['file'] = None
-
-        mesh['mesh']['version'] = f'{MESH_MAJOR}.{MESH_MINOR}.{MESH_PATCH}'
-
-        print(f'Parameterization took {time.perf_counter() - start_time:.2f} s')
-
-        export_started = time.perf_counter()
-        output_name = base_name + '_mpi' if mpi_mesh else base_name
-
-        if output_write_vtu:
-            print('Writing vtu file...')
-            write_vtu(base_dir + output_name + '.vtu', mesh, params, ics)
-
-        if output_write_shp:
-            print('Writing shp file...')
-            write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
-
-
-        print('Saving mesh to file ' + output_name + '.mesh')
-        with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
-            dump_json(mesh, outfile)
-
-        # pdb.set_trace()
-        if write_param_per_file:
-            print('Saving parameters to individual files')
-            for key, data in params.items():
-                out_path = user_output_dir + f'{output_name}.param.{key}.json'
-                with open(out_path, 'w') as outfile:
-                    dump_json({key: data}, outfile)
-        else:
-            print('Saving parameters to file ' + output_name + '.param')
-            with open(user_output_dir + output_name + '.param', 'w') as outfile:
-                dump_json(params, outfile)
-
-        print('Saving initial conditions  to file ' + output_name + '.ic')
-        with open(user_output_dir + output_name + '.ic', 'w') as outfile:
-            dump_json(ics, outfile)
-        print(f'Export took {time.perf_counter() - export_started:.2f} s')
-        print(f'Total run took {time.perf_counter() - run_started:.2f} s')
-        print('Done')
+    return outputBufferfn, poly_file
 
 
 def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile, output_dir=None):
@@ -1056,18 +1119,13 @@ def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_co
 
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers, reuse_projected_parameters,
-                      nworkers_gdal=None, MPI_gdal_exec_str=None):
+                      nworkers_gdal=None, MPI_gdal_exec_str=None, *, prepared=None):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
     param_args = []
     if not input_files:
         return total_weights, use_weights
-    limit = MPI_nworkers if nworkers_gdal is None else nworkers_gdal
-    launcher, workers = _gdal_launch(MPI_exec_str, MPI_nworkers, MPI_gdal_exec_str, limit, len(input_files))
-    print(f'Harmonizing {len(input_files)} parameter entries with {workers} MPI ranks '
-          f'(job-wide GDAL worker limit: {limit})', flush=True)
-    os.makedirs(parameter_dir, exist_ok=True)
     for key, data in input_files.items():
         if 'weight' in data:
             total_weights += data['weight']
@@ -1078,6 +1136,19 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
         param_args.append((parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width,
                            srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters))
 
+    if prepared is not None:
+        for key, data in input_files.items():
+            data['filename'] = prepared[key]
+            data['file'] = None
+            if not isinstance(data['method'], list):
+                data['method'] = [data['method']]
+        return total_weights, use_weights
+
+    limit = MPI_nworkers if nworkers_gdal is None else nworkers_gdal
+    launcher, workers = _gdal_launch(MPI_exec_str, MPI_nworkers, MPI_gdal_exec_str, limit, len(input_files))
+    print(f'Harmonizing {len(input_files)} parameter entries with {workers} MPI ranks '
+          f'(job-wide GDAL worker limit: {limit})', flush=True)
+    os.makedirs(parameter_dir, exist_ok=True)
     worker = os.path.join(os.path.dirname(mesher_utls.__file__), 'MPI_regularize_inputs.py')
     with tempfile.TemporaryDirectory(prefix='.harmonize-', dir=os.path.abspath(parameter_dir)) as work:
         manifest = os.path.join(work, 'parameters.pickle')
@@ -1310,7 +1381,7 @@ def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
             comm.Disconnect()
 
 
-def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None):
+def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None, resume_plan=None):
     if not tasks:
         return
     if stage_label is not None and any(task.get('mesher_debug', False) for task in tasks):
@@ -1320,6 +1391,8 @@ def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, tot
         else:
             print(f'MPI merge {stage_label}: {len(tasks)} merges')
 
+    if resume_plan:
+        tasks = mpi_resume.unfinished(tasks, resume_plan, f'MPI merge {stage_label}')
     _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, 'MPI_merge_tiles.py',
                         f'MPI merge {stage_label}' if stage_label else 'MPI merge')
 
@@ -1360,7 +1433,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
                     max_tolerance, errormetric, use_weights, topo_weight,
                     weight_threshold, is_geographic, MPI_exec_str, MPI_nworkers,
-                    mesher_debug=False, remesh_options=None, *, num_tiles=None):
+                    mesher_debug=False, remesh_options=None, *, num_tiles=None, resume=None, previous=None, source_recipe=None):
     remesh_options = dict(remesh_options or {})
     if remesh_options.setdefault('merge_method', 'remesh') != 'remesh':
         raise ValueError('Only mpi_merge_method="remesh" is supported; shared-edge meshing has been retired')
@@ -1371,7 +1444,12 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         value = remesh_options.get(key, default)
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
-    rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin, num_tiles=num_tiles)
+    if previous:
+        rows, cols = previous['grid']
+        if num_tiles is not None and num_tiles != rows*cols:
+            raise ValueError('MPI checkpoint is incompatible with mpi_num_tiles')
+    else:
+        rows, cols = compute_tile_grid(MPI_nworkers, xmax-xmin, ymax-ymin, num_tiles=num_tiles)
     layout_rows, layout_cols = rows, cols
 
     tile_width = (xmax - xmin) / cols
@@ -1441,6 +1519,34 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             **remesh_options
         })
 
+    resume_plan = None
+    if source_recipe is not None:
+        from .mesher_utls.mpi_remesh import _mesher_arguments
+        options = dict(tile_args[0], mesher_debug=False)
+        arguments = _mesher_arguments(options)[1:]
+        inputs = [outer_polygon_shp, *constraint_files]
+        inputs.extend(arguments[i+1] for i, flag in enumerate(arguments) if flag in ('--raster', '--category-raster'))
+        parameters = {key: data['filename'] for key, data in parameter_files.items() if 'filename' in data}
+        inputs.extend(path for paths in parameters.values() for path in paths)
+        missing_inputs = [path for path in set(inputs) if not os.path.isfile(path)]
+        if missing_inputs:
+            raise ValueError('Missing prepared MPI domain, raster or constraint: ' + ', '.join(missing_inputs))
+        recipe = dict(sources=source_recipe, parameters=parameters, bounds=[xmin, ymin, xmax, ymax], band_width=band_width,
+                      criteria=arguments, prepared=mpi_resume.input_files(inputs), constraints=constraint_files)
+        legacy = resume == 'legacy' and previous is None
+        if legacy:
+            mpi_resume.check_legacy_grid(base_dir, base_name, tile_args)
+        plan = mpi_resume.start_plan(Path(base_dir) / (base_name + '_mpi_checkpoint.json'),
+                                     previous, recipe, [rows, cols], legacy)
+        remesh_options['checkpoint_run'] = plan['run_id']
+        for task in tile_args:
+            task['checkpoint_run'] = plan['run_id']
+        if resume:
+            # Only publish a completed layout after verifying the whole tree.
+            # A second interruption may leave ancestors of a rebuilt tile stale.
+            (Path(base_dir) / (base_name + '_mpi_layout.json')).unlink(missing_ok=True)
+            resume_plan = plan
+            tile_args = mpi_resume.unfinished(tile_args, plan, 'MPI tiles')
     _run_mpi_mesh_tasks(tile_args, MPI_exec_str, MPI_nworkers, 'MPI_mesh_tiles.py', 'MPI tiles')
 
     tile_grid = []
@@ -1504,7 +1610,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             run_mpi_merge_stage(
                 tasks, MPI_exec_str, MPI_nworkers,
                 stage_label=f'stage {stage + 1}/{total_stages} (columns)',
-                total_merges=total_merges - completed_merges
+                total_merges=total_merges - completed_merges, resume_plan=resume_plan
             )
             completed_merges += len(tasks)
             tile_grid = new_grid
@@ -1559,7 +1665,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             run_mpi_merge_stage(
                 tasks, MPI_exec_str, MPI_nworkers,
                 stage_label=f'stage {stage + 1}/{total_stages} (rows)',
-                total_merges=total_merges - completed_merges
+                total_merges=total_merges - completed_merges, resume_plan=resume_plan
             )
             completed_merges += len(tasks)
             tile_grid = new_grid
@@ -1567,13 +1673,15 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
             stage += 1
 
     final_path = tile_grid[0][0]['npz']
+    if resume_plan and resume_plan['legacy']:
+        # All surviving legacy outputs have acquired identities. Future
+        # restarts require authenticated markers, including after adoption.
+        resume_plan['legacy'] = False
+        mpi_resume.write_marker(Path(base_dir) / (base_name + '_mpi_checkpoint.json'), resume_plan)
     layout_path = os.path.join(base_dir, base_name + '_mpi_layout.json')
-    temporary = layout_path + '.tmp'
-    with open(temporary, 'w') as stream:
-        json.dump({'version': 1, 'rows': layout_rows, 'cols': layout_cols,
-                   'mpi_nworkers': MPI_nworkers, 'num_tiles': tile_count, 'bounds': [xmin, ymin, xmax, ymax],
-                   'final_npz': os.path.basename(final_path)}, stream)
-    os.replace(temporary, layout_path)
+    mpi_resume.write_marker(Path(layout_path), dict(version=1, rows=layout_rows, cols=layout_cols,
+        mpi_nworkers=MPI_nworkers, num_tiles=tile_count, bounds=[xmin, ymin, xmax, ymax],
+        final_npz=os.path.basename(final_path)))
     return final_path
 
 

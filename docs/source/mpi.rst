@@ -404,6 +404,43 @@ at or below the stopping threshold perform no raster reads, in both weighting
 modes and for numeric/categorical inputs. Above the threshold, read errors still
 fail explicitly; small triangles with poor angles remain rejected.
 
+Resuming an interrupted MPI run
++++++++++++++++++++++++++++++++
+
+Mesher checkpoints every completed tile and pairwise merge automatically. After
+a wall-time limit or merge failure, leave the intermediate directory in place.
+Once the old workers have stopped, use the same configuration and output path
+with ``mpi_mesh=True`` and ``reuse_mesh=False``::
+
+   mesher --resume config.py
+
+The restart reuses the prepared DEM, domain, constraints and parameter rasters.
+For each stage it reports how many outputs it can reuse and schedules the rest.
+If 31 of 32 pairs finished, only the outstanding pair needs to run at that stage
+when its siblings and their inputs are intact. A replaced tile or merge
+invalidates its dependent merges. An unfinished individual merge starts over.
+Mesh preparation, parameterization and export run after the final merge.
+
+The checkpoint records the tile grid, geometry criteria, input paths and local
+file sizes and modification times. Keep these inputs in place. You can change
+the worker count and remesh resource limits while keeping the recorded grid.
+Each worker publishes its NPZ before its completion metadata. Resume inspects
+the metadata, archive directory and array headers without loading all the
+triangles. This check is intended for interrupted writes. It does not scan
+the archive payload for storage corruption.
+
+For an interrupted cavity-remesh run created **before checkpoint support**,
+keep its original inputs, tolerances, tile layout and band width. Use this
+command once to adopt the existing intermediates::
+
+   mesher --resume-legacy config.py
+
+Legacy metadata records tile bounds and face counts but cannot verify the
+original DEM or tolerances. Adoption checks the grid against the surviving
+tile markers and trusts the supplied configuration for that first restart.
+Subsequent restarts use ``--resume``. Running without either flag with
+``reuse_mesh=False`` starts a fresh mesh and clears the intermediate directory.
+
 Recovering an earlier MPI run
 ++++++++++++++++++++++++++++
 

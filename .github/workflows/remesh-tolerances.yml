@@ -16,7 +16,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates cmake g++ make \
             libcgal-dev libgdal-dev libboost-filesystem-dev libboost-program-options-dev \
-            libmetis-dev python3-gdal python3-numpy python3-scipy python3-shapely
+            libmetis-dev gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
       - uses: actions/checkout@v4
       - name: Build and test the native backend
         run: |
@@ -29,7 +29,7 @@ jobs:
           OPENBLAS_NUM_THREADS: 1
         run: |
           export MESHER_TEST_EXE="$PWD/build/build-bin/meshercxx"
-          python3 -m unittest -v test_remesh_tolerances \
+          python3 -m unittest -v test_remesh_tolerances test_mpi_resume \
             test_disk_merge.DiskMergeTests.test_final_cached_repair_handles_a_new_cut_on_the_other_tile \
             test_disk_merge.DiskMergeTests.test_coarse_tvc_roundoff_before_only_permitted_solve \
             test_disk_merge.DiskMergeTests.test_unbisectable_corner_releases_its_parent_before_native_refinement \

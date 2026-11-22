@@ -6,10 +6,12 @@ except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
     from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 ensure_mesher_on_path()
-import json
+from pathlib import Path
+import tempfile
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
+from mesher.mesher_utls.mpi_resume import publish
 from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
@@ -33,10 +35,11 @@ def mesh_tile(args):
     else:
         verts, tris = remesh_domain(domain, load_constraints(args['constraints']), args, args['base_dir'])
     prefix = args['base_dir'] + args['tile_prefix']
-    np.savez(prefix + '.npz', verts=verts, tris=tris)
-    with open(prefix + '.json', 'w') as stream:
-        json.dump({'tile_bbox': tile_bbox, 'core_bbox': tile_bbox, 'band_width': band,
-                   'empty_tile': len(tris) == 0, 'merge_method': 'remesh'}, stream)
+    with tempfile.TemporaryDirectory(dir=args['base_dir'], prefix='tile-output-') as work:
+        staged = Path(work)/'tile.npz'
+        np.savez(staged, verts=verts, tris=tris)
+        publish(staged, prefix, dict(tile_bbox=tile_bbox, core_bbox=tile_bbox, band_width=band,
+                                     empty_tile=len(tris) == 0, merge_method='remesh'), args)
 
 
 def main(pickle_file: str, disconnect: bool, expected_workers=None):

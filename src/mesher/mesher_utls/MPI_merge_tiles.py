@@ -13,6 +13,7 @@ import time
 import cloudpickle
 import numpy as np
 from mpi4py import MPI
+from mesher.mesher_utls.mpi_resume import publish
 from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
@@ -58,22 +59,14 @@ def merge_tiles(args):
     bounds_a, bounds_b = meta_a['core_bbox'], meta_b['core_bbox']
     prefix = args['out_prefix']
     archive = Path(prefix + '.npz')
-    marker = Path(prefix + '.json')
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix='merge-output-') as directory:
         staged_archive = Path(directory) / archive.name
-        staged_marker = Path(directory) / marker.name
         report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
             load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
             args, staged_archive)
         bounds = bbox_union(bounds_a, bounds_b)
-        with staged_marker.open('w') as stream:
-            json.dump({'core_bbox': bounds, 'tile_bbox': bounds, 'band_width': 0,
-                       'empty_tile': report['output_faces'] == 0, 'merge_method': 'remesh',
-                       'remesh_report': report}, stream)
-        # Invalidate an earlier completion marker only after both new files are ready.
-        marker.unlink(missing_ok=True)
-        os.replace(staged_archive, archive)
-        os.replace(staged_marker, marker)
+        publish(staged_archive, prefix, dict(core_bbox=bounds, tile_bbox=bounds, band_width=0,
+                empty_tile=report['output_faces'] == 0, merge_method='remesh', remesh_report=report), args)
 
 
 def main(pickle_file: str, disconnect: bool, expected_workers=None):
