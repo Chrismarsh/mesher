@@ -1202,9 +1202,13 @@ def compute_tile_grid(nranks, width, height, *, num_tiles=None):
     return rows, cols
 
 
+def mpi_merge_stage_count(rows, cols):
+    # Each stage halves one axis, carrying its unpaired tile when the count is odd.
+    return (cols - 1).bit_length() + (rows - 1).bit_length()
+
+
 def mpi_final_npz_name(base_name, rows, cols):
-    # Pairwise stages halve columns and rows in turn, carrying odd groups.
-    stages = (cols - 1).bit_length() + (rows - 1).bit_length()
+    stages = mpi_merge_stage_count(rows, cols)
     suffix = f'stage{stages-1}_r0_c0' if stages else 'tile_0'
     return f'{base_name}_mpi_{suffix}.npz'
 
@@ -1390,9 +1394,10 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         raise RuntimeError(msg)
 
     tile_count = rows * cols
+    total_stages = mpi_merge_stage_count(rows, cols)
     print(f'MPI tile grid: {rows} rows x {cols} columns; '
           f'{tile_count} tiles, up to {min(tile_count, MPI_nworkers)} active tile workers; '
-          f'tile dimensions={tile_width:.6g} x {tile_height:.6g}', flush=True)
+          f'tile dimensions={tile_width:.6g} x {tile_height:.6g}; merge stages={total_stages}', flush=True)
 
 
     constraint_files = [v['filename'] for v in constraints.values() if 'filename' in v]
@@ -1451,17 +1456,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         tile_grid.append(row_tiles)
 
     stage = 0
-    total_merges = 0
-    tmp_rows = rows
-    tmp_cols = cols
-    while tmp_rows > 1 or tmp_cols > 1:
-        if tmp_cols > 1:
-            total_merges += tmp_rows * (tmp_cols // 2)
-            tmp_cols = (tmp_cols + 1) // 2
-        if tmp_rows > 1:
-            total_merges += (tmp_rows // 2) * tmp_cols
-            tmp_rows = (tmp_rows + 1) // 2
-
+    total_merges = tile_count - 1
     completed_merges = 0
     while rows > 1 or cols > 1:
         if cols > 1:
@@ -1508,7 +1503,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
 
             run_mpi_merge_stage(
                 tasks, MPI_exec_str, MPI_nworkers,
-                stage_label=f'stage{stage} cols',
+                stage_label=f'stage {stage + 1}/{total_stages} (columns)',
                 total_merges=total_merges - completed_merges
             )
             completed_merges += len(tasks)
@@ -1563,7 +1558,7 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
 
             run_mpi_merge_stage(
                 tasks, MPI_exec_str, MPI_nworkers,
-                stage_label=f'stage{stage} rows',
+                stage_label=f'stage {stage + 1}/{total_stages} (rows)',
                 total_merges=total_merges - completed_merges
             )
             completed_merges += len(tasks)

@@ -41,12 +41,18 @@ Progress and diagnostic output
 ++++++++++++++++++++++++++++++
 
 The default ``mesher_debug=False`` shows compact progress for tile generation
-and each merge stage. A terminal updates one line with a bar, completed tasks
+and each merge stage. The tile grid summary gives the total number of merge
+stages. Each merge line shows the current stage (counting from 1), the total,
+and the axis being merged. A terminal updates one line with a bar, completed tasks
 and elapsed time. Redirected output (including PBS logs) uses plain start/end
 lines and a heartbeat every 30 seconds, even if no task has finished recently::
 
    MPI tiles: 37/96 | elapsed 00:12:30
-   MPI merge stage0 cols: 16/48 | elapsed 00:00:30
+   MPI merge stage 1/7 (columns): 16/48 | elapsed 00:00:30
+
+For an 8-row by 12-column grid, the 7 stages comprise 4 column stages and
+3 row stages. Intermediate filenames count from zero, so the first stage
+writes files containing ``_mpi_stage0_``.
 
 Task counts advance only after workers write their mesh and completion metadata.
 Empty tiles count as completed tasks. A percentage of completed tasks is not

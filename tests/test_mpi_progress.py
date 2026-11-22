@@ -48,7 +48,7 @@ class MpiProgressTests(unittest.TestCase):
         now = [0.]
         with tempfile.TemporaryDirectory() as root, \
              patch('mesher.mesher_utls.mpi_progress.time.monotonic', side_effect=lambda: now[0]):
-            with StageProgress([{}, {}], 'MPI merge stage0 cols', root, stream) as progress:
+            with StageProgress([{}, {}], 'MPI merge stage 1/7 (columns)', root, stream) as progress:
                 complete_task(progress.tasks[0])
                 progress._count()
                 now[0] = 10
@@ -65,6 +65,25 @@ class MpiProgressTests(unittest.TestCase):
         self.assertNotIn('\r', stream.getvalue())
         self.assertNotIn('\x1b', stream.getvalue())
         self.assertTrue(stream.getvalue().endswith('2/2 | elapsed 00:01:00 | complete\n'))
+
+    def test_grid_summary_and_stage_numbers_match_the_executed_merge_schedule(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from mesher.mesher_cli import run_mpi_meshing
+
+        for rows, cols, axes in ((1, 1, []), (5, 1, ['rows'] * 3),
+                                 (3, 5, ['columns', 'rows'] * 2 + ['columns']),
+                                 (8, 12, ['columns', 'rows'] * 3 + ['columns'])):
+            with self.subTest(rows=rows, cols=cols), tempfile.TemporaryDirectory() as root:
+                summary, progress = io.StringIO(), io.StringIO()
+                with redirect_stdout(summary), redirect_stderr(progress), patch('subprocess.check_call'):
+                    run_mpi_meshing(root + '/', 'case', 0, 0, cols*100, rows*100,
+                                    'meshercxx', 'domain.json', {}, {}, {}, 8, .25, 1, 'rmse',
+                                    False, 1, 0, False, 'mpirun', 2, num_tiles=rows*cols)
+                self.assertIn(f'merge stages={len(axes)}', summary.getvalue())
+                completed = [line.split(':')[0] for line in progress.getvalue().splitlines()
+                             if line.startswith('MPI merge ') and line.endswith(' | complete')]
+                self.assertEqual(completed, [f'MPI merge stage {i}/{len(axes)} ({axis})'
+                                             for i, axis in enumerate(axes, 1)])
 
     def test_debug_disables_live_bar_and_separate_stages_have_fresh_markers(self):
         stream = Terminal()
