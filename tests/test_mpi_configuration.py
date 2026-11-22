@@ -114,8 +114,9 @@ class MpiTilingTests(unittest.TestCase):
 
     def test_launcher_mismatch_fails_before_workers_read_inputs(self):
         from mesher.mesher_utls import MPI_mesh_tiles, MPI_merge_tiles, MPI_regularize_inputs
-        for module in (MPI_mesh_tiles, MPI_merge_tiles, MPI_regularize_inputs):
-            with self.subTest(module=module.__name__), self.assertRaisesRegex(ValueError, 'MPI_nworkers='):
+        for module, setting in ((MPI_mesh_tiles, 'MPI_nworkers'), (MPI_merge_tiles, 'MPI_nworkers'),
+                                (MPI_regularize_inputs, 'expected GDAL worker count')):
+            with self.subTest(module=module.__name__), self.assertRaisesRegex(ValueError, setting + '='):
                 module.main('missing.pickle', False, module.MPI.COMM_WORLD.size + 1)
 
     def test_invalid_grid_inputs_fail_before_mpi_launch(self):

@@ -33,7 +33,6 @@ import cloudpickle
 
 import time
 from mpi4py import MPI
-import glob
 
 
 
@@ -239,7 +238,8 @@ def main():
     total_weights_param, use_weights_param = regularize_inputs(parameter_dir, gdal_prefix, parameter_files,
                                                                pixel_height, pixel_width,
                                                                srs_out, xmax, xmin, ymax, ymin, fill_holes,
-                                                               MPI_exec_str, MPI_nworkers, reuse_projected_parameters)
+                                                               MPI_exec_str, MPI_nworkers, reuse_projected_parameters,
+                                                               nworkers_gdal, getattr(X, 'MPI_gdal_exec_str', None))
 
     total_weights_ic, use_weights_ic = 0, False
 
@@ -977,18 +977,6 @@ def read_config(configfile):
         nworkers = len(os.sched_getaffinity(0))
     if hasattr(X, 'nworkers'):
         nworkers = X.nworkers
-    # GDAL workers are for the initial regularize call where multiple gdalwarp processes are started
-    # these are memory heavy so this can be limited if required
-    nworkers_gdal = nworkers
-    if hasattr(X, 'nworkers_gdal'):
-        nworkers_gdal = X.nworkers_gdal
-    try:
-        nworkers_gdal = os.environ['MESHER_NWORKERS_GDAL']
-
-        if hasattr(X, 'nworkers_gdal'):
-            print('Warning: Overridding configfile nworkers_gdal with environment variable MESHER_NWORKERS_GDAL')
-    except KeyError as E:
-        pass
     try:
         nworkers = os.environ['MESHER_NWORKERS']
 
@@ -997,17 +985,6 @@ def read_config(configfile):
     except KeyError as E:
         pass
     nworkers = int(nworkers)
-    nworkers_gdal = int(nworkers_gdal)
-    try:
-        cache = os.environ['GDAL_CACHEMAX']
-        print(
-            'Warning: GDAL_CACHEMAX={0}. Ensure this is reasonable for the number of parallel processes specified'.format(
-                cache))
-    except:
-        # the user doesn't have the GDAL_CACHEMAX defined, which is good. Set it to a reasonable value
-        os.environ['GDAL_CACHEMAX'] = "{0}%".format(30.0 / nworkers)
-    print('Using {0} CPUs and per-CPU memory cache = {1}'.format(nworkers, os.environ['GDAL_CACHEMAX']))
-
     MPI_exec_str = None
     if hasattr(X, 'MPI_exec_str'):
         MPI_exec_str = X.MPI_exec_str
@@ -1020,6 +997,18 @@ def read_config(configfile):
         raise RuntimeError('If MPI_exec_str is provided, then MPI_nworkers must also be provided')
 
     _positive_integer(MPI_nworkers, 'MPI_nworkers')
+    nworkers_gdal = os.environ.get('MESHER_NWORKERS_GDAL', getattr(X, 'nworkers_gdal', MPI_nworkers))
+    if isinstance(nworkers_gdal, str):
+        try:
+            nworkers_gdal = int(nworkers_gdal)
+        except ValueError as exc:
+            raise ValueError('nworkers_gdal / MESHER_NWORKERS_GDAL must be a positive integer') from exc
+    _positive_integer(nworkers_gdal, 'nworkers_gdal')
+
+    if 'GDAL_CACHEMAX' not in os.environ:
+        os.environ['GDAL_CACHEMAX'] = f'{30.0 / max(nworkers, nworkers_gdal)}%'
+    print(f"Using {nworkers} CPUs and GDAL cache per process = {os.environ['GDAL_CACHEMAX']}")
+
     mpi_vendor = MPI.get_vendor()[0]
     print(f'Detected MPI = {mpi_vendor}')
 
@@ -1039,14 +1028,45 @@ def read_config(configfile):
         mesher_debug, use_exactextract, write_param_per_file
 
 
+def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_count):
+    """Choose the GDAL command and its actual MPI world size."""
+    workers = min(limit, parameter_count)
+    launcher = gdal_launcher if gdal_launcher is not None else mesh_launcher
+    if launcher is None:
+        return None, workers
+    if '{nworkers}' in launcher:
+        return launcher.replace('{nworkers}', str(workers)), workers
+
+    # Legacy configs commonly start with "mpirun -n 4000". Replace just that
+    # argument, leaving shell quoting, placement and site flags intact.
+    count = re.match(r'\s*(?:[^\s]*/)?(?:mpirun|mpiexec)\s+--?n(?:p)?\s+(\d+)(?=\s|$)', launcher)
+    if count:
+        if gdal_launcher is not None:
+            workers = min(workers, _positive_integer(int(count.group(1)), 'GDAL launcher rank count'))
+        return launcher[:count.start(1)] + str(workers) + launcher[count.end(1):], workers
+
+    # A site submission wrapper may set its rank count internally. Preserve its
+    # fixed size when it fits the cap. The worker verifies the actual world size.
+    fixed_workers = limit if gdal_launcher is not None else mesh_workers
+    if fixed_workers > limit:
+        raise ValueError('Set MPI_gdal_exec_str with a {nworkers} placeholder to run fewer GDAL ranks '
+                         'with this custom MPI launcher.')
+    return launcher, fixed_workers
+
+
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
-                      xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers, reuse_projected_parameters):
+                      xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers, reuse_projected_parameters,
+                      nworkers_gdal=None, MPI_gdal_exec_str=None):
     # ensure all the weights sum to 1
     total_weights = 0
     use_weights = False
     param_args = []
     if not input_files:
         return total_weights, use_weights
+    limit = MPI_nworkers if nworkers_gdal is None else nworkers_gdal
+    launcher, workers = _gdal_launch(MPI_exec_str, MPI_nworkers, MPI_gdal_exec_str, limit, len(input_files))
+    print(f'Harmonizing {len(input_files)} parameter entries with {workers} MPI ranks '
+          f'(job-wide GDAL worker limit: {limit})', flush=True)
     os.makedirs(parameter_dir, exist_ok=True)
     for key, data in input_files.items():
         if 'weight' in data:
@@ -1058,43 +1078,29 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
         param_args.append((parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width,
                            srs_out.ExportToProj4(), xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters))
 
-    with open('pickled_param_args.pickle', 'wb') as f:
-        cloudpickle.dump(param_args, f)
+    worker = os.path.join(os.path.dirname(mesher_utls.__file__), 'MPI_regularize_inputs.py')
+    with tempfile.TemporaryDirectory(prefix='.harmonize-', dir=os.path.abspath(parameter_dir)) as work:
+        manifest = os.path.join(work, 'parameters.pickle')
+        with open(manifest, 'wb') as stream:
+            cloudpickle.dump(param_args, stream)
 
-    MPI_regularize_path = os.path.join(os.path.dirname(mesher_utls.__file__),
-                                                      'MPI_regularize_inputs.py')
-    if MPI_exec_str is not None:
-        exec_str = f"""{MPI_exec_str} {MPI_regularize_path} pickled_param_args.pickle False {MPI_nworkers}"""
-        print(exec_str)
-        subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
-    else:
-        comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                   args=[MPI_regularize_path,
-                                         'pickled_param_args.pickle', 'True'],
-                                   maxprocs=MPI_nworkers)
-        comm.Disconnect()
-    os.remove('pickled_param_args.pickle')
+        if launcher is None:
+            comm = MPI.COMM_SELF.Spawn(sys.executable, args=[worker, manifest, 'True', str(workers)],
+                                       maxprocs=workers)
+            comm.Disconnect()
+        else:
+            command = f'{launcher} {shlex.quote(worker)} {shlex.quote(manifest)} False {workers}'
+            print(command, flush=True)
+            subprocess.check_call(command, shell=True)
 
-    ret = []
-    for file in glob.glob('pickled_param_args_rets_*.pickle'):
-        with open(file, 'rb') as f:
-            ret.append(cloudpickle.load(f))
-        os.remove(file)
-
-    for w in ret:
-        if len(w) == 0:
-            continue
-
-        # it comes as a [ {} ]
-
-        # r will a list of dicts, len(r) is the amount of work that MPI rank did
-        for r in w:
-            key = r['key']
-            input_files[key]['filename'] = r['filename']
-            input_files[key]['file'] = None
-
-            if not isinstance(input_files[key]['method'], list):
-                input_files[key]['method'] = [input_files[key]['method']]
+        for rank in range(workers):
+            with open(os.path.join(work, f'result_{rank}.pickle'), 'rb') as stream:
+                for result in cloudpickle.load(stream):
+                    data = input_files[result['key']]
+                    data['filename'] = result['filename']
+                    data['file'] = None
+                    if not isinstance(data['method'], list):
+                        data['method'] = [data['method']]
 
     return total_weights, use_weights
 

@@ -116,8 +116,7 @@ def regularize_inputs(args):
         # use the same source and settings for different parameters.
         with tempfile.TemporaryDirectory(dir=parameter_dir) as work_dir:
             tmp = os.path.join(work_dir, 'projected.tif')
-            subprocess.check_call([gdal_prefix + 'gdalwarp', *warp_options, f, tmp],
-                                  env=dict(os.environ, GDAL_CACHEMAX='5%'))
+            subprocess.check_call([gdal_prefix + 'gdalwarp', *warp_options, f, tmp])
             if fill_holes:
                 fill_nodata(tmp, fill_distance)
             os.replace(tmp, out_name)
@@ -127,7 +126,7 @@ def regularize_inputs(args):
 
 def main(pickle_file: str,
          disconnect: bool, expected_workers=None):
-    check_worker_count(MPI.COMM_WORLD.size, expected_workers)
+    check_worker_count(MPI.COMM_WORLD.size, expected_workers, 'expected GDAL worker count')
     # if called from SLURM, etc, these cli are coming in as strings
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
@@ -142,7 +141,7 @@ def main(pickle_file: str,
         r.append(regularize_inputs(args))
 
     # Return this rank's filenames to the parent process.
-    with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
+    with open(os.path.join(os.path.dirname(pickle_file), f'result_{MPI.COMM_WORLD.rank}.pickle'), 'wb') as f:
         cloudpickle.dump(r, f)
 
     # have been run from the MPI.spawn, so disconnect from parent

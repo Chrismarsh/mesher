@@ -99,11 +99,39 @@ Mesher will use the number of physical CPUs to parallel various tasks. This allo
 .. confval:: nworkers_gdal
 
     :type: int
-    :default: Number of physical CPUs
+    :default: MPI_nworkers
 
-The initial step where all input parameters and initial conditions are made resampled and clipped to the input DEM
-extent can be memory heavy. Therefore this limits, separate from the number of workers for the main parameterize loop,
-how many parallel workers should be used to limit memory consumption.
+Maximum number of MPI workers for harmonizing the rasters in ``parameter_files``,
+across the entire job. Each worker processes one parameter entry at a time and
+warps its source files sequentially. The mesh stage and subsequent face
+parameterization use ``MPI_nworkers``. The initial DEM warp runs separately.
+
+.. confval:: MPI_gdal_exec_str
+
+    :type: string
+    :default: Use the mesh launcher or MPI spawn
+
+Optional blocking launcher for parameter harmonization. Use the literal token
+``{nworkers}`` in the command. Mesher replaces it with the smaller of
+``nworkers_gdal`` and the number of parameter entries. Placement is controlled
+by the launcher. For example, on a 20-node Open MPI allocation this runs up to
+five GDAL workers on separate nodes and packs the 4,000 mesh workers by slot:
+
+.. code-block:: python
+
+    MPI_nworkers = 4000
+    nworkers_gdal = 5
+    site_flags = ('--bind-to core --hetero-nodes --runtime-options fwd-environment '
+                  '--prtemca plm_ssh_args "-o SendEnv=PBS_JOBID -o LogLevel=ERROR"')
+    MPI_exec_str = f'mpirun -n {MPI_nworkers} --map-by slot {site_flags} python'
+    MPI_gdal_exec_str = 'mpirun -n {nworkers} --map-by node ' + site_flags + ' python'
+
+Without a GDAL-specific command, a mesh launcher beginning with ``mpirun -n N``
+or ``mpiexec -np N`` is reused with an adjusted rank count and its existing
+placement options. A fixed-size site wrapper is reused when its rank count fits
+the cap. To reduce a fixed-size wrapper's rank count, supply a GDAL launcher
+that passes ``{nworkers}`` to the wrapper. The spawned-worker path also limits
+the ranks to the number of entries. No workers are launched for an empty list.
 
 Environment variables
 =====================
@@ -123,19 +151,18 @@ Specifies number of CPUs to use for parallel tasks. This will override a configu
 
     :type: int
 
-Specifies number of CPUs to use for parallel gdal tasks. This will override a configuration file ``nworkers_gdal`` value.
+Overrides the job-wide ``nworkers_gdal`` limit for parameter harmonization.
 
 .. confval:: GDAL_CACHEMAX
 
     :type: string
 
-GDAL's raster I/O functionality will, by default, cache reads and writes by up-to 5% of total memory to increase efficiency.
-When dealing with large rasters and parallel processing, this can result in out-of-memory errors. For example, 32 processes
-can cache 160% of total available RAM. By default, mesher will internally set the parallel processing cache to be no more
-than ~30% of total RAM shared across all processes. This is about ~1% per process. For most systems this gives a good
-blend of performance and memory use. However, if out-of-memory situations occur, try setting this lower or to 0. More information
-can be found `on the gdalwarp documentation <https://trac.osgeo.org/gdal/wiki/UserDocs/GdalWarp#WarpandCacheMemory:TechnicalDetails>`_
-and `wiki page <https://trac.osgeo.org/gdal/wiki/ConfigOptions#GDAL_CACHEMAX>`_.
+Parameter warps inherit ``GDAL_CACHEMAX`` from the environment. It controls
+the GDAL raster block cache per process. For example,
+``export GDAL_CACHEMAX=256`` sets a 256 MB cache for each parameter warp.
+With no explicit value, Mesher sets the percentage to ``30 / max(nworkers, nworkers_gdal)``.
+GDAL warp buffers and the MPI workers also consume memory. The initial DEM
+projection and smoothing commands specify a separate 5% cache.
 
 Lloyd iterations
 ================
