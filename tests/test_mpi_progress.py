@@ -147,6 +147,30 @@ class MpiProgressTests(unittest.TestCase):
                 else:
                     self.assertEqual(stream.getvalue(), '')
 
+    def test_merge_launch_is_sized_after_resume_filtering(self):
+        from mesher import mesher_cli as cli
+        flags = '--map-by slot --prtemca plm_ssh_args "-o SendEnv=PBS_JOBID -o LogLevel=ERROR" python'
+        tasks = [{} for _ in range(32)]
+        for launcher, expected, size in [
+            ('mpirun -n 4000 ' + flags, 'mpirun -n 14 ' + flags, 14),
+            ('/site/mpiexec -np 4000 ' + flags, '/site/mpiexec -np 14 ' + flags, 14),
+            ('pbs-launch {nworkers}', 'pbs-launch 14', 14),
+            ('fixed-pbs-launch', 'fixed-pbs-launch', 4000)
+        ]:
+            with self.subTest(launcher=launcher), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(cli.mpi_resume, 'unfinished', return_value=tasks[18:]), \
+                    patch.object(cli, 'StageProgress') as progress, \
+                    patch.object(cli.subprocess, 'check_call') as launch:
+                active = progress.return_value.__enter__.return_value
+                active.tasks, active.directory = tasks[18:], Path(directory)
+                cli.run_mpi_merge_stage(tasks, launcher, 4000, '7/13', resume_plan={'run_id': 'test'})
+                cmd = launch.call_args.args[0][0]
+                self.assertTrue(cmd.startswith(expected + ' '), cmd)
+                self.assertEqual(shlex.split(cmd)[-2:], ['False', str(size)])
+
+        with self.assertRaisesRegex(ValueError, 'MPI_nworkers=4000'):
+            cli._run_mpi_mesh_tasks(tasks, 'mpirun -n 3 python', 4000, 'MPI_merge_tiles.py', 'merge')
+
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_real_launchers_report_completed_tasks_and_errors(self):
         script = (
@@ -154,7 +178,7 @@ class MpiProgressTests(unittest.TestCase):
             'from pathlib import Path\n'
             'from mesher.mesher_cli import _run_mpi_mesh_tasks\n'
             'data = json.loads(Path(sys.argv[1]).read_text())\n'
-            '_run_mpi_mesh_tasks(data["tasks"], data["launcher"], 2, "MPI_mesh_tiles.py", "MPI tiles")\n'
+            '_run_mpi_mesh_tasks(data["tasks"], data["launcher"], 4, "MPI_mesh_tiles.py", "MPI tiles")\n'
         )
         for mode, debug, failure in (('external', False, False), ('spawn', False, False),
                                      ('external', True, False), ('external', False, True)):
@@ -173,12 +197,13 @@ class MpiProgressTests(unittest.TestCase):
                           'dem_path': str(work/'unused.tif'), 'max_area': 8,
                           'min_area': .25, 'errormetric': 'rmse', 'max_tolerance': 1}
                          for i in range(2)]
-                launcher = f'mpirun --oversubscribe -n 2 {shlex.quote(sys.executable)}' if mode == 'external' else None
+                launcher = f'mpirun -n 4 --oversubscribe {shlex.quote(sys.executable)}' if mode == 'external' else None
                 args = work / 'input.json'
                 args.write_text(json.dumps({'tasks': tasks, 'launcher': launcher}))
                 run = subprocess.run([sys.executable, '-c', script, str(args)], cwd=root,
                                      text=True, capture_output=True, timeout=45)
                 output = run.stdout + run.stderr
+                self.assertIn('launching 2 MPI ranks for 2 tasks', output)
                 self.assertIn('MPI tiles: 0/2', output)
                 self.assertNotIn('\r', output)
                 self.assertFalse(list(work.glob('.mesher-progress-*')))

@@ -462,7 +462,7 @@ class ParameterizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=root) as output_dir:
             with redirect_stdout(io.StringIO()):
                 columns = mesher_cli.run_parameterization(mesh, dict(prep, batch_size=1), str(root),
-                    command, 3, str(config_with_spaces), output_dir=output_dir)
+                    command.replace('-n 3', '-n {nworkers}'), 3, str(config_with_spaces), output_dir=output_dir)
             for key, column in columns.items():
                 self.assertIsInstance(column, np.memmap)
                 np.testing.assert_allclose(column, [row[key] for row in collected])

@@ -790,6 +790,7 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
         inputs_seconds = time.perf_counter() - input_started
         workers_started = time.perf_counter()
         if exec_str is not None:
+            exec_str = exec_str.replace('{nworkers}', str(nranks))
             command = f'{exec_str} {shlex.join([worker, inputs, "False", configfile])}'
             print(command, flush=True)
             subprocess.check_call(command, shell=True, cwd=os.getcwd())
@@ -1091,30 +1092,40 @@ def read_config(configfile):
         mesher_debug, use_exactextract, write_param_per_file
 
 
-def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_count):
-    """Choose the GDAL command and its actual MPI world size."""
-    workers = min(limit, parameter_count)
-    launcher = gdal_launcher if gdal_launcher is not None else mesh_launcher
-    if launcher is None:
+# Match only the leading rank argument of a simple mpirun/mpiexec command.
+# In particular, keep quoted site options and arbitrary wrapper commands intact.
+_MPI_RANK_ARGUMENT = re.compile(r'\s*(?:[^\s]*/)?(?:mpirun|mpiexec)\s+--?n(?:p)?\s+(\d+)(?=\s|$)')
+
+
+def _launcher_template(launcher):
+    """Recognize a resizable command without re-tokenizing shell options."""
+    if launcher is not None and '{nworkers}' not in launcher:
+        count = _MPI_RANK_ARGUMENT.match(launcher)
+        if count:
+            template = launcher[:count.start(1)] + '{nworkers}' + launcher[count.end(1):]
+            return template, int(count.group(1))
+    return launcher, None
+
+
+def _task_launch(template, workers, fixed_workers):
+    if template is None:
         return None, workers
-    if '{nworkers}' in launcher:
-        return launcher.replace('{nworkers}', str(workers)), workers
+    if '{nworkers}' in template:
+        return template.replace('{nworkers}', str(workers)), workers
+    return template, fixed_workers
 
-    # Legacy configs commonly start with "mpirun -n 4000". Replace just that
-    # argument, leaving shell quoting, placement and site flags intact.
-    count = re.match(r'\s*(?:[^\s]*/)?(?:mpirun|mpiexec)\s+--?n(?:p)?\s+(\d+)(?=\s|$)', launcher)
-    if count:
-        if gdal_launcher is not None:
-            workers = min(workers, _positive_integer(int(count.group(1)), 'GDAL launcher rank count'))
-        return launcher[:count.start(1)] + str(workers) + launcher[count.end(1):], workers
 
-    # A site submission wrapper may set its rank count internally. Preserve its
-    # fixed size when it fits the cap. The worker verifies the actual world size.
-    fixed_workers = limit if gdal_launcher is not None else mesh_workers
-    if fixed_workers > limit:
+def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_count):
+    override = gdal_launcher is not None
+    template, declared = _launcher_template(gdal_launcher if override else mesh_launcher)
+    workers = min(limit, parameter_count)
+    if override and declared is not None:
+        workers = min(workers, _positive_integer(declared, 'GDAL launcher rank count'))
+    command, workers = _task_launch(template, workers, limit if override else mesh_workers)
+    if workers > limit:
         raise ValueError('Set MPI_gdal_exec_str with a {nworkers} placeholder to run fewer GDAL ranks '
                          'with this custom MPI launcher.')
-    return launcher, fixed_workers
+    return command, workers
 
 
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
@@ -1363,21 +1374,26 @@ def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geogra
 def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
     if not tasks:
         return
+    template, declared = _launcher_template(MPI_exec_str)
+    if declared is not None and declared != MPI_nworkers:
+        raise ValueError(f'MPI launcher specifies {declared} ranks, but MPI_nworkers={MPI_nworkers}')
+    launcher, workers = _task_launch(template, min(MPI_nworkers, len(tasks)), MPI_nworkers)
+    print(f'{label}: launching {workers} MPI ranks for {len(tasks)} tasks', flush=True)
     debug = any(task.get('mesher_debug', False) for task in tasks)
     worker_path = os.path.join(os.path.dirname(mesher_utls.__file__), worker)
     with StageProgress(tasks, label, debug=debug) as progress:
         arguments = str(progress.directory / 'tasks.pickle')
         with open(arguments, 'wb') as stream:
             cloudpickle.dump(progress.tasks, stream)
-        if MPI_exec_str is not None:
-            exec_str = f'{MPI_exec_str} {shlex.quote(worker_path)} {shlex.quote(arguments)} False {MPI_nworkers}'
+        if launcher is not None:
+            exec_str = f'{launcher} {shlex.quote(worker_path)} {shlex.quote(arguments)} False {workers}'
             if debug:
                 print(exec_str, flush=True)
             subprocess.check_call([exec_str], shell=True, cwd=os.getcwd())
         else:
             comm = MPI.COMM_SELF.Spawn(sys.executable,
-                                       args=[worker_path, arguments, 'True'],
-                                       maxprocs=min(MPI_nworkers, len(tasks)))
+                                       args=[worker_path, arguments, 'True', str(workers)],
+                                       maxprocs=workers)
             comm.Disconnect()
 
 

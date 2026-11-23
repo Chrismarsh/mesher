@@ -16,6 +16,15 @@ mesher process running in a small job and spawn MPI sub-jobs in dedicated jobs. 
 ``MPI_exec_str`` can be a job submission script. Using the MPI spawn can sometimes not work, so setting
 ``MPI_exec_str=f'mpirun -n {MPI_nworkers} python '`` may be preferred.
 
+For tile generation and each merge stage, Mesher uses at most one MPI rank per
+pending task with MPI spawn or a command beginning with ``mpirun -n N`` or
+``mpiexec -np N``. The configured N must match ``MPI_nworkers``. A restart
+with 14 pending pairs and a 4,000-rank allocation launches 14 ranks. Mesher
+prints the actual launch size before each stage. Other command layouts and
+site wrappers can supply a literal ``{nworkers}`` token to opt into resizing.
+Use a plain Python string for that token, or ``{{nworkers}}`` in an f-string.
+Wrappers with an internal fixed world size still use ``MPI_nworkers``.
+
 MPI mesh generation
 +++++++++++++++++++
 

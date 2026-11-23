@@ -115,7 +115,7 @@ Optional blocking launcher for parameter harmonization. Use the literal token
 ``{nworkers}`` in the command. Mesher replaces it with the smaller of
 ``nworkers_gdal`` and the number of parameter entries. Placement is controlled
 by the launcher. For example, on a 20-node Open MPI allocation this runs up to
-five GDAL workers on separate nodes and packs the 4,000 mesh workers by slot:
+five GDAL workers on separate nodes and packs up to 4,000 mesh workers by slot:
 
 .. code-block:: python
 
@@ -655,6 +655,11 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     `sbatch "$@"`
     and `job.sh` contains
     `srun --label --unbuffered  python "$@"`
+
+    Tile and merge stages resize a leading ``mpirun -n N`` or ``mpiexec -np N``
+    to the pending task count when fewer than N tasks remain. To resize another
+    launcher, use a literal ``{nworkers}`` in its command. Parameterization
+    expands that token to the full configured rank count.
 
     Parameterization appends the worker script, a shared input-manifest path,
     ``False`` and the configuration path to this command, quoting these paths.
