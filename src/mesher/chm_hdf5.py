@@ -19,6 +19,8 @@ from mesher.mesh_store import batches, copy_array, disk_array, rank_face_range
 def require_h5py():
     try:
         import h5py
+        if not hasattr(h5py, 'File'):
+            raise ImportError('h5py installation is missing the top-level Python package')
     except ImportError as exc:
         raise RuntimeError('write_hdf5 requires h5py. Install MPI-enabled h5py for parallel writes.') from exc
     return h5py

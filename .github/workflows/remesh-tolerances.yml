@@ -16,7 +16,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates cmake g++ make \
             libcgal-dev libgdal-dev libboost-filesystem-dev libboost-program-options-dev \
-            libmetis-dev python3-h5py-mpi gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
+            libmetis-dev python3-h5py python3-h5py-mpi gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
       - uses: actions/checkout@v4
       - name: Check serial and parallel CHM HDF5 export
         env:
