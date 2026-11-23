@@ -25,6 +25,9 @@ dependencies = [
     'natsort'
 ]
 
+[project.optional-dependencies]
+hdf5 = ["h5py"]
+
 [project.urls]
 Homepage = "https://github.com/Chrismarsh/mesher"
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import ctypes
 import sys, os
 import json
 import numpy as np
@@ -8,6 +9,7 @@ import scipy.sparse.csgraph as graph
 import scipy.sparse.linalg as linalg
 import importlib.util
 
+from mesher.mesh_store import batches
 from mesher.mesh_topology import audit_mesh, MeshTopologyError, validate_neighbours
 
 def _load_metis():
@@ -109,10 +111,32 @@ def compute_nd_permutation(neighbor_list):
 
     return LUperm.perm_c.tolist()
 
-def compute_metis_permutation_N(neighbor_list,nrank):
-    """Computes an nrank partition using METIS
-    - Uses metis deffault permutation for partitions"""
+def _compact_metis_graph(metis, neighbours):
+    """Pack triangle adjacency into METIS CSR arrays without Python objects per edge."""
+    dtype = np.dtype(metis.idx_t)
+    if len(neighbours) > np.iinfo(dtype).max:
+        raise MeshTopologyError('Mesh exceeds METIS index width; use 64-bit METIS')
+    offsets = np.empty(len(neighbours) + 1, dtype=dtype)
+    offsets[0] = 0
+    for lo, hi in batches(len(neighbours)):
+        counts = np.count_nonzero(neighbours[lo:hi] >= 0, axis=1)
+        ends = int(offsets[lo]) + np.cumsum(counts, dtype=np.int64)
+        if ends[-1] > np.iinfo(dtype).max:
+            raise MeshTopologyError('Mesh adjacency exceeds METIS index width; use 64-bit METIS')
+        offsets[lo+1:hi+1] = ends
+    edges = np.empty(int(offsets[-1]), dtype=dtype)
+    for lo, hi in batches(len(neighbours)):
+        block = neighbours[lo:hi]
+        edges[offsets[lo]:offsets[hi]] = block[block >= 0]
+    pointer = ctypes.POINTER(metis.idx_t)
+    # data_as retains a reference to its NumPy buffer throughout the native call.
+    return metis.METIS_Graph(metis.idx_t(len(neighbours)), metis.idx_t(1),
+                             offsets.ctypes.data_as(pointer), edges.ctypes.data_as(pointer),
+                             None, None, None)
 
+
+def metis_face_order(neighbor_list, nrank):
+    """Return partition sizes and new-position -> original-face index."""
     neighbours = validate_neighbours(neighbor_list)
     N = len(neighbours)
     if not isinstance(nrank, (int, np.integer)) or isinstance(nrank, bool) or not 2 <= nrank <= N:
@@ -123,24 +147,25 @@ def compute_metis_permutation_N(neighbor_list,nrank):
         # Some METIS versions return empty parts for this tiny-graph case.
         labels = np.arange(N)
     else:
-        trim_neighbor_list = [row[row >= 0].tolist() for row in neighbours]
         metis = _load_metis()
-        m = metis.part_graph(trim_neighbor_list,nrank)
-        labels = np.asarray(m[1])
+        labels = np.asarray(metis.part_graph(_compact_metis_graph(metis, neighbours), nrank)[1])
     if labels.shape != (N,) or labels.dtype.kind not in 'iu':
         raise MeshTopologyError(f'METIS returned an invalid partition array; expected {N} integer labels')
     if labels.min() < 0 or labels.max() >= nrank:
         raise MeshTopologyError('METIS returned partition labels outside the requested rank range')
-    rank_size = np.bincount(labels.astype(np.int64), minlength=nrank)
+    rank_size = np.bincount(labels.astype(np.int64, copy=False), minlength=nrank)
     if np.any(rank_size == 0):
         raise MeshTopologyError('METIS returned an empty partition; reduce nrank or inspect disconnected components')
     # This is new-position -> original-face-index, as consumed by CHM.
-    permutation = np.argsort(labels, kind='stable').tolist()
+    return rank_size, np.argsort(labels, kind='stable')
 
+
+def compute_metis_permutation_N(neighbor_list, nrank):
+    rank_size, permutation = metis_face_order(neighbor_list, nrank)
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
     print_bandwidth_before_after_permutation(A,permutation)
 
-    return rank_size.tolist(), permutation
+    return rank_size.tolist(), permutation.tolist()
 
 
 def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):

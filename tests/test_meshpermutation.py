@@ -11,10 +11,16 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from collections import namedtuple
 
 from mesher.mesh_topology import build_neighbours, MeshTopologyError
 from mesher.tools import meshpermutation as permutation
 from test_mesh_topology import square_mesh
+
+
+def metis_stub(labels):
+    return SimpleNamespace(part_graph=Mock(return_value=(1, labels)), idx_t=ctypes.c_int32,
+                           METIS_Graph=namedtuple('Graph', 'nvtxs ncon xadj adjncy vwgt vsize adjwgt'))
 
 
 class MeshPermutationTests(unittest.TestCase):
@@ -38,19 +44,22 @@ class MeshPermutationTests(unittest.TestCase):
         neighbours = [[1, -1, -1], [0, 2, -1], [1, -1, -1]]
         for labels in ([], [0], [0, 1, 2], [-1, 0, 1], [0.0, 1.0, 0.0], [0, 0, 0]):
             with self.subTest(labels=labels):
-                backend = SimpleNamespace(part_graph=Mock(return_value=(0, labels)))
+                backend = metis_stub(labels)
                 with patch.object(permutation, '_load_metis', return_value=backend):
                     with self.assertRaisesRegex(MeshTopologyError, 'METIS returned'):
                         permutation.compute_metis_permutation_N(neighbours, 2)
 
     def test_permutation_is_new_position_to_old_face(self):
         neighbours = [[1, -1, -1], [0, 2, -1], [1, -1, -1]]
-        backend = SimpleNamespace(part_graph=Mock(return_value=(1, [1, 0, 1])))
+        backend = metis_stub([1, 0, 1])
         with patch.object(permutation, '_load_metis', return_value=backend), contextlib.redirect_stdout(io.StringIO()):
             sizes, order = permutation.compute_metis_permutation_N(neighbours, 2)
         self.assertEqual(sizes, [1, 2])
         self.assertEqual(order, [1, 0, 2])
-        backend.part_graph.assert_called_once_with([[1], [0, 2], [1]], 2)
+        graph_arg, parts = backend.part_graph.call_args[0]
+        self.assertEqual(parts, 2)
+        self.assertEqual(graph_arg.xadj[:4], [0, 1, 3, 4])
+        self.assertEqual(graph_arg.adjncy[:4], [1, 0, 2, 1])
 
     def test_one_face_per_rank_has_an_exact_partition(self):
         with patch.object(permutation, '_load_metis') as loader, contextlib.redirect_stdout(io.StringIO()):

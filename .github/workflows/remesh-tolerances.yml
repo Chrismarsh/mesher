@@ -16,8 +16,17 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates cmake g++ make \
             libcgal-dev libgdal-dev libboost-filesystem-dev libboost-program-options-dev \
-            libmetis-dev gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
+            libmetis-dev python3-h5py-mpi gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
       - uses: actions/checkout@v4
+      - name: Check serial and parallel CHM HDF5 export
+        env:
+          PYTHONPATH: src:tests
+          OPENBLAS_NUM_THREADS: 1
+          MESHER_TEST_MPI_HDF5: "1"
+          OMPI_ALLOW_RUN_AS_ROOT: "1"
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: python3 -m unittest -v test_chm_hdf5
       - name: Build and test the native backend
         run: |
           cmake -S . -B build -DBUILD_TESTING=ON

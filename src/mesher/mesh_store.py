@@ -18,6 +18,15 @@ from .mesh_topology import MeshTopologyError
 BATCH_SIZE = 32768
 
 
+def rank_face_range(nfaces, rank, nranks):
+    """Match array_split's contiguous ownership without a global index array."""
+    if nranks <= 0 or not 0 <= rank < nranks:
+        raise ValueError('Invalid rank layout')
+    count, extra = divmod(nfaces, nranks)
+    start = rank*count + min(rank, extra)
+    return start, start + count + (rank < extra)
+
+
 def batches(count, size=BATCH_SIZE):
     if size < 1:
         raise ValueError('Batch size must be positive')

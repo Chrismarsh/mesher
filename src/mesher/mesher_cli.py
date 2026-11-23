@@ -43,7 +43,7 @@ from mpi4py import MPI
 from . import mesher_utls
 from .mesher_utls import mpi_resume
 from .mesh_store import (BATCH_SIZE, batches, disk_array, copy_array, open_mesh_arrays,
-                         check_boundary_geometry, dump_json, write_vtu)
+                         check_boundary_geometry, dump_json, rank_face_range, write_vtu)
 from .mesh_topology import (MeshTopologyError, integer_rows, build_neighbours,
                             boundary_subdivisions)
 from .mesher_utls.raster_utils import fill_nodata
@@ -91,6 +91,27 @@ def _run(configfile, resume, resources):
         _positive_integer(num_tiles, 'mpi_num_tiles')
     parameter_batch_size = _positive_integer(getattr(X, 'mpi_parameter_batch_size', BATCH_SIZE),
                                              'mpi_parameter_batch_size')
+    write_hdf5 = getattr(X, 'write_hdf5', False)
+    write_text = getattr(X, 'write_text', True)
+    if not isinstance(write_hdf5, bool) or not isinstance(write_text, bool):
+        raise ValueError('write_hdf5 and write_text must be booleans')
+    if write_hdf5:
+        from .chm_hdf5 import require_h5py, launch_writers, export_hdf5
+        h5py = require_h5py()
+        hdf5_partitions = _positive_integer(getattr(X, 'hdf5_partition_ranks', 1), 'hdf5_partition_ranks')
+        writers = _positive_integer(getattr(X, 'hdf5_nworkers', MPI_nworkers), 'hdf5_nworkers')
+        if writers > MPI_nworkers:
+            raise ValueError('hdf5_nworkers cannot exceed MPI_nworkers')
+        template, declared = _launcher_template(MPI_exec_str)
+        hdf5_launcher, actual = _task_launch(template, writers, MPI_nworkers)
+        if writers > 1 and (actual != writers or declared not in (None, MPI_nworkers)):
+            raise ValueError('Set MPI_exec_str with a matching MPI_nworkers count or a {nworkers} placeholder '
+                             'to run the requested HDF5 writers')
+        if writers > 1 and not h5py.get_config().mpi:
+            # Some installations select the parallel h5py build only under mpirun.
+            # Check the actual worker environment before starting a long mesh run.
+            probe, count = _task_launch(template, min(writers, 2), actual)
+            launch_writers('--check', count, probe)
     gdal_prefix = find_gdal_prefix()
 
     base_name = os.path.basename(dem_filename)
@@ -104,7 +125,7 @@ def _run(configfile, resume, resources):
         raise ValueError('Partial resume requires mpi_mesh=True and reuse_mesh=False')
     if resume and not os.path.isdir(base_dir):
         raise ValueError(f'No interrupted MPI run in {base_dir}')
-    if mpi_mesh:
+    if mpi_mesh or write_hdf5:
         resources.enter_context(mpi_resume.output_lock(base_dir))
     checkpoint_path = Path(base_dir) / (base_name + '_mpi_checkpoint.json')
     layout_path = Path(base_dir) / (base_name + '_mpi_layout.json')
@@ -428,21 +449,25 @@ def _run(configfile, resume, resources):
             write_shp(base_dir + output_name + '_USM.shp', mesh, params, ics)
 
 
-        print('Saving mesh to file ' + output_name + '.mesh')
-        with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
-            dump_json(mesh, outfile)
+        if write_hdf5:
+            export_hdf5(Path(user_output_dir) / output_name, mesh['mesh'], params, srs.ExportToProj4(),
+                        hdf5_partitions, writers, hdf5_launcher)
 
-        # pdb.set_trace()
-        if write_param_per_file:
-            print('Saving parameters to individual files')
-            for key, data in params.items():
-                out_path = user_output_dir + f'{output_name}.param.{key}.json'
-                with open(out_path, 'w') as outfile:
-                    dump_json({key: data}, outfile)
-        else:
-            print('Saving parameters to file ' + output_name + '.param')
-            with open(user_output_dir + output_name + '.param', 'w') as outfile:
-                dump_json(params, outfile)
+        if write_text:
+            print('Saving mesh to file ' + output_name + '.mesh')
+            with open(user_output_dir + output_name + '.mesh', 'w') as outfile:
+                dump_json(mesh, outfile)
+
+            if write_param_per_file:
+                print('Saving parameters to individual files')
+                for key, data in params.items():
+                    out_path = user_output_dir + f'{output_name}.param.{key}.json'
+                    with open(out_path, 'w') as outfile:
+                        dump_json({key: data}, outfile)
+            else:
+                print('Saving parameters to file ' + output_name + '.param')
+                with open(user_output_dir + output_name + '.param', 'w') as outfile:
+                    dump_json(params, outfile)
 
         print('Saving initial conditions  to file ' + output_name + '.ic')
         with open(user_output_dir + output_name + '.ic', 'w') as outfile:
@@ -752,7 +777,6 @@ def prepare_domain_files(base_dir, base_name, plgs_shp, src_ds, dem, gdal_prefix
 
 def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, configfile, output_dir=None):
     """Launch workers once against shared arrays and collect only this run's results."""
-    from .mesher_utls.MPI_do_parameterize import rank_face_range
 
     worker = os.path.join(os.path.dirname(mesher_utls.__file__), 'MPI_do_parameterize.py')
     configfile = os.path.abspath(configfile)

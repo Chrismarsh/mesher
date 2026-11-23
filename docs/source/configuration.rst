@@ -262,6 +262,66 @@ Writes a .shp file corresponding to the produced triangulation. Is an expensive 
 Write a .vtu file that can be view in Paraview. 
 
 
+CHM output
+----------
+
+.. confval:: write_hdf5
+
+   :type: boolean
+   :default: False
+
+Write a global CHM mesh and parameter pair named ``<name>_mesh.h5`` and
+``<name>_param.h5``. MPI meshes retain the ``_mpi`` suffix in ``<name>``.
+The writers read the prepared geometry and parameter columns from shared storage
+in bounded batches. Install ``mesher[hdf5]`` or provide h5py in the environment.
+
+.. confval:: write_text
+
+   :type: boolean
+   :default: True
+
+Write the JSON ``.mesh`` and ``.param`` outputs. Set this to ``False`` to skip
+both, including individual parameter JSON files when ``write_param_per_file``
+is enabled. The HDF5 parameter file contains all columns. Initial conditions
+use the existing ``.ic`` output. Shapefile and VTU output have separate switches.
+
+.. confval:: hdf5_partition_ranks
+
+   :type: integer
+   :default: 1
+
+At 1, export faces in their original order. For CHM's ``partition`` tool,
+set this to the target number of CHM ranks (at least 2). Mesher runs METIS
+once on the global adjacency graph, then writes the face connectivity and
+parameters in partition order and translates neighbour IDs into that order.
+The ``id`` parameter retains the original Mesher face index. The METIS graph
+and permutation require memory on the parent process. The HDF5 output feeds
+directly into CHM's existing ghost-region partitioner.
+
+.. confval:: hdf5_nworkers
+
+   :type: integer
+   :default: MPI_nworkers
+
+Number of concurrent HDF5 writers, between 1 and ``MPI_nworkers``. A single
+writer supports serial h5py. Multiple writers require MPI-enabled builds of
+HDF5 and h5py using the job's MPI implementation. All writers must see the
+same output directory. To use fewer writers with a custom MPI launcher, include
+the ``{nworkers}`` placeholder in ``MPI_exec_str``. Standard leading
+``mpirun -n N`` and ``mpiexec -np N`` commands can be resized automatically.
+
+For example, a configuration for a 50-rank CHM run with eight HDF5 writers::
+
+    write_hdf5 = True
+    write_text = False
+    hdf5_partition_ranks = 50
+    hdf5_nworkers = 8
+
+Given an MPI mesh named ``FABDEM_mpi``, run::
+
+    mpirun -n 8 partition --mesh-file FABDEM_mpi_mesh.h5 --param-file FABDEM_mpi_param.h5 --mpi-ranks 50
+
+
 Coordinate systems
 ===================
 

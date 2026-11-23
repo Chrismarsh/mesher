@@ -6,6 +6,7 @@ except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
     from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
 ensure_mesher_on_path()
+from mesher.mesh_store import rank_face_range
 import cloudpickle
 from mpi4py import MPI
 import numpy as np
@@ -283,15 +284,6 @@ def do_parameterize(gt, is_geographic, mesh,
     #     ics[key] = output
 
     return params #, ics
-
-def rank_face_range(nfaces, rank, nranks):
-    """Match array_split's contiguous ownership without a global index array."""
-    if nranks <= 0 or not 0 <= rank < nranks:
-        raise ValueError('Invalid parameterization rank layout')
-    count, extra = divmod(nfaces, nranks)
-    start = rank*count + min(rank, extra)
-    return start, start + count + (rank < extra)
-
 
 def _load_rank_mesh(prep, rank, nranks):
     vertices = np.load(prep['verts_path'], mmap_mode='r')
