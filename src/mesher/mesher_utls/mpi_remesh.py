@@ -25,7 +25,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import polygonize
 
 from mesher.mesh_topology import MeshTopologyError, build_neighbours, boundary_subdivisions, boundary_node_conflicts
-from mesher.mesher_utls.mpi_progress import debug_log
+from mesher.mesher_utls.mpi_progress import debug_log, report_phase
 
 ogr.UseExceptions()
 
@@ -1124,6 +1124,10 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         record = history[attempt]
         prepare_started = time.perf_counter()
         retained_ids = np.flatnonzero(keep)
+        # An outer disk-interface attempt may need several local cavity solves
+        # before it can offer the disk mesh a matching edge.
+        report_phase(options, f'solving cavity, attempt {attempt+1}/{attempts} '
+                     f'({len(retained_ids):,} retained of {len(joined_t):,} local faces)')
         retained, retained_sources = joined_t[keep], sources[keep]
         adjacency = _retained_neighbours(neighbours, keep)
         coverage = mesh_coverage(joined_v, retained, adjacency)

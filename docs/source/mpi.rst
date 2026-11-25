@@ -59,6 +59,15 @@ lines and a heartbeat every 30 seconds, even if no task has finished recently::
    MPI tiles: 37/96 | elapsed 00:12:30
    MPI merge stage 1/7 (columns): 16/48 | elapsed 00:00:30
 
+One MPI rank processes each pair. When a stage launches just one pair,
+including after a resume, its heartbeat also shows the worker's current
+operation. During seam repair the worker reports the disk-interface attempt
+and active face count. Within that attempt it shows the local cavity attempt
+and the number of retained faces. The counter reaches 1/1 once it publishes
+the checkpoint::
+
+   MPI merge stage 10/13 (rows): 0/1 | elapsed 00:24:15 | solving seam, attempt 2/12 (221,990 active faces)
+
 For an 8-row by 12-column grid, the 7 stages comprise 4 column stages and
 3 row stages. Intermediate filenames count from zero, so the first stage
 writes files containing ``_mpi_stage0_``.
@@ -318,6 +327,12 @@ smoother has been removed because it did not preserve the checked constraints
 and criteria. Remove ``mpi_lloyd_boundary_tol`` and any nonzero
 ``mpi_global_lloyd`` from MPI configurations; ``mpi_global_lloyd=0`` remains a
 compatibility no-op. Serial Lloyd smoothing is still available via ``lloyd_itr``.
+
+For disk-backed merges, ``input_neighbour_seconds`` measures the time spent
+building adjacency for both input archives and ``output_neighbour_seconds``
+measures the same operation on the joined mesh. These fields in the merge
+JSON's ``remesh_report`` help distinguish full-mesh topology costs from the
+cost of refining the seam.
 
 Pairwise merges keep unaffected interiors on disk. Before the last seam
 attempt, the worker checks both input tiles for remaining artificial cuts,

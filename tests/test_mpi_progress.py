@@ -12,7 +12,7 @@ import subprocess
 
 import cloudpickle
 
-from mesher.mesher_utls.mpi_progress import StageProgress, complete_task
+from mesher.mesher_utls.mpi_progress import StageProgress, complete_task, report_phase
 
 
 class Terminal(io.StringIO):
@@ -23,6 +23,27 @@ class Terminal(io.StringIO):
 
 
 class MpiProgressTests(unittest.TestCase):
+    def test_single_merge_reports_its_phase_before_the_checkpoint(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as root:
+            with StageProgress([{}], 'resumed merge', root, stream, show_phase=True) as progress:
+                task, = progress.tasks
+                for phase in ('building output neighbours', 'writing the merged archive'):
+                    report_phase(task, phase)
+                    progress._count()
+                    progress._render(force=True)
+                    self.assertIn('0/1 | elapsed', stream.getvalue().splitlines()[-1])
+                    self.assertTrue(stream.getvalue().splitlines()[-1].endswith(' | ' + phase))
+                complete_task(task)
+            self.assertTrue(stream.getvalue().splitlines()[-1].endswith(' | complete'))
+            # Other workers should never contend for a common phase file.
+            with StageProgress([{}, {}], 'two merges', root, stream, show_phase=True) as multiple:
+                for task in multiple.tasks:
+                    self.assertNotIn('_mpi_phase_file', task)
+                    report_phase(task, 'solving seam')
+                self.assertFalse(list(multiple.directory.iterdir()))
+            report_phase({'_mpi_phase_file': str(Path(root)/'removed'/'merge.phase')}, 'finishing')
+
     # Exercise the live display with stale or partial progress so a failed stage does not finish
     # with a misleading complete count.
     def test_terminal_counts_only_current_completed_tasks_and_keeps_failure_visible(self):

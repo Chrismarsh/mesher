@@ -14,7 +14,7 @@ import cloudpickle
 import numpy as np
 from mpi4py import MPI
 from mesher.mesher_utls.mpi_resume import publish
-from mesher.mesher_utls.mpi_progress import complete_task, debug_log
+from mesher.mesher_utls.mpi_progress import complete_task, debug_log, report_phase
 
 
 # A site launcher passes the disconnect flag as text. Only an explicit true means this worker
@@ -53,6 +53,7 @@ def merge_tiles(args):
     tile_b = args['tile_b']
 
     log_step('Loading tile metadata/npz')
+    report_phase(args, 'loading merge metadata and constraints')
     with open(tile_a['meta']) as f:
         meta_a = json.load(f)
     with open(tile_b['meta']) as f:
@@ -73,6 +74,7 @@ def merge_tiles(args):
             load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
             args, staged_archive)
         bounds = bbox_union(bounds_a, bounds_b)
+        report_phase(args, 'publishing the merge checkpoint')
         publish(staged_archive, prefix, dict(core_bbox=bounds, tile_bbox=bounds, band_width=0,
                 empty_tile=report['output_faces'] == 0, merge_method='remesh', remesh_report=report), args)
 

@@ -20,7 +20,7 @@ from shapely.ops import polygonize
 from mesher.mesh_store import batches, disk_array, open_mesh_arrays, check_boundary_geometry
 from mesher.mesh_topology import MeshTopologyError, build_neighbours
 from . import mpi_remesh as remesh
-from .mpi_progress import debug_log
+from .mpi_progress import debug_log, report_phase
 
 
 def selected_boundary(vertices, triangles, neighbours, active):
@@ -166,7 +166,7 @@ def compact_region(vertices, triangles, active):
     return vertices[used], inverse.reshape(-1, 3), ids
 
 
-def boundary_index(vertices, triangles):
+def boundary_index(vertices, triangles, neighbours=None):
     """Index exposed edges by XY so independently numbered meshes can be compared.
 
     Return unordered endpoint pairs for matching whole edges and a map from
@@ -174,7 +174,8 @@ def boundary_index(vertices, triangles):
     """
     if not len(triangles):
         return set(), {}
-    neighbours = build_neighbours(triangles, len(vertices), vertices)
+    if neighbours is None:
+        neighbours = build_neighbours(triangles, len(vertices), vertices)
     faces, slots = np.nonzero(neighbours < 0)
     pairs = triangles[faces[:, None], (slots[:, None] + [1, 2]) % 3]
     points = {i: tuple(vertices[i, :2]) for i in np.unique(pairs)}
@@ -368,16 +369,22 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         work = Path(name)
         inputs, active = [], []
         input_seconds = 0.0
+        input_neighbour_seconds = 0.0
         for index, (path, core) in enumerate(((path_a, bounds_a), (path_b, bounds_b))):
+            report_phase(options, f'opening input {index+1}/2')
             read_started = time.perf_counter()
             v, t = stack.enter_context(open_mesh_arrays(path, work))
             input_seconds += time.perf_counter() - read_started
+            report_phase(options, f'building neighbours for input {index+1}/2 ({len(t):,} faces)')
+            neighbour_started = time.perf_counter()
             neighbours = (build_neighbours(t, len(v), v, chunk_size=32768,
                 output_path=work/f'neighbours-{index}.npy', temporary_directory=work)
                 if len(t) else np.empty((0, 3), dtype=np.int64))
+            input_neighbour_seconds += time.perf_counter() - neighbour_started
             # Active faces belong to the local solve. This includes collar
             # triangles we hope to keep, so the disk cut can move outward
             # without forcing every newly loaded face to be remeshed.
+            report_phase(options, f'selecting seam faces in input {index+1}/2')
             selection = disk_array(work/f'active-{index}.npy', (len(t),), bool)
             for lo, hi in batches(len(t)):
                 selection[lo:hi] = ~remesh._retain_mask(v, t[lo:hi], core, axis, seam, width)
@@ -415,6 +422,7 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         collar_rings = 4
         attempt = 0
         while attempt < limit:
+            report_phase(options, f'finding disk interfaces for seam attempt {attempt+1}/{limit}')
             # The mask counts original faces for disk ownership. After a retry
             # their replacements may contain many more triangles, so charge
             # the cached triangle count against the next solve's memory budget.
@@ -473,20 +481,28 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 bv, bt = av[:0], at[:0]
             debug_log(options, f'Seam region [{Path(output).stem}]: active={active_count}, '
                       f'interiors_on_disk={total-selected_count}')
+            report_phase(options, f'solving seam, attempt {attempt+1}/{limit} ({active_count:,} active faces)')
             try:
                 lv, lt, report = remesh.merge_cavity(av, at, bounds_a, bv, bt, bounds_b,
                     domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep,
                     disk_coverage=outside)
+                report_phase(options, f'checking disk interfaces for seam attempt {attempt+1}/{limit}')
                 # Splitting a disk-facing edge leaves the covered area unchanged.
                 # Check its endpoints too, or the split vertex becomes a hanging
                 # node when the two meshes are joined.
                 if len(lt):
-                    local_coverage = remesh.mesh_coverage(lv, lt)
+                    # Both checks inspect the same accepted triangles. Share their
+                    # adjacency here, before an interface repair can change face IDs.
+                    local_neighbours = build_neighbours(lt, len(lv), lv)
+                    local_coverage = remesh.mesh_coverage(lv, lt, local_neighbours)
                     if local_coverage.symmetric_difference(local_domain).area > remesh.area_tolerance(local_domain):
                         raise remesh.PatchError('Seam region has inconsistent target coverage')
+                    keys, boundary_ids = boundary_index(lv, lt, local_neighbours)
+                    del local_neighbours
                 elif not local_domain.is_empty:
                     raise remesh.PatchError('Seam region is unexpectedly empty')
-                keys, boundary_ids = boundary_index(lv, lt)
+                else:
+                    keys, boundary_ids = set(), {}
                 missing = [interfaces.keys() - keys for interfaces in cuts]
                 reports.append(report)
                 report['unmatched_disk_edges'] = sum(map(len, missing))
@@ -540,12 +556,19 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 debug_log(options, f'Expanding seam region after rejected local repair: {exc}')
             else:
                 if not any(affected):
+                    report_phase(options, 'joining the seam to the disk interiors')
                     out_v, out_t = stream_join(inputs, active, lv, lt, work)
+                    output_neighbour_seconds = 0.0
                     if len(out_t):
+                        report_phase(options, f'building output neighbours ({len(out_t):,} faces)')
+                        neighbour_started = time.perf_counter()
                         neighbours = build_neighbours(out_t, len(out_v), out_v, 32768,
                             work/'final-neighbours.npy', work)
+                        output_neighbour_seconds = time.perf_counter() - neighbour_started
+                        report_phase(options, 'checking the merged boundary')
                         check_boundary_geometry(out_v, out_t, neighbours, work)
                     # Copy NPY members directly into the backward-compatible NPZ archive.
+                    report_phase(options, 'writing the merged archive')
                     write_started = time.perf_counter()
                     temporary = work/'complete.npz'
                     with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
@@ -557,7 +580,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                         roundoff_disk_parents=sum(map(len, roundoff_parents)),
                         boundary_halo_area=target.area-domain.intersection(box(*bounds)).area,
                         disk_interior_faces=len(out_t)-len(lt), output_faces=len(out_t),
-                        input_seconds=input_seconds, output_npz_seconds=time.perf_counter()-write_started,
+                        input_seconds=input_seconds, input_neighbour_seconds=input_neighbour_seconds,
+                        output_neighbour_seconds=output_neighbour_seconds, output_npz_seconds=time.perf_counter()-write_started,
                         elapsed_seconds=time.perf_counter()-started)
                     return report
             if attempt+1 == limit:

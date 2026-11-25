@@ -1437,7 +1437,7 @@ def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
     print(f'{label}: launching {workers} MPI ranks for {len(tasks)} tasks', flush=True)
     debug = any(task.get('mesher_debug', False) for task in tasks)
     worker_path = os.path.join(os.path.dirname(mesher_utls.__file__), worker)
-    with StageProgress(tasks, label, debug=debug) as progress:
+    with StageProgress(tasks, label, debug=debug, show_phase=worker == 'MPI_merge_tiles.py') as progress:
         arguments = str(progress.directory / 'tasks.pickle')
         with open(arguments, 'wb') as stream:
             cloudpickle.dump(progress.tasks, stream)

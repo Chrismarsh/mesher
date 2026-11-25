@@ -94,3 +94,25 @@ class MeshTopologyTests(unittest.TestCase):
         result = build_neighbours(triangles, width * width, chunk_size=2)
         np.testing.assert_array_equal(result, expected)
         validate_neighbours(result)
+
+    def test_interleaved_runs_match_opposite_slots_with_64bit_vertex_ids(self):
+        # Every triangle meets at the centre, but its two radial neighbours can
+        # land in any sort run. Compute their row IDs directly from the fan.
+        count = 385
+        base = 2**40
+        order = np.random.default_rng(27).permutation(count)
+        row = np.argsort(order)
+        triangles = np.column_stack((np.full(count, base), base+1+order, base+1+(order+1) % count))
+        expected = np.column_stack((np.full(count, -1), row[(order+1) % count], row[(order-1) % count]))
+        for chunk in (1, 5, np.int8(64)):
+            with self.subTest(chunk=chunk):
+                actual = build_neighbours(triangles, base+count+1, chunk_size=chunk)
+                np.testing.assert_array_equal(actual, expected)
+
+    def test_third_owner_in_a_distant_run_is_rejected(self):
+        # Put the three owners into separate generations of the external merge.
+        # A boundary pair must not be finalized before the third record is seen.
+        triangles = np.arange(3, 3+3*193).reshape(-1, 3)
+        triangles[[0, 80, 192], :2] = (0, 1)
+        with self.assertRaisesRegex(MeshTopologyError, r'Non-manifold edge \(0, 1\)'):
+            build_neighbours(triangles, int(triangles.max()+1), chunk_size=1)

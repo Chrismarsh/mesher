@@ -72,6 +72,8 @@ class DiskMergeTests(unittest.TestCase):
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=observe):
             report = self.merge()
         self.assertGreaterEqual(report['input_seconds'], 0)
+        self.assertGreater(report['input_neighbour_seconds'], 0)
+        self.assertGreater(report['output_neighbour_seconds'], 0)
         self.assertGreaterEqual(report['output_npz_seconds'], 0)
         self.assertLess(max(loaded), 400)  # 1,600 input faces; distant interiors never loaded.
         self.assertGreater(report['disk_interior_faces'], 1200)
@@ -96,9 +98,12 @@ class DiskMergeTests(unittest.TestCase):
             marker.write_text(json.dumps({'core_bbox': bounds, 'merge_method': 'remesh'}))
             tiles.append({'npz': str(path), 'meta': str(marker)})
         count = np.count_nonzero
+        phase = self.root / 'merge.phase'
         with patch.object(np, 'count_nonzero', side_effect=lambda a: np.int64(count(a))):
             merge_tiles(dict(self.options, tile_a=tiles[0], tile_b=tiles[1], constraints=[],
-                             outer_polygon_shp=str(domain), out_prefix=str(self.output.with_suffix(''))))
+                             outer_polygon_shp=str(domain), out_prefix=str(self.output.with_suffix('')),
+                             _mpi_phase_file=str(phase)))
+        self.assertEqual(phase.read_text(), 'publishing the merge checkpoint')
         report = json.loads(self.output.with_suffix('.json').read_text())['remesh_report']
         self.assertIs(type(report['peak_loaded_faces']), int)
         self.assertGreater(report['peak_loaded_faces'], 0)
