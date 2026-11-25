@@ -42,6 +42,9 @@ def _write_slices(plan, arrays, params, h5py, comm=None):
     # It reads the slash-prefixed attributes from the file root.
     with h5py.File(directory / 'mesh.h5', 'w', **driver) as mesh, \
             h5py.File(directory / 'param.h5', 'w', **driver) as parameters:
+        # Parallel HDF5 requires all writers to create the same groups,
+        # datasets and attributes in the same order, even on ranks whose
+        # slice is empty. Rank-specific writes start after schema creation.
         group = mesh.create_group('mesh')
         vertices = group.create_dataset('vertex', (nverts,), dtype=np.dtype(('f8', (3,))))
         elements = group.create_dataset('elem', (nfaces,), dtype=np.dtype(('i4', (3,))))
@@ -67,6 +70,9 @@ def _write_slices(plan, arrays, params, h5py, comm=None):
         lo, hi = rank_face_range(nfaces, rank, workers)
         for start, end in batches(hi-lo):
             rows = slice(lo+start, lo+end)
+            # CHM indexes parameter rows and neighbours by output face ID.
+            # order finds the source face for each row. inverse translates
+            # its neighbour IDs back to output rows, preserving boundary -1.
             source = arrays['order'][rows] if permuted else rows
             elements[rows] = arrays['elem'][source].astype('i4')
             adjacent = arrays['neigh'][source]
@@ -96,7 +102,8 @@ def export_hdf5(prefix, mesh, params, proj4, partitions, workers, launcher):
     param_path = prefix.with_name(prefix.name + '_param.h5')
     with tempfile.TemporaryDirectory(prefix='.mesher-hdf5-', dir=prefix.parent) as work:
         directory = Path(work)
-        # The normal export path always passes entire prepared .npy arrays.
+        # Give writers paths to the prepared arrays so each rank can map its
+        # input on shared storage without receiving a copy of the full mesh.
         geometry = {key: os.fspath(mesh[key].filename) for key in ('vertex', 'elem', 'neigh')}
         sizes = [nfaces]
         if partitions > 1:

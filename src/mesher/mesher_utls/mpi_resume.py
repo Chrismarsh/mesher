@@ -107,6 +107,9 @@ def archive_info(path):
             raise ValueError('Expected verts.npy and tris.npy')
         for name, kinds in [('verts.npy', 'f'), ('tris.npy', 'iu')]:
             info = archive.getinfo(name)
+            # A large restart may inspect thousands of archives. The header
+            # and ZIP directory let us check the array dimensions and compare
+            # the recorded size and CRC without scanning the triangle payload.
             with archive.open(info) as stream:
                 version = np.lib.format.read_magic(stream)
                 if version == (1, 0):
@@ -140,6 +143,8 @@ def publish(staged, prefix, marker, task):
     staged_marker = Path(staged).with_suffix('.json')
     with staged_marker.open('w') as stream:
         json.dump(marker, stream)
+    # Retire the old marker first. If this worker dies between renames, a
+    # restart must schedule the pair again even if its NPZ already exists.
     metadata.unlink(missing_ok=True)
     os.replace(staged, archive)
     os.replace(staged_marker, metadata)
@@ -165,6 +170,9 @@ def unfinished(tasks, plan, label):
             members, faces = archive_info(prefix + '.npz')
             if marker['empty_tile'] != (faces == 0) or (merge and marker['remesh_report']['output_faces'] != faces):
                 raise ValueError('Face count mismatch')
+            # Rebuilding a parent can change connectivity while preserving its
+            # filename, bounds and face count. Its new generation invalidates
+            # the merges that used it, leaving sibling branches reusable.
             generations = [m['checkpoint']['generation'] for m in records] if merge else []
             checkpoint = marker.get('checkpoint')
             if checkpoint is None:

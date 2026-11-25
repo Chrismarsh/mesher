@@ -1432,6 +1432,8 @@ def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, tot
             print(f'MPI merge {stage_label}: {len(tasks)} merges')
 
     if resume_plan:
+        # Size the launch after checking the pairs. A restart near the end of
+        # a stage may have just one pair left for the allocation to process.
         tasks = mpi_resume.unfinished(tasks, resume_plan, f'MPI merge {stage_label}')
     _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, 'MPI_merge_tiles.py',
                         f'MPI merge {stage_label}' if stage_label else 'MPI merge')
@@ -1485,6 +1487,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
         if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
             raise ValueError(f'mpi_{key} must be an integer >= {minimum}')
     if previous:
+        # Tile IDs and pairwise merge filenames come from this grid. Keeping
+        # it lets a smaller allocation finish the same tree of checkpoints.
         rows, cols = previous['grid']
         if num_tiles is not None and num_tiles != rows*cols:
             raise ValueError('MPI checkpoint is incompatible with mpi_num_tiles')
@@ -1497,6 +1501,8 @@ def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
     min_edge = min(tile_width, tile_height)
     band_width = remesh_options.get('remesh_band_width')
     if band_width is None:
+        # sqrt(area) gives a length scale for the seam. On a fine tile grid,
+        # cap the default so the band leaves room for a reusable tile interior.
         band_width = min(2 * math.sqrt(max_area), .2 * min_edge)
     if not np.isfinite(band_width) or band_width <= 0:
         raise ValueError('mpi_remesh_band_width must be positive and finite')

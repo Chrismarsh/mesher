@@ -15,6 +15,8 @@ import numpy as np
 
 from .mesh_topology import MeshTopologyError
 
+# This row count trades sequential I/O against temporary array size. Changing
+# it moves the boundaries between reads and writes without changing face IDs.
 BATCH_SIZE = 32768
 
 

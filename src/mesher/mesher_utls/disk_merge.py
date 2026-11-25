@@ -54,6 +54,9 @@ def inactive_coverage(vertices, triangles, neighbours, active):
             interfaces[tuple(sorted(pair))] = face
             cut_vertices.update(zip(ids, pair))
     pieces = []
+    # polygonize also returns polygons inside holes. selected_boundary orients
+    # each edge with its disk face on the left, so a CCW exterior that follows
+    # one of those edges encloses retained material.
     for polygon in polygonize(edges):
         coords = list(polygon.exterior.coords)
         if not polygon.exterior.is_ccw:
@@ -82,6 +85,9 @@ def grow_active(active, neighbours, seeds, rings, max_faces=None):
             break
         count += len(frontier)
         if max_faces is not None and count > max_faces:
+            # The caller is testing whether a whole component fits. Leaving a
+            # partial component active would exclude those faces from the disk mesh
+            # even though no face IDs are returned for the local solve.
             for ring in added:
                 active[ring] = False
             return None
@@ -121,6 +127,8 @@ def widen_disk_collars(inputs, active, pending, capacity, rings):
             candidates = np.unique(adjacent[adjacent >= 0])
             next_ring.append(candidates[~selection[candidates]])
         count = sum(map(len, next_ring))
+        # Both tiles draw from one worker's budget. Check the combined ring
+        # before changing either mask so tile order cannot favour one side.
         if count == 0 or count > capacity:
             break
         for selection, collar, faces in zip(active, collars, next_ring):
@@ -194,6 +202,8 @@ def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangl
                     break
                 ring.extend(chain[:-1])
             else:
+                # Each ring follows one triangle's perimeter. With no interior
+                # vertices, triangulating n boundary vertices yields n-2 faces.
                 if (expected_faces + len(ring)-2 > options.get('remesh_max_active_faces', 2000000)
                         or boundary_vertices + len(ring) > options.get('remesh_max_vertices', 500000)):
                     continue
@@ -205,6 +215,8 @@ def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangl
         return None
 
     result = remesh.subdivide_parents(records, options, directory)
+    # One rejected child keeps its whole parent on disk. Other parents in
+    # the same backend batch can still contribute all of their children.
     accepted = [[], []]
     ids = dict(boundary_ids)
     extra, children = [], []
@@ -332,6 +344,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             neighbours = (build_neighbours(t, len(v), v, chunk_size=32768,
                 output_path=work/f'neighbours-{index}.npy', temporary_directory=work)
                 if len(t) else np.empty((0, 3), dtype=np.int64))
+            # Active faces belong to the local solve. This includes collar
+            # triangles we hope to keep, so the disk cut can move outward
+            # without forcing every newly loaded face to be remeshed.
             selection = disk_array(work/f'active-{index}.npy', (len(t),), bool)
             for lo, hi in batches(len(t)):
                 selection[lo:hi] = ~remesh._retain_mask(v, t[lo:hi], core, axis, seam, width)
@@ -367,6 +382,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         collar_rings = 4
         attempt = 0
         while attempt < limit:
+            # The mask counts original faces for disk ownership. After a retry
+            # their replacements may contain many more triangles, so charge
+            # the cached triangle count against the next solve's memory budget.
             selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
             active_count = (selected_count if cached is None
                             else len(cached[1]) + sum(len(added) for added, _ in pending))
@@ -426,8 +444,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 lv, lt, report = remesh.merge_cavity(av, at, bounds_a, bv, bt, bounds_b,
                     domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep,
                     disk_coverage=outside)
-                # Local checks preserve the target footprint; verify the disk-facing
-                # interface by exact endpoints before treating it as a completed merge.
+                # Splitting a disk-facing edge leaves the covered area unchanged.
+                # Check its endpoints too, or the split vertex becomes a hanging
+                # node when the two meshes are joined.
                 if len(lt):
                     local_coverage = remesh.mesh_coverage(lv, lt)
                     if local_coverage.symmetric_difference(local_domain).area > remesh.area_tolerance(local_domain):
@@ -461,6 +480,9 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                               for endpoints in cut_vertices]
                     cached = lv, lt, shared
             except remesh.PatchBoundaryRoundoff as exc:
+                # Preflight can release another disk parent before CGAL runs.
+                # Each successful release shrinks the immutable interior, so
+                # this path can make progress even on the last allowed solve.
                 if not exc.preflight_only:
                     attempt += 1
                 if attempt == limit or not release_disk_parents(exc.chords):
@@ -533,9 +555,11 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 # remove the artificial cut where its whole component fits.
                 capacity = max_active - len(lt) - sum(len(added) for added, _ in pending)
                 close_components = attempt+2 == limit and close_disk_components(inputs, active, pending, capacity)
-                # If the cut keeps moving, give the next solve more retained
-                # neighbours between the repair and the new disk boundary.
-                # Never widen the actual cavity just to move the disk cut.
+                # A repair can split the next disk edge and move the same problem
+                # outward one ring at a time. Back off by doubling the retained
+                # collar while the count stalls. Once it falls, local growth
+                # saves memory. Only the failed parents and their immediate
+                # neighbours are selected for removal here.
                 unmatched = report['unresolved_disk_edges']
                 if previous_unmatched is not None and unmatched >= previous_unmatched:
                     collar_rings = min(2 * collar_rings, max_active)

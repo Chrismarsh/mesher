@@ -280,6 +280,9 @@ def mesh_coverage(vertices, triangles, neighbours=None):
 def area_tolerance(domain):
     if domain.is_empty:
         return 1e-10
+    # At large projected eastings or northings, coordinate roundoff along the
+    # perimeter can look like a thin strip of missing area. Perimeter times
+    # coordinate error gives the area scale for this footprint check.
     scale = max(1.0, *(abs(x) for x in domain.bounds))
     return max(1e-10, 64 * np.finfo(float).eps * scale * domain.length)
 
@@ -385,6 +388,8 @@ def split_edge_chain(a, b, adjacent, epsilon=None):
             along = (x*dx + y*dy) / length
             if xy == b or (position < along < length and abs(dx*y - dy*x) <= epsilon*length):
                 steps.append((xy, along))
+        # A fork inside the roundoff allowance is ambiguous. Following the
+        # closest branch could assign an edge to the wrong input segment.
         if len(steps) != 1:
             return None
         xy, position = steps[0]
@@ -672,7 +677,8 @@ def _shared_interface(a, b):
 def _retain_mask(vertices, triangles, bounds, axis, seam, width):
     pts = vertices[triangles, :2]
     inside = ((pts >= np.asarray(bounds[:2])) & (pts <= np.asarray(bounds[2:]))).all(axis=(1, 2))
-    # All three vertices must be on the retained side; no centroid clipping.
+    # A face whose centroid is outside the band can still reach across the
+    # seam. Releasing the whole face leaves existing edges for the patch to meet.
     away = (np.abs(pts[:, :, axis] - seam) >= width).all(axis=1)
     return inside & away
 

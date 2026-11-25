@@ -10,6 +10,8 @@ int repair_patch(const std::string& input, const std::string& output,
     const auto started = PatchClock::now();
     const std::string temporary = output + ".tmp";
     std::ofstream out(temporary);
+    // Python uses these XY pairs to look up existing seam vertices by exact
+    // coordinates. A shorter decimal representation can change a vertex key.
     out << std::setprecision(std::numeric_limits<double>::max_digits10) << "{\"repairs\":[";
     size_t input_vertices = 0, accepted = 0, rejected = 0;
     bool first = true;
@@ -36,6 +38,9 @@ int repair_patch(const std::string& input, const std::string& output,
         auto is_bad = criteria.is_bad_object();
         bool valid = true;
         size_t faces = 0;
+        // The children replace one complete retained triangle. Returning only
+        // the good children would leave a hole. Reject the whole subdivision
+        // so the caller can reopen the cavity around this parent.
         for (auto f = cdt.finite_faces_begin(); f != cdt.finite_faces_end(); ++f) {
             if (!f->is_in_domain()) continue;
             ++faces;
