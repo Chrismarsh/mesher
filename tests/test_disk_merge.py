@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from shapely import union_all
+from shapely import covers, points, union_all
 from shapely.geometry import box, LineString, mapping, Polygon, shape
 from osgeo import gdal, osr
 
@@ -162,6 +162,42 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
 
+    def test_mixed_disk_subdivisions_expand_only_the_failed_parent(self):
+        # Both interiors exceed the spare face budget. One exact split fits its
+        # disk parent and one would create an 18.4-degree child. Only the
+        # failed parent needs to draw its neighbours into the next solve.
+        original = mpi_remesh.merge_cavity
+        splits = []
+        def split_both_cuts(av, at, *args, **kwargs):
+            if splits:
+                kept_xy = {tuple(xy) for xy in av[np.unique(at[kwargs['initial_keep']]), :2]}
+                self.assertIn(tuple(splits[0][:2]), kept_xy)
+                # The right-hand parent has been repaired, so its disk-side
+                # neighbour collar must still be on disk.
+                right_cut = splits[0][0]
+                self.assertLessEqual(av[:, 0].max(), right_cut + 1)
+            v, t, report = original(av, at, *args, **kwargs)
+            if not splits:
+                v, t, good = self.split_vertical_cut(v, t, 2-np.sqrt(2), (40, 60))
+                v, t, bad = self.split_vertical_cut(v, t, .5, (20, 40))
+                self.assertIsNotNone(good)
+                self.assertIsNotNone(bad)
+                splits.extend((good, bad))
+            return v, t, report
+
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_both_cuts):
+            report = self.merge(remesh_max_attempts=2, remesh_max_active_faces=500)
+        self.assertEqual(report['seam_attempts'], 2)
+        first, = report['seam_attempt_reports']
+        self.assertEqual(first['unmatched_disk_edges'], 2)
+        self.assertEqual(first['disk_parents_subdivided'], 1)
+        self.assertEqual(first['unresolved_disk_edges'], 1)
+        self.assertEqual(report['unresolved_disk_edges'], 0)
+        self.assertGreater(report['disk_interior_faces'], 1000)
+        self.assertLessEqual(report['peak_loaded_faces'], 500)
+        v, _ = self.assert_valid()
+        self.assertEqual(np.count_nonzero((v == splits[0]).all(axis=1)), 1)
+
     def moving_cut(self, splits):
         original = mpi_remesh.merge_cavity
         def split_boundary(*args, **kwargs):
@@ -170,6 +206,27 @@ class DiskMergeTests(unittest.TestCase):
             splits.append(point is not None)
             return v, t, report
         return patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary)
+
+    def test_stalled_cut_clears_refined_band_without_loading_whole_interior(self):
+        # Model a backend that splits any exposed vertical edge in a fixed
+        # strip. The prescribed grid elsewhere keeps this moving-cut regression
+        # independent of CGAL refinement order. Disk subdivisions use CGAL.
+        vertices, triangles = grid(0, 80, 0, 10)
+        centers = points(vertices[triangles, :2].mean(axis=1))
+        splits = []
+        def split_inside_strip(*args, prepared_domain, **kwargs):
+            faces = triangles[covers(prepared_domain, centers)]
+            used, index = np.unique(faces, return_inverse=True)
+            v, t, point = self.split_vertical_cut(vertices[used], index.reshape(-1, 3), .5, (32, 40))
+            splits.append(point is not None)
+            return v, t, {}
+
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_inside_strip):
+            report = self.merge(remesh_max_attempts=4, remesh_max_active_faces=500)
+        self.assertEqual(splits, [True, True, True, False])
+        self.assertLessEqual(report['peak_loaded_faces'], 500)
+        self.assertGreater(report['disk_interior_faces'], 1000)
+        self.assert_valid()
 
     def test_repeated_moving_cut_closes_only_affected_interior_within_budget(self):
         splits = []

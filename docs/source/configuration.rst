@@ -946,11 +946,14 @@ interiors; no approximate welding or relaxed quality criteria are used.
 If a disk edge has been split, Mesher first tries to subdivide its owning
 triangle using the exact vertices from the seam. Each child must satisfy the
 native quality criteria, and the new boundary must match the remaining disk
-edges. When this repair fails, Mesher loads neighbouring faces and reuses the
-completed local mesh. On the last expansion it first reserves space for the
-usual collars. It then loads the connected disk interiors touching each collar
-if they fit the remaining active-face budget. Unrelated components stay on
-disk. The final mesh goes through the usual topology checks.
+edges. A merge can accept some parent subdivisions and retain their children
+while loading neighbours of the remaining parents. Each retry reuses the local
+mesh and opens the cavity around the unresolved parents. If the number of
+unmatched edges stops falling, Mesher doubles the requested collar depth. These
+extra rings remain eligible for retention. Mesher adds a ring only when it fits
+the active-face budget across both tiles. On the last expansion, closing an
+entire affected disk component takes priority when it fits. Unrelated components
+stay on disk. The final mesh goes through the usual topology checks.
 
 When a rejected local solve leaves no mesh to reuse, the final seam attempt
 opens the remaining connected disk regions at the artificial cuts where they
@@ -984,7 +987,8 @@ and ``seam_work_reused`` (faces carried into expansion attempts, not unique fina
 faces). Existing refinement counters describe the final local repair, with
 prior successful local reports under ``seam_attempt_reports``. Each report counts
 ``unmatched_disk_edges`` before disk-side repair. A successful subdivision
-records ``disk_parents_subdivided``. Expansions record ``disk_expansion_faces``
+records ``disk_parents_subdivided``. The count after repair is
+``unresolved_disk_edges``. Expansions record ``disk_expansion_faces``
 and whether they closed affected disk components (``closing_disk_components``).
 
 ``tests/benchmark_streaming.py`` measures export heap allocations separately

@@ -108,6 +108,31 @@ def close_disk_components(inputs, active, pending, capacity):
     return closed
 
 
+def widen_disk_collars(inputs, active, pending, capacity, rings):
+    """Add complete retained rings on both tiles while the cached solve fits."""
+    frontiers = [added for added, _ in pending]
+    collars = [[added] for added in frontiers]
+    for _ in range(rings):
+        if capacity <= 0:
+            break
+        next_ring = []
+        for (_, _, neighbours), selection, frontier in zip(inputs, active, frontiers):
+            adjacent = neighbours[frontier].ravel()
+            candidates = np.unique(adjacent[adjacent >= 0])
+            next_ring.append(candidates[~selection[candidates]])
+        count = sum(map(len, next_ring))
+        if count == 0 or count > capacity:
+            break
+        for selection, collar, faces in zip(active, collars, next_ring):
+            selection[faces] = True
+            collar.append(faces)
+        capacity -= count
+        frontiers = next_ring
+    for side, collar in enumerate(collars):
+        if len(collar) > 1:
+            pending[side] = (np.concatenate(collar), pending[side][1])
+
+
 def compact_region(vertices, triangles, active):
     # This allocation is proportional to the active seam, never the interiors.
     ids = np.concatenate([np.flatnonzero(active[lo:hi])+lo for lo, hi in batches(len(triangles))]) if len(triangles) else np.empty(0, dtype=np.int64)
@@ -147,59 +172,84 @@ def extend_cached_region(cached, inputs, pending):
 
 
 def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangles, boundary_ids, keys, options, directory):
-    """Fit disk parents to verified seam edges, committing only a complete repair."""
-    limit = options.get('remesh_max_active_faces', 2000000)
+    """Stage each repairable parent. Only its own complete chain can replace it."""
     adjacent = {}
     for a, b in keys:
         adjacent.setdefault(a, []).append(b)
         adjacent.setdefault(b, []).append(a)
-    records, extra = [], []
-    ids = dict(boundary_ids)
+    records, owners = [], []
     expected_faces = len(triangles)
     boundary_vertices = 0
-    for (v, t, _), faces, edges in zip(inputs, parents, missing):
+    for side, ((v, t, _), faces, edges) in enumerate(zip(inputs, parents, missing)):
         for face in faces:
-            points = v[t[face]]
-            corners = list(map(tuple, points[:, :2]))
+            corners = list(map(tuple, v[t[face], :2]))
             ring = []
-            for i, a in enumerate(corners):
-                b = corners[(i+1) % 3]
-                if a not in ids:
-                    ids[a] = len(vertices) + len(extra)
-                    extra.append(points[i])
-                if tuple(sorted((a, b))) in edges:
-                    chain = remesh.split_edge_chain(a, b, adjacent)
-                    if chain is None:
-                        return None
-                    ring.extend(chain[:-1])
-                else:
+            for a, b in zip(corners, corners[1:] + corners[:1]):
+                edge = tuple(sorted((a, b)))
+                if edge not in edges:
                     ring.append(a)
-            expected_faces += len(ring)-2
-            boundary_vertices += len(ring)
-            if expected_faces > limit or boundary_vertices > options.get('remesh_max_vertices', 500000):
-                return None
-            records.append({'id': len(records), 'parent': corners, 'boundary': ring})
-    result = remesh.subdivide_parents(records, options, directory)
-    if not all(r['accepted'] for r in result['repairs']):
+                    continue
+                chain = remesh.split_edge_chain(a, b, adjacent)
+                if chain is None:
+                    break
+                ring.extend(chain[:-1])
+            else:
+                if (expected_faces + len(ring)-2 > options.get('remesh_max_active_faces', 2000000)
+                        or boundary_vertices + len(ring) > options.get('remesh_max_vertices', 500000)):
+                    continue
+                expected_faces += len(ring)-2
+                boundary_vertices += len(ring)
+                records.append({'id': len(records), 'parent': corners, 'boundary': ring})
+                owners.append((side, face))
+    if not records:
         return None
-    children = [[ids[tuple(p)] for p in child] for r in result['repairs'] for child in r['triangles']]
+
+    result = remesh.subdivide_parents(records, options, directory)
+    accepted = [[], []]
+    ids = dict(boundary_ids)
+    extra, children = [], []
+    for repair in result['repairs']:
+        if not repair['accepted']:
+            continue
+        side, face = owners[repair['id']]
+        accepted[side].append(face)
+        v, t, _ = inputs[side]
+        for point in v[t[face]]:
+            xy = tuple(point[:2])
+            if xy not in ids:
+                ids[xy] = len(vertices) + len(extra)
+                extra.append(point)
+        children.extend([ids[tuple(p)] for p in child] for child in repair['triangles'])
+    if not children:
+        return None
     if extra:
         vertices = np.vstack((vertices, extra))
     triangles = np.vstack((triangles, children))
     try:
-        repaired_keys, _ = boundary_index(vertices, triangles)
+        repaired_keys, repaired_ids = boundary_index(vertices, triangles)
     except MeshTopologyError:
         return None
-    # Check the new cut against the remaining disk faces before accepting it.
-    for values, selection, faces in zip(inputs, active, parents):
+
+    # Moving an accepted parent into the seam exposes its other edges and may
+    # introduce a shared corner. Re-index the new cut before caching any work.
+    unresolved, shared = [], []
+    for values, selection, faces, old_edges in zip(inputs, active, accepted, missing):
+        edges, endpoints = set(), {}
         selection[faces] = True
         try:
-            if any(tuple(sorted(pair)) not in repaired_keys
-                   for _, _, pair, internal in selected_boundary(*values, selection) if internal):
-                return None
+            for _, indices, pair, internal in selected_boundary(*values, selection):
+                if internal:
+                    edge = tuple(sorted(pair))
+                    if edge not in repaired_keys:
+                        if edge not in old_edges:
+                            return None
+                        edges.add(edge)
+                    endpoints.update(zip(indices, pair))
         finally:
             selection[faces] = False
-    return vertices, triangles
+        unresolved.append(edges)
+        shared.append(endpoints)
+    return vertices, triangles, accepted, unresolved, shared, repaired_ids
 
 
 def stream_join(inputs, active, local_v, local_t, work):
@@ -313,6 +363,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 debug_log(options, f'Remeshing {count} disk faces along a roundoff-width boundary')
             return count
 
+        previous_unmatched = None
+        collar_rings = 4
         attempt = 0
         while attempt < limit:
             selected_count = sum(int(np.count_nonzero(selection)) for selection in active)
@@ -384,22 +436,26 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                     raise remesh.PatchError('Seam region is unexpectedly empty')
                 keys, boundary_ids = boundary_index(lv, lt)
                 missing = [interfaces.keys() - keys for interfaces in cuts]
-                affected = [sorted({interfaces[edge] for edge in edges}) for interfaces, edges in zip(cuts, missing)]
                 reports.append(report)
                 report['unmatched_disk_edges'] = sum(map(len, missing))
+                affected = [sorted({interfaces[edge] for edge in edges}) for interfaces, edges in zip(cuts, missing)]
                 parent_count = sum(map(len, affected))
                 if parent_count and limit > 1 and active_count + parent_count <= max_active:
                     peak_active = max(peak_active, active_count + parent_count)
                     repaired = subdivide_disk_interface(inputs, active, affected, missing, lv, lt,
                                                         boundary_ids, keys, options, directory)
                     if repaired is not None:
-                        lv, lt = repaired
-                        for selection, faces in zip(active, affected):
+                        lv, lt, accepted, missing, cut_vertices, boundary_ids = repaired
+                        for selection, faces in zip(active, accepted):
                             selection[faces] = True
-                        report['disk_parents_subdivided'] = parent_count
-                        debug_log(options, f'Matched disk interface [{Path(output).stem}]: '
-                                  f'subdivided {parent_count} disk parents')
-                        affected = [[], []]
+                        accepted_count = sum(map(len, accepted))
+                        selected_count += accepted_count
+                        affected = [sorted({interfaces[e] for e in edges}) for interfaces, edges in zip(cuts, missing)]
+                        parent_count = sum(map(len, affected))
+                        report['disk_parents_subdivided'] = accepted_count
+                        debug_log(options, f'Subdivided {accepted_count} disk parents [{Path(output).stem}]: '
+                                  f'{parent_count} parents still require expansion')
+                report['unresolved_disk_edges'] = sum(map(len, missing))
                 if any(affected):
                     shared = [{i: boundary_ids[xy] for i, xy in endpoints.items() if xy in boundary_ids}
                               for endpoints in cut_vertices]
@@ -453,11 +509,12 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 side = next(i for i, edges in enumerate(missing) if edges)
                 edge = min(missing[side])
                 example = tuple(tuple(map(float, p)) for p in edge)
+                remaining = [r['unresolved_disk_edges'] for r in reports if 'unresolved_disk_edges' in r]
                 raise remesh.PatchError(
                     f'Seam-region expansion exhausted [{Path(output).stem}] after {attempt+1} attempts: '
                     f'{sum(map(len, missing))} unmatched disk edges on {parent_count} parents, '
                     f'active={active_count}, active_face_limit={max_active}, '
-                    f'interiors_on_disk={total-selected_count}, example={example}, '
+                    f'interiors_on_disk={total-selected_count}, unresolved_by_solve={remaining}, example={example}, '
                     f'owner={cuts[side][edge]} in {(path_a, path_b)[side]}, inputs=({path_a}, {path_b})')
             pending = []
             for selection, (_, _, neighbours), seeds in zip(active, inputs, affected):
@@ -476,12 +533,25 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 # remove the artificial cut where its whole component fits.
                 capacity = max_active - len(lt) - sum(len(added) for added, _ in pending)
                 close_components = attempt+2 == limit and close_disk_components(inputs, active, pending, capacity)
+                # If the cut keeps moving, give the next solve more retained
+                # neighbours between the repair and the new disk boundary.
+                # Never widen the actual cavity just to move the disk cut.
+                unmatched = report['unresolved_disk_edges']
+                if previous_unmatched is not None and unmatched >= previous_unmatched:
+                    collar_rings = min(2 * collar_rings, max_active)
+                else:
+                    collar_rings = 4
+                previous_unmatched = unmatched
+                if collar_rings > 4 and not close_components:
+                    widen_disk_collars(inputs, active, pending, capacity, collar_rings - 4)
                 count = sum(len(added) for added, _ in pending)
                 debug_log(options, f'Expanding disk interface [{Path(output).stem}]: '
-                          f'unmatched_edges={sum(map(len, missing))}, loading={count}, '
+                          f'unmatched_edges={unmatched}, loading={count}, '
                           f'closing_components={close_components}')
                 report['active_faces'] = active_count
                 report['disk_expansion_faces'] = count
                 report['closing_disk_components'] = close_components
+            else:
+                previous_unmatched = None
             attempt += 1
         raise remesh.PatchError('No conforming seam-region replacement')
