@@ -5,11 +5,15 @@
 #include <stdexcept>
 #include <string>
 
+// Turn a sampling mismatch into a failing test process even when compiler assertions are
+// disabled.
 void require(bool condition, const std::string& message)
 {
     if (!condition) throw std::runtime_error(message);
 }
 
+// Use a known grid to separate valid zero elevations, masked pixels and NoData, including when
+// the affine transform is rotated.
 void sampling_cases(std::array<double, 6> gt)
 {
     auto ds = GetGDALDriverManager()->GetDriverByName("MEM")->Create("", 10, 8, 1, GDT_Float32, nullptr);
@@ -18,6 +22,8 @@ void sampling_cases(std::array<double, 6> gt)
     require(ds->GetRasterBand(1)->Fill(0) == CE_None, "Fill zero-valued raster");
     raster r;
     r.setDs(ds);
+    // Express the test triangle in pixel coordinates so the same overlap is
+    // exercised on both the north-up and the rotated grids.
     auto make = [&](double x0, double y0, double x1, double y1, double x2, double y2) {
         vertex a, b, c;
         GDALApplyGeoTransform(gt.data(), x0, y0, &a[0], &a[1]);
@@ -59,6 +65,8 @@ void sampling_cases(std::array<double, 6> gt)
     require(missing.is_nan, "Preserve source NoData through the temporary raster");
 }
 
+// Force RasterIO to fail so reading unavailable samples cannot silently produce a passing
+// quality metric.
 void failed_read_case()
 {
     const char* vrt = "<VRTDataset rasterXSize='10' rasterYSize='10'>"
@@ -82,6 +90,7 @@ void failed_read_case()
     require(rejected, "Failed RasterIO must raise, never evaluate uninitialized data");
 }
 
+// Run the same checks on north-up and rotated grids before exercising the read-error path.
 int main()
 {
     GDALAllRegister();

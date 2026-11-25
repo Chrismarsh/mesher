@@ -15,6 +15,8 @@ import numpy as np
 from mesher.mesh_store import batches, disk_array, dump_json, write_vtu
 
 
+# Repeat one triangle to scale output row count independently of geometry. Measure JSON and VTU
+# writes using the same mapped inputs.
 def measure(count):
     with tempfile.TemporaryDirectory(prefix='mesher-stream-benchmark-') as work:
         root = Path(work)

@@ -53,6 +53,8 @@ def triangle_errors(vertices, triangles, elevation, transform, srs, min_area):
 
 @unittest.skipUnless(os.environ.get('MESHER_TEST_EXE'), 'Set MESHER_TEST_EXE to the rebuilt meshercxx')
 class RemeshToleranceTests(unittest.TestCase):
+    # Construct projected terrain with a known elevation field and a physical constraint so the
+    # same features can be checked at every tolerance.
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -80,6 +82,8 @@ class RemeshToleranceTests(unittest.TestCase):
                             max_area=60000, min_area=1200, errormetric='rmse',
                             remesh_band_width=150, remesh_max_attempts=6, remesh_max_vertices=10000)
 
+    # Independently measure terrain error and check topology and stream coverage so the solver
+    # cannot validate itself using its own quality report.
     def check_mesh(self, vertices, triangles, tolerance):
         validate_patch(vertices, triangles, self.domain, self.streams)
         topology = audit(vertices, triangles)
@@ -100,6 +104,8 @@ class RemeshToleranceTests(unittest.TestCase):
         self.assertLessEqual(maximum, tolerance + 1e-7)
         return maximum
 
+    # Route the shared fixture through a whole-domain solve or the selected seam merge, keeping
+    # the terrain and refinement settings comparable.
     def mesh(self, options, bounds, on_disk):
         if bounds is None:
             return remesh_domain(self.domain, self.streams, options, self.work)
@@ -118,6 +124,8 @@ class RemeshToleranceTests(unittest.TestCase):
                                              self.domain, self.streams, options, self.work)
         return vertices, triangles
 
+    # Repeat the same quality checks from sub-metre to hundreds-of-metres tolerances. Check that
+    # varying the tolerance actually changes the result.
     def run_sweep(self, bounds=None, on_disk=False):
         observed = {}
         for tolerance in TOLERANCES_M:
@@ -132,13 +140,18 @@ class RemeshToleranceTests(unittest.TestCase):
             self.assertGreater(observed[500][1], 100)
             self.assertGreater(observed[0.25][0], observed[500][0])
 
+    # Establish the single-domain result across tolerances without an artificial tile interface.
     def test_whole_domain(self):
         self.run_sweep()
 
+    # Place the tile split across the domain and use the disk join so terrain quality is also
+    # checked at the boundary of the retained interior.
     def test_vertical_disk_seam(self):
         x, y, xmax, ymax = self.domain.bounds
         self.run_sweep(([x, y, x+612, ymax], [x+612, y, xmax, ymax]), on_disk=True)
 
+    # Rotate the artificial split and exercise the in-memory stitch so the sweep covers both
+    # merge paths.
     def test_horizontal_in_memory_seam(self):
         x, y, xmax, ymax = self.domain.bounds
         self.run_sweep(([x, y, xmax, y+525], [x, y+525, xmax, ymax]))

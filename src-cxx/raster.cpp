@@ -20,6 +20,8 @@
 #include <limits>
 #include <stdexcept>
 
+// Open a source for read-only sampling and transfer the GDAL handle to this wrapper, which also
+// validates the transform and first band.
 void raster::open(std::string path)
 {
     auto opened = static_cast<GDALDataset*>(GDALOpen(path.c_str(), GA_ReadOnly));
@@ -27,8 +29,12 @@ void raster::open(std::string path)
     setDs(opened);
 }
 
+// Start without a dataset or buffers so destruction is safe even when opening a raster fails
+// partway.
 raster::raster() : gt(nullptr), ds(nullptr), band(nullptr), mask(nullptr), data(nullptr) {}
 
+// The wrapper owns the sample and mask buffers and the dataset. GDAL owns the band as part of
+// that dataset.
 raster::~raster()
 {
     delete[] gt;
@@ -37,6 +43,8 @@ raster::~raster()
     if (ds) GDALClose(ds);
 }
 
+// Sample a terrain vertex independently of the polygon burn. GDAL can exclude an edge pixel
+// from the area mask even when the vertex lies inside the raster.
 double raster::getXY(double x, double y)
 {
     auto pixel = xy_to_pxpy(x, y);
@@ -45,6 +53,8 @@ double raster::getXY(double x, double y)
     return getpXpY(pixel.first, pixel.second, false);
 }
 
+// Return fractional column and row using the inverse affine transform. Window bounds and point
+// sampling both need the original grid's rotation and shear.
 std::pair<double,double> raster::pixel_coordinates(double x, double y) const
 {
     if (!ds || !gt) throw std::runtime_error("Raster geotransform is unavailable");
@@ -54,6 +64,8 @@ std::pair<double,double> raster::pixel_coordinates(double x, double y) const
             inverse_gt[4] * x + inverse_gt[5] * y};
 }
 
+// Return the containing pixel index on each axis, admitting roundoff at the outer edge. An
+// out-of-range index makes the sample missing.
 std::pair<int,int> raster::xy_to_pxpy(double x, double y)
 {
     auto pixel = pixel_coordinates(x, y);
@@ -72,10 +84,17 @@ std::pair<int,int> raster::xy_to_pxpy(double x, double y)
             index(pixel.second, ds->GetRasterYSize(), precision * (std::abs(inverse_gt[4]) + std::abs(inverse_gt[5])))};
 }
 
+// Borrow the six affine coefficients so a triangle window can preserve the source grid when it
+// gets its own origin.
 double *raster::getGt() const { return gt; }
+// Borrow the dataset for dimensions and projection metadata. Its lifetime is tied to this
+// wrapper.
 GDALDataset* raster::getDs() const { return ds; }
+// Borrow the source band for a window read or a NoData lookup.
 GDALRasterBand* raster::getBand() const { return band; }
 
+// Take ownership of a dataset and discard cached samples and georeferencing from the previous
+// one. The new band and inverse transform must describe the same grid.
 void raster::setDs(GDALDataset* source)
 {
     if (ds && ds != source) GDALClose(ds);
@@ -89,12 +108,16 @@ void raster::setDs(GDALDataset* source)
     if (!band) throw std::runtime_error("Raster has no data band");
 }
 
+// Take ownership of the polygon burn buffer. Its zero entries exclude pixels from area
+// statistics.
 void raster::setMask(float *values)
 {
     delete[] mask;
     mask = values;
 }
 
+// Use NaN for missing or excluded samples. A failed GDAL read raises an error so a broken
+// raster cannot pass a terrain tolerance check.
 double raster::getpXpY(int px, int py, bool apply_mask)
 {
     const double missing = std::numeric_limits<double>::quiet_NaN();
@@ -112,6 +135,8 @@ double raster::getpXpY(int px, int py, bool apply_mask)
     return value;
 }
 
+// Write the samples to the triangle band before accepting ownership. On success pixel reads
+// use the same buffer directly. If the write fails the caller still owns it.
 void raster::setBand(float *values, int xsize, int ysize)
 {
     if (band->RasterIO(GF_Write, 0, 0, xsize, ysize, values, xsize, ysize, GDT_Float32, 0, 0) != CE_None)

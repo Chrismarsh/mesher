@@ -346,6 +346,9 @@ def stream_join(inputs, active, local_v, local_t, work):
     return out_v, out_t
 
 
+# Remesh the seam while the two interiors stay on disk. Compare the solved boundary against both
+# disk cuts before joining them. On a mismatch, carry the solved faces into a wider collar
+# within the active-face budget.
 def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, options, output):
     started = time.perf_counter()
     # Keep failed native reproductions beside the final mesh even when staging its archive.
@@ -394,6 +397,8 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         reused = 0
         roundoff_parents = [set(), set()]
 
+        # A roundoff-width strip can be bounded by a face outside the active mesh. Find that
+        # face on the disk cut and move it into the solve that can change its edge.
         def release_disk_parents(chords):
             count = 0
             for values, selection, released in zip(inputs, active, roundoff_parents):

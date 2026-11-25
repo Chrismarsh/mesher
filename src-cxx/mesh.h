@@ -54,6 +54,8 @@ public:
         typedef Delaunay_mesh_vertex_base_with_info_2<Info, GT, Vb2>   Other;
     };
 
+    // Keep the base vertex construction overloads available to CGAL. The extra info field is
+    // assigned when vertices are numbered for input or export.
     Delaunay_mesh_vertex_base_with_info_2()
             : Vb() {}
 
@@ -66,6 +68,8 @@ public:
     Delaunay_mesh_vertex_base_with_info_2(Face_handle c)
             : Vb(c) {}
 
+    // Both accessors refer to the same ID. The writer numbers vertices once, then uses those
+    // IDs for triangle and constraint connectivity.
     const Info& info() const { return _info; }
     Info&       info()       { return _info; }
 };
@@ -90,6 +94,8 @@ public:
         typedef Delaunay_mesh_face_base_info_2<Gt, Fb2> Other;
     };
 
+    // All three CGAL construction paths initialize the extra face ID. Domain marking and
+    // neighbour export later reuse it for their own numbering.
     Delaunay_mesh_face_base_info_2() : Fb()
     {
         id = 0;

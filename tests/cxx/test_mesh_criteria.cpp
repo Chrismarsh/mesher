@@ -3,11 +3,15 @@
 #include <stdexcept>
 #include <vector>
 
+// Use an exception for a failed check so the executable reports failures in release builds as
+// well as debug builds.
 void require(bool condition, const char* message)
 {
     if (!condition) throw std::runtime_error(message);
 }
 
+// Exercise cached and freshly evaluated face quality. A raster failure must retain its
+// refinement priority when CGAL revisits a queued face.
 void mandatory_raster_cases()
 {
     using CGAL::Mesh_2::BAD;
@@ -67,6 +71,8 @@ void mandatory_raster_cases()
     }
 }
 
+// Keep shape checks active below the raster refinement floor and use a failing raster read to
+// detect accidental sampling there.
 void minimum_area_cases()
 {
     using CGAL::Mesh_2::BAD;
@@ -119,6 +125,8 @@ void minimum_area_cases()
     }
 }
 
+// Check the queue comparison across triples as well as pairs. A cycle can corrupt CGAL's
+// ordered queue even when individual comparisons look plausible.
 int main()
 {
     GDALAllRegister();
@@ -138,6 +146,7 @@ int main()
                 values.push_back(q);
             }
         }
+        // Ordered containers treat two keys as equivalent when neither compares less.
         auto equivalent = [](const Criteria::Quality& a, const Criteria::Quality& b) {
             return !(a < b) && !(b < a);
         };

@@ -24,6 +24,8 @@ gdal.UseExceptions()  # Enable exception support
 ogr.UseExceptions()
 osr.UseExceptions()
 
+# The external launcher passes False as a nonempty string. Decode it before deciding whether
+# there is an MPI parent to disconnect.
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
@@ -69,9 +71,13 @@ def _read_valid_samples(raster, src_offset):
 class _ValidRasterSource(GDALRasterSource):
     """Give exactextract finite, scaled samples with raw NoData already masked."""
 
+    # Give exactextract the same validity mask and scaled samples as the GDAL sampler, including
+    # for integer class rasters.
     def read_window(self, x0, y0, nx, ny):
         return np.ma.masked_invalid(_read_valid_samples(self.band, (x0, y0, nx, ny)), copy=False)
 
+    # The returned mask already accounts for NoData before scaling. Applying the raw sentinel a
+    # second time could discard a valid scaled value.
     def nodata_value(self):
         # The window mask is authoritative, including for scaled rasters.
         return None
@@ -98,6 +104,8 @@ def _projected_triangle_areas(mesh, chunk_size=65536):
     return areas
 
 
+# Custom reducers receive the triangle's rectangular pixel window with excluded cells set to
+# NaN. ALL_TOUCHED keeps the legacy sampling rule at the boundary.
 def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
 
     if src_offset[2] <= 0 or src_offset[3] <= 0:
@@ -161,6 +169,8 @@ def rasterize_elem(rds, mem_layer, aggMethod, srs, new_gt, src_offset):
     return output
 
 
+# Register the config under the name stored by pickled callbacks so a worker can resolve them
+# before processing its first batch.
 @lru_cache(maxsize=4)
 def _load_config(configfile):
     # Load once per worker, including before unpickling callbacks referenced
@@ -173,6 +183,8 @@ def _load_config(configfile):
     return module
 
 
+# Evaluate one parameter on one triangle for callers using the GDAL sampler. Reduce each input
+# raster first, then pass those aggregates to the classifier. Area uses geometry directly.
 def do_parameterize(gt, is_geographic, mesh,
                     parameter_files, current_parameter,
                     initial_conditions, RasterXSize, RasterYSize, srs_proj4,
@@ -285,6 +297,8 @@ def do_parameterize(gt, is_geographic, mesh,
 
     return params #, ics
 
+# Keep global vertex IDs but slice face rows to the rank. Return the global start and stop so
+# local results can be placed back in CHM order.
 def _load_rank_mesh(prep, rank, nranks):
     vertices = np.load(prep['verts_path'], mmap_mode='r')
     elements = np.load(prep['elems_path'], mmap_mode='r')
@@ -296,6 +310,8 @@ def _load_rank_mesh(prep, rank, nranks):
     return mesh, start, stop
 
 
+# Older preparation manifests collect row dictionaries per rank. Restore global IDs before the
+# parent combines those files.
 def _write_worker_results(prep, ret_tri, start, stop):
     rank = MPI.COMM_WORLD.rank
     for index, triangle in enumerate(ret_tri, start):
@@ -305,6 +321,9 @@ def _write_worker_results(prep, ret_tri, start, stop):
         cloudpickle.dump(output, stream)
 
 
+# Map the rank's geometry and evaluate bounded face batches into its own slice of each output
+# column. A completion marker lets the parent distinguish finished rows from an interrupted
+# write.
 def main(pickle_file: str, disconnect: bool, configfile: str):
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
@@ -339,6 +358,8 @@ def main(pickle_file: str, disconnect: bool, configfile: str):
         MPI.Comm.Get_parent().Disconnect()
 
 
+# Evaluate parameters for one local face batch. Built-in statistics can share a raster scan
+# while custom reducers need their original masked pixel windows.
 def _parameterize_batch(prep, mesh, configfile, log_options):
     gt, is_geographic = prep['gt'], prep['is_geographic']
     parameter_files, initial_conditions = prep['parameter_files'], prep['initial_conditions']
@@ -349,6 +370,8 @@ def _parameterize_batch(prep, mesh, configfile, log_options):
     ret_tri = [{} for _ in range(mesh['mesh']['nelem'])]
     projected_areas = None if is_geographic else _projected_triangle_areas(mesh)
 
+    # Close the triangle rings and number features in batch order so each zonal statistic can be
+    # assigned back to its face.
     def build_tri_features(mesh):
         features = []
         verts = mesh['mesh']['vertex']
@@ -365,6 +388,8 @@ def _parameterize_batch(prep, mesh, configfile, log_options):
             })
         return features
 
+    # Map Mesher's config spellings to exactextract operations, including categorical mode,
+    # which exactextract calls majority.
     def stats_for_method(method):
         stats = {'mode': 'majority', 'mean': 'mean', 'average': 'mean', 'min': 'min', 'max': 'max'}
         if method not in stats:

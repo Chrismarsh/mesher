@@ -20,9 +20,13 @@
 #include <sstream>
 #include <stdexcept>
 
+// Sampling determines whether the triangle has any usable vertex elevations.
 triangle::triangle() : is_nan(false) {}
+// The shared raster member releases the temporary GDAL window with its last owner.
 triangle::~triangle() = default;
 
+// Clip one triangle to the source pixel grid, then keep its polygon mask and elevation window
+// together. Area statistics and vertex sampling use different mask rules.
 void triangle::make_rasterized(vertex v0_in, vertex v1_in, vertex v2_in, const raster& r)
 {
     is_nan = false;
@@ -55,6 +59,8 @@ void triangle::make_rasterized(vertex v0_in, vertex v1_in, vertex v2_in, const r
         is_nan = true; // No samples available, as for an all-NoData triangle.
         return;
     }
+    // RasterIO expects a half-open window. Include the pixels containing both bounds,
+    // clipping the exclusive upper limit to the raster size.
     auto clipped_start = [](double value, int limit) {
         return static_cast<int>(std::max(0.0, std::min(double(limit), std::floor(value))));
     };
@@ -74,6 +80,8 @@ void triangle::make_rasterized(vertex v0_in, vertex v1_in, vertex v2_in, const r
     std::ostringstream context;
     context << "Triangle raster window (" << x1 << ',' << y1 << ") "
             << xsize << 'x' << ysize << " in " << source->GetDescription();
+    // Carry the offending source and window through each GDAL call. A read failure
+    // must reach the caller before the sample buffer enters a refinement criterion.
     auto check = [&](CPLErr error, const char* action) {
         if (error != CE_None)
             throw std::runtime_error(context.str() + ": " + action + ": " + CPLGetLastErrorMsg());

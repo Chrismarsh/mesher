@@ -3,6 +3,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Keep the input raster's georeferencing and replace its relief with one elevation so refinement
+# on level terrain can be examined separately.
 def flat(input_dem, output_dem, elevation):
     # Open dem_flat to read in info
     dem_flat_in = rasterio.open(input_dem)
@@ -20,6 +22,8 @@ def flat(input_dem, output_dem, elevation):
 
     return rasterio.open(output_dem)
 
+# Place a square class patch on the flat DEM grid so its boundary is the source of variation for
+# categorical refinement.
 def vegpatch_flat(dem_flat,output_dem):
     dem_veg = np.array(dem_flat.read(1), copy=True, dtype=np.float64)
     x = int(dem_veg.shape[0]/2.)+50
@@ -36,16 +40,18 @@ def vegpatch_flat(dem_flat,output_dem):
 
     return rasterio.open(output_dem)
 
+# Generate a smooth hill with a known analytic shape for comparing terrain refinement at
+# different tolerances.
 def gausshill(dem_flat,output_dem):
 
     dem_gauss = np.array(dem_flat.read(1), copy=True, dtype=np.float64)
     hm = 1000 # Mountain height (m)
 
     def makeGaussian(size, fwhm=3, center=None):
-        """ Make a square gaussian kernel.
-        size is the length of a side of the square
-        fwhm is full-width-half-maximum, which
-        can be thought of as an effective radius.
+        """Sample a unit-height Gaussian on a square pixel grid.
+
+        The half-height contour has radius fwhm / 2 pixels. The caller scales
+        the peak separately so hill width and relief can vary independently.
         """
         x = np.arange(0, size, 1, float)
         y = x[:, np.newaxis]
@@ -80,6 +86,8 @@ def gausshill(dem_flat,output_dem):
     return rasterio.open(output_dem)
 
 
+# Vary elevation across one axis to give the example a ridge with a known cross-section and no
+# variation along its crest.
 def idealridge(dem_flat,output_dem):
 
     dem_ridge = np.array(dem_flat.read(1), copy=True, dtype=np.float64)

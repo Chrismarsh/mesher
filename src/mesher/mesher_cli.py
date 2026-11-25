@@ -59,6 +59,8 @@ MESH_MINOR = "0"
 MESH_PATCH = "0"
 
 
+# Keep the lifetime of temporary preparation files and the output lock tied to the entire
+# command, including exceptions raised during export.
 def main():
     parser = argparse.ArgumentParser(description='Generate a terrain mesh')
     modes = parser.add_mutually_exclusive_group()
@@ -72,6 +74,8 @@ def main():
         _run(args.configfile, args.resume, resources)
 
 
+# Run preparation, meshing, parameterization and export against the same configuration. Keep the
+# prepared geometry alive until the last output has read it.
 def _run(configfile, resume, resources):
     run_started = time.perf_counter()
     # Read configuration
@@ -477,6 +481,8 @@ def _run(configfile, resume, resources):
         print('Done')
 
 
+# Warp the DEM into mesh coordinates before deriving the domain. An extent supplied in source
+# coordinates needs its own CRS in the warp command.
 def project_dem(src_ds, dem_filename, output, gdal_prefix, extent, clip_to_shp, srs_out, fill_holes):
     ext_str = ''
 
@@ -510,6 +516,8 @@ def project_dem(src_ds, dem_filename, output, gdal_prefix, extent, clip_to_shp, 
         fill_nodata(output, int(dist))
 
 
+# Derive the outer boundary from valid DEM cells, select the largest continuous area and prepare
+# the boundary and feature lines consumed by the backend.
 def prepare_domain_files(base_dir, base_name, plgs_shp, src_ds, dem, gdal_prefix, srs_out, wkt_out,
                          simplify, simplify_tol, no_simplify_buffer, bufferDist, constraints):
     # Create a mask raster that has a uniform value for all cells read all elevation data. Might be worth changing to
@@ -786,10 +794,11 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
     with tempfile.TemporaryDirectory(prefix='mesher-parameters-', dir=os.path.abspath(base_dir)) as work:
         verts_path = os.path.join(work, 'vertices.npy')
         elems_path = os.path.join(work, 'elements.npy')
+        # Reuse a mapping only if it represents the whole NPY array. A sliced view has the same
+        # filename but would give a worker the wrong rows when reopened.
         def shared_path(key, path, dtype):
             array = mesh['mesh'][key]
             if isinstance(array, np.memmap):
-                # Preparation arrays are entire files, not rank slices.
                 on_disk = np.load(array.filename, mmap_mode='r')
                 if (not isinstance(array.base, np.ndarray) and on_disk.shape == array.shape
                         and on_disk.strides == array.strides and on_disk.dtype == array.dtype):
@@ -849,6 +858,8 @@ def run_parameterization(mesh, parameter_args, base_dir, exec_str, nranks, confi
         return columns if output_dir is not None else result
 
 
+# Find the GDAL command-line installation so preprocessing invokes its matching warp and vector
+# utilities.
 def find_gdal_prefix():
     # we need to make sure we pickup the right paths to all the gdal scripts
     gdal_prefix = ''
@@ -861,6 +872,8 @@ def find_gdal_prefix():
     return gdal_prefix
 
 
+# Execute the config as Python to preserve user classifiers, then resolve the defaults and paths
+# consumed by the meshing stages.
 def read_config(configfile):
     # Load in configuration file as module
     X = importlib.machinery.SourceFileLoader('config', configfile)
@@ -1131,6 +1144,8 @@ def _launcher_template(launcher):
     return launcher, None
 
 
+# Return the command and its actual rank count together. A fixed site command can start more
+# ranks than there are pending tasks.
 def _task_launch(template, workers, fixed_workers):
     if template is None:
         return None, workers
@@ -1139,6 +1154,8 @@ def _task_launch(template, workers, fixed_workers):
     return template, fixed_workers
 
 
+# GDAL warps have their own job-wide concurrency limit. Size this launch against both that limit
+# and the number of parameter entries.
 def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_count):
     override = gdal_launcher is not None
     template, declared = _launcher_template(gdal_launcher if override else mesh_launcher)
@@ -1152,6 +1169,8 @@ def _gdal_launch(mesh_launcher, mesh_workers, gdal_launcher, limit, parameter_co
     return command, workers
 
 
+# Prepare each parameter's raster filenames and accumulate refinement weights. Resume can
+# restore those paths from the checked recipe without launching another warp.
 def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pixel_width, srs_out,
                       xmax, xmin, ymax, ymin, fill_holes, MPI_exec_str, MPI_nworkers, reuse_projected_parameters,
                       nworkers_gdal=None, MPI_gdal_exec_str=None, *, prepared=None):
@@ -1211,6 +1230,8 @@ def regularize_inputs(parameter_dir, gdal_prefix, input_files, pixel_height, pix
     return total_weights, use_weights
 
 
+# Sample vertex height on a north-up DEM. Boundary rounding and NoData can put a vertex just
+# outside the valid pixels, so nearby samples matter at the mesh edge.
 def extract_point(raster, mx, my):
     # Convert from map to pixel coordinates.
     # Only works for geotransforms with no rotation.
@@ -1268,6 +1289,8 @@ def extract_point(raster, mx, my):
     return mz
 
 
+# Reject booleans as well as nonpositive counts. Python otherwise accepts True as one tile,
+# worker or batch row.
 def _positive_integer(value, name):
     if type(value) is not int or value < 1:
         raise ValueError(f'{name} must be a positive integer')
@@ -1308,11 +1331,14 @@ def compute_tile_grid(nranks, width, height, *, num_tiles=None):
     return rows, cols
 
 
+# Pairing along one axis takes ceil(log2(n)) stages, counting a carried odd tile.
+# The row and column stages run in sequence, so their counts add.
 def mpi_merge_stage_count(rows, cols):
-    # Each stage halves one axis, carrying its unpaired tile when the count is odd.
     return (cols - 1).bit_length() + (rows - 1).bit_length()
 
 
+# Merge files use zero-based stage numbers. A one-tile layout has no merge output, so its tile
+# archive is already the final mesh.
 def mpi_final_npz_name(base_name, rows, cols):
     stages = mpi_merge_stage_count(rows, cols)
     suffix = f'stage{stages-1}_r0_c0' if stages else 'tile_0'
@@ -1323,6 +1349,8 @@ def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verb
     """Keep one numeric representation; sample and repair elevations in place."""
     verts_xy = np.asarray(verts_xy, dtype=float)
     tris = integer_rows(tris, 'elem')
+    # Use the same row layout in RAM and on disk so neighbour construction and elevation
+    # sampling can share the preparation path.
     def allocate(name, shape, dtype):
         return (np.empty(shape, dtype=dtype) if directory is None else
                 disk_array(os.path.join(directory, name + '.npy'), shape, dtype))
@@ -1364,6 +1392,8 @@ def build_mesh_from_arrays(verts_xy, tris, src_ds, dem, srs, is_geographic, verb
 
 def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geographic, verbose, directory=None):
     """Read Triangle text files directly into numeric backing arrays."""
+    # Strip trailing comments and skip blank lines as records are read. The caller can consume
+    # the Triangle header to size a mapping and stream the remaining rows into it.
     def rows(path):
         with open(path) as stream:
             for line in stream:
@@ -1395,6 +1425,8 @@ def load_mesh_from_mesher_files(base_dir, base_name, src_ds, dem, srs, is_geogra
                                       verbose, directory=directory)
 
 
+# Send one shared task manifest to the stage's workers. On resume its size reflects the pending
+# work and can be much smaller than the original allocation.
 def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
     if not tasks:
         return
@@ -1421,6 +1453,8 @@ def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
             comm.Disconnect()
 
 
+# Check each pair's checkpoint before sizing the launch. The last unfinished pair in a large
+# stage can run on one rank with a resizable launcher.
 def run_mpi_merge_stage(tasks, MPI_exec_str, MPI_nworkers, stage_label=None, total_merges=None, resume_plan=None):
     if not tasks:
         return
@@ -1471,6 +1505,8 @@ def validate_mpi_mesh_metadata(npz_path):
         raise ValueError('Cannot reuse an old shared-edge MPI mesh; regenerate with reuse_mesh=False')
 
 
+# Tile the domain and reduce the rectangular grid along alternating axes. Keep parent identities
+# and unpaired tiles so a resumed run follows the same merge tree.
 def run_mpi_meshing(base_dir, base_name, xmin, ymin, xmax, ymax, mesher_path,
                     outer_polygon_shp, constraints, parameter_files, initial_conditions, max_area, min_area,
                     max_tolerance, errormetric, use_weights, topo_weight,
@@ -1754,12 +1790,8 @@ def compute_mpi_final_npz_path(base_dir, base_name, mpi_nworkers):
     return os.path.join(base_dir, mpi_final_npz_name(base_name, side, side))
 
 
-# To remove the dependency on gdal python bindings and thus the scripts, this is a slimmed down version of the
-# gdal_polygonize.py code from
-# https://github.com/OSGeo/gdal/blob/release/2.4/gdal/swig/python/scripts/gdal_polygonize.py
+# Include points in nested rings so the simplification log measures the entire boundary.
 def _geom_point_count(geom):
-    # Total number of coordinate points across all rings of a (multi)polygon or linestring.
-    # Useful for logging how much a simplify/buffer step reduced the boundary complexity.
     if geom is None:
         return -1
     count = 0
@@ -1778,6 +1810,9 @@ def _geom_point_count(geom):
     return count
 
 
+# Adapted from https://github.com/OSGeo/gdal/blob/release/2.4/gdal/swig/python/scripts/gdal_polygonize.py
+# Turn valid mask regions into georeferenced polygon features so the outer boundary can be
+# selected and simplified in map coordinates.
 def gdal_polygonize(src_filename, mask, dst_filename):
     options = []
     src_band_n = 1
@@ -1806,6 +1841,8 @@ def gdal_polygonize(src_filename, mask, dst_filename):
     result = gdal.Polygonize(srcband, maskband, dst_layer, dst_field, options)
 
 
+# Write one polygon per mesh row and attach that row's parameter and initial-condition values.
+# Shapefile field names are limited to ten characters.
 def write_shp(fname, mesh, parameter_files, initial_conditions):
     # Create the shape file to hold the triangulation
 

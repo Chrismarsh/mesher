@@ -36,9 +36,13 @@ struct MesherRasterStats { bool enabled = false; size_t evaluations = 0; double 
 static MesherRasterStats mesher_raster_stats;
 struct MesherRasterTimer {
     std::chrono::steady_clock::time_point start;
+    // Count one raster evaluation on entry. Scoping the timer to the metric includes early
+    // returns for empty or NoData windows.
     MesherRasterTimer() {
         if (mesher_raster_stats.enabled) { start = std::chrono::steady_clock::now(); ++mesher_raster_stats.evaluations; }
     }
+    // Add elapsed time on scope exit so every return path contributes to the same patch
+    // statistics.
     ~MesherRasterTimer() {
         if (mesher_raster_stats.enabled)
             mesher_raster_stats.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -65,6 +69,9 @@ struct MesherRasterTimer {
         OGRCoordinateTransformation* prj_trans;
     public:
 
+        // Keep geometry and raster bounds together so refinement and the final face audit use
+        // the same criteria. Geographic input needs an equal-area transform for area
+        // comparisons.
         mesh_2_criterion_area(const double aspect_bound = 0.125,
                               const double max_area = 0,
                               const double min_area = 1,
@@ -112,18 +119,22 @@ struct MesherRasterTimer {
             }
         }
 
+        // The audit reads the same area limit used to classify faces in the refinement queue.
         inline
         double maxarea() const
         { return max_area; }
 
+        // Update the area limit used when constructing subsequent face predicates.
         inline
         void set_area_bound(const double ab)
         { max_area = ab; }
 
+        // CGAL expresses the shape bound as the squared sine of the smallest angle.
         inline
         double bound() const
         { return B; }
 
+        // Accept the shape threshold in the squared-sine units stored in Quality.
         inline
         void set_bound(const double bound)
         { B = bound; }
@@ -133,6 +144,8 @@ struct MesherRasterTimer {
         {
         public:
 
+            // Start with an unevaluated face. The face predicate fills these fields for later
+            // queue comparisons and cached quality checks.
             Quality()
             {
                 _sine = 0;
@@ -142,13 +155,18 @@ struct MesherRasterTimer {
             };
 
 
+            // Return face area in the units used for the absolute area bounds. The queue uses a
+            // separate normalized size for ordering.
             const double &area() const
             { return _area; }
 
+            // Expose the cached squared sine for direct comparison with CGAL's shape threshold.
             const double &sine() const
             { return _sine; }
 
 
+            // Convert the squared sine to degrees for failure reports. Clamping keeps a
+            // roundoff excursion outside the asin domain from hiding the angle.
             double min_angle_degrees() const
             {
                 const double sine = std::sqrt(std::max(0.0, std::min(1.0, _sine)));
@@ -204,6 +222,8 @@ struct MesherRasterTimer {
 
             typedef typename CDT::Point Point_2;
 
+            // Bind the configured numeric error metric once when CGAL asks for a predicate. Its
+            // per-face calls reuse the rasters and projection held by the criteria.
             Is_bad(const double aspect_bound,
                    const double area_bound,
                    const double min_area,
@@ -239,6 +259,8 @@ struct MesherRasterTimer {
                 }
             }
 
+            // Estimate how well the triangle's vertex plane represents the underlying raster
+            // using RMS residuals over its valid samples.
             double rmse_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
                 MesherRasterTimer raster_timer;
@@ -357,6 +379,8 @@ struct MesherRasterTimer {
                 return rmse;
 
             }
+            // Different classes at the vertices score zero. Otherwise the dominant valid class
+            // fraction measures how homogeneous the triangle is.
             double categoryraster_isok(const typename CDT::Face_handle &fh, const raster& r) const
             {
                 MesherRasterTimer raster_timer;
@@ -425,6 +449,8 @@ struct MesherRasterTimer {
                 return *std::max_element(percents.begin(),percents.end()); // the most dominate landcover
 
             }
+            // Compare the mean of available vertex samples with the mean of valid cells in the
+            // triangle. This metric measures bias across the footprint.
             double mean_tolerance(const typename CDT::Face_handle &fh, const raster &r) const
             {
                 MesherRasterTimer raster_timer;
@@ -513,6 +539,8 @@ struct MesherRasterTimer {
                 return diff;
 
             }
+            // Use the largest absolute residual against the vertex plane so a single poorly
+            // represented cell can trigger refinement.
             double max_diff(const typename CDT::Face_handle &fh, const raster & r) const
             {
                 MesherRasterTimer raster_timer;
@@ -621,6 +649,8 @@ struct MesherRasterTimer {
 
             }
 
+            // CGAL can revisit cached Quality without a face handle. Apply the same area, shape
+            // and raster rules during that second decision.
             CGAL::Mesh_2::Face_badness operator()(const Quality& q) const
             {
                 if (q.area() > max_area)
@@ -680,6 +710,8 @@ struct MesherRasterTimer {
                 return CGAL::Mesh_2::NOT_BAD;
             }
 
+            // Evaluate geometry first. A face below the raster refinement floor still has to
+            // satisfy shape, and an oversized face can be rejected before any raster reads.
             CGAL::Mesh_2::Face_badness operator()(const typename CDT::Face_handle &fh,
                                                   Quality &q) const
             {
@@ -909,6 +941,8 @@ struct MesherRasterTimer {
             }
         };
 
+        // Give CGAL a face predicate with the current bounds and the same borrowed raster
+        // inputs used for auditing the finished mesh.
         Is_bad is_bad_object() const
         {
             return Is_bad(this->bound(), max_area, min_area, r, category_rasters, error_metric, is_geographic, use_weights, weight_threshold, debug, prj_trans, this->traits);

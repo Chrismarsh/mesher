@@ -17,12 +17,16 @@ from mesher.mesher_utls.mpi_resume import publish
 from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
+# A site launcher passes the disconnect flag as text. Only an explicit true means this worker
+# has a spawned MPI parent.
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
     return False
 
 
+# The next merge owns the combined rectangle of both cores, including portions with no
+# triangles.
 def bbox_union(a, b):
     return [
         min(a[0], b[0]),
@@ -32,11 +36,15 @@ def bbox_union(a, b):
     ]
 
 
+# Read the parents' committed core bounds, solve their common seam, and publish the staged mesh
+# and marker together for the next merge level.
 def merge_tiles(args):
     if args.get("merge_method", "remesh") != "remesh":
         raise ValueError('Shared-edge meshing has been retired; regenerate tasks with mpi_merge_method="remesh"')
     t0 = time.perf_counter()
 
+    # Measure each diagnostic from the start of this pair so slow stages can be located even
+    # when workers' logs interleave.
     def log_step(msg):
         dt = time.perf_counter() - t0
         debug_log(args, f'[{dt:.2f}s] {msg}')
@@ -69,6 +77,8 @@ def merge_tiles(args):
                 empty_tile=report['output_faces'] == 0, merge_method='remesh', remesh_report=report), args)
 
 
+# Each rank takes a slice of the pending pairs. Mark a pair complete only after its archive and
+# metadata have been published.
 def main(pickle_file: str, disconnect: bool, expected_workers=None):
     check_worker_count(MPI.COMM_WORLD.size, expected_workers)
     if isinstance(disconnect, str):

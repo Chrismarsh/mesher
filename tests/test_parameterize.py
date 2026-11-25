@@ -19,6 +19,8 @@ from mesher.mesher_utls import MPI_do_parameterize as parameterize
 
 
 class ParameterizeTests(unittest.TestCase):
+    # Provide a small mesh, raster reference system and isolated config so reducers can be
+    # exercised with controlled pixel values.
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -32,6 +34,8 @@ class ParameterizeTests(unittest.TestCase):
         self.mesh = {'mesh': {'vertex': [[-1, -1, 0], [5, -1, 0], [-1, 5, 0]],
                               'elem': [[0, 1, 2]], 'nelem': 1, 'nvertex': 3}}
 
+    # Build a raster with chosen samples and georeferencing to test masking, scale and alignment
+    # independently of input preparation.
     def raster(self, values, nodata=None, dtype=gdal.GDT_Float32, gt=None, name=None):
         values = np.asarray(values)
         driver = gdal.GetDriverByName('GTiff' if name else 'MEM')
@@ -45,6 +49,8 @@ class ParameterizeTests(unittest.TestCase):
         ds.FlushCache()
         return ds
 
+    # Evaluate one parameter for a single test face through the GDAL path, including its
+    # optional classifier.
     def aggregate(self, rasters, methods='mode', classifier=None, mesh=None):
         data = {'file': rasters, 'method': methods}
         if classifier is not None:
@@ -53,6 +59,8 @@ class ParameterizeTests(unittest.TestCase):
         return parameterize.do_parameterize((100, 50, 0, 200, 0, -50), False, mesh or self.mesh,
             {'landcover': data}, 'landcover', {}, 1, 1, self.srs.ExportToProj4(), 0, str(self.config))['landcover']
 
+    # A frequent NoData sentinel must not win the categorical mode or appear as a genuine class
+    # in the callback.
     def test_nodata_is_excluded_before_mode_and_classifier(self):
         for nodata, dtype in ((-9999, gdal.GDT_Float32), (1, gdal.GDT_Float32),
                               (255, gdal.GDT_Byte), (np.nan, gdal.GDT_Float32)):
@@ -62,6 +70,8 @@ class ParameterizeTests(unittest.TestCase):
                 # A typical catch-all class used to receive the NoData sentinel.
                 self.assertEqual(self.aggregate([ds], classifier=lambda value: 2 if value == 4 else 18), 2)
 
+    # Distinguish valid zero from masked pixels and verify scale and offset are applied only
+    # after raw NoData has been identified.
     def test_zero_mask_scale_offset_and_missing_data(self):
         ds = self.raster([[0, 0], [4, 4]])
         self.assertEqual(self.aggregate([ds]), 0)  # Valid zero is not missing.
@@ -78,6 +88,8 @@ class ParameterizeTests(unittest.TestCase):
         # Keep the classifier's ability to explicitly handle a missing input.
         self.assertEqual(self.aggregate([empty], classifier=lambda value: 7 if np.isnan(value) else 0), 7)
 
+    # Use rasters on different grids so each window must be computed separately and their
+    # aggregates still reach the classifier in config order.
     def test_multiple_raster_grids_and_callback_order(self):
         fine = self.raster([[2, 2], [2, -9999]], -9999)
         coarse = self.raster([[6]], gt=(0, 2, 0, 2, 0, -2))
@@ -86,6 +98,8 @@ class ParameterizeTests(unittest.TestCase):
         self.assertEqual(self.aggregate([fine], lambda pixels: np.nanmax(pixels)+1,
                                        lambda value: 10*value), 30)
 
+    # Exercise clips on each raster edge as well as an empty intersection to catch negative or
+    # oversized GDAL windows.
     def test_window_clips_all_sides_and_empty_intersections(self):
         offsets = parameterize.bbox_to_pixel_offsets
         self.assertEqual(offsets(self.gt, (-10, 1, 1, 10), 2, 2), (0, 0, 2, 2))
@@ -96,6 +110,8 @@ class ParameterizeTests(unittest.TestCase):
                 mesh = {'mesh': dict(self.mesh['mesh'], vertex=np.asarray(self.mesh['mesh']['vertex'], dtype=float)+[dx, dy, 0])}
                 self.assertTrue(np.isnan(self.aggregate([ds], mesh=mesh)))
 
+    # A rotated input makes a north-up shortcut give the wrong sampling window even if it works
+    # on the usual DEM grid.
     def test_rotated_raster_uses_full_affine_transform(self):
         gt = (100, 1, .3, 200, .2, -1)
         ds = self.raster([[2, 2], [2, 2]], gt=gt)
@@ -103,6 +119,8 @@ class ParameterizeTests(unittest.TestCase):
         mesh = {'mesh': dict(self.mesh['mesh'], vertex=vertices)}
         self.assertEqual(self.aggregate([ds], 'mean', mesh=mesh), 2)
 
+    # Build the manifest and invoke the parameter worker so tests see the same row ordering,
+    # raster choices and callbacks used by the launcher.
     def run_worker(self, parameters, exact=True, geographic=False):
         np.save(self.work/'vertices.npy', np.asarray(self.mesh['mesh']['vertex'], dtype=float))
         np.save(self.work/'elements.npy', np.asarray(self.mesh['mesh']['elem'], dtype=int).reshape(-1, 3))
@@ -125,6 +143,8 @@ class ParameterizeTests(unittest.TestCase):
             os.chdir(previous)
         return result, log.getvalue()
 
+    # Combine built-in statistics with a Python reducer to verify each parameter uses its
+    # configured sampling path.
     def test_exact_stats_classifiers_and_custom_reducers_use_requested_methods(self):
         ds = self.raster([[1, 1], [4, 6]], name='values.tif')
         ds = None
@@ -143,6 +163,8 @@ class ParameterizeTests(unittest.TestCase):
                                    'max': 6, 'custom': 106, 'LAI': 6}.items():
                     self.assertEqual(result[0][key], value, key)
 
+    # Use partially covered cells whose area-weighted result differs from an equal-pixel
+    # average, then inspect what the classifier received.
     def test_classifiers_use_coverage_weighted_aggregates(self):
         # Pixel overlap areas are 5/6, 1/2, 1/6. Class 9 wins by area,
         # although class 1 wins by touched-pixel count. The numeric mean
@@ -179,6 +201,8 @@ class ParameterizeTests(unittest.TestCase):
         self.assertEqual(result[0]['LAI'], 36)
         self.assertEqual(result[0]['combined'], 17)
 
+    # Choose a sentinel whose scaled value looks ordinary so a missing cell cannot silently
+    # enter the classifier.
     def test_exact_classifier_masks_raw_missing_values_before_scaling(self):
         for nodata, dtype in ((-9999, gdal.GDT_Float32), (1, gdal.GDT_Float32),
                               (255, gdal.GDT_Byte), (np.nan, gdal.GDT_Float32)):
@@ -216,6 +240,8 @@ class ParameterizeTests(unittest.TestCase):
                 'method': ['mean'], 'classifier': cloudpickle.dumps(lambda value: value)}})
             self.assertEqual(result[0]['value'], expected)
 
+    # Exercise empty raster intersections and classifier return conventions so missing face
+    # values survive result collection.
     def test_exact_missing_aggregates_and_classifier_outputs(self):
         for name, values in (('missing.tif', [[-9999, -9999], [-9999, -9999]]),
                              ('valid.tif', [[4, 4], [4, 4]])):
@@ -248,6 +274,8 @@ class ParameterizeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'classifier function for value returned None'):
             self.run_worker({'value': dict(data, classifier=cloudpickle.dumps(lambda value: None))})
 
+    # Count calls on a multi-pixel face. Classification happens after zonal aggregation and the
+    # diagnostic should identify that path.
     def test_exact_classifier_runs_once_per_triangle_and_logs_backend(self):
         self.config.write_text('mesher_debug = True\n')
         ds = self.raster([[4, 4], [4, 4]], name='values.tif'); ds = None
@@ -255,6 +283,8 @@ class ParameterizeTests(unittest.TestCase):
                                  elem=[[0, 1, 2], [1, 3, 2]], nelem=2, nvertex=4)
         calls = self.work/'classifier_calls.txt'
 
+        # Leave evidence of each invocation so the test can distinguish one aggregate per face
+        # from a call per pixel.
         def classify(value):
             with calls.open('a') as stream:
                 stream.write(f'{value}\n')
@@ -267,11 +297,15 @@ class ParameterizeTests(unittest.TestCase):
         self.assertIn('exactextract aggregation', log)
         self.assertNotIn('legacy ALL_TOUCHED', log)
 
+    # An unrecognized aggregation method must fail explicitly because substituting a mean can
+    # produce plausible but wrong parameters.
     def test_unknown_exact_method_does_not_silently_compute_mean(self):
         ds = self.raster([[1, 1], [4, 6]], name='values.tif'); ds = None
         with self.assertRaisesRegex(ValueError, 'Unknown data aggregation method'):
             self.run_worker({'value': {'filename': [str(self.work/'values.tif')], 'method': ['typo']}})
 
+    # Parameters sharing a source can reuse one scan, but a subsequent invocation must read the
+    # source again.
     def test_shared_raster_statistics_are_batched_and_reused_only_within_run(self):
         for name, values in (('shared.tif', [[1, 1], [4, 6]]), ('other.tif', [[10, 10], [10, 10]])):
             ds = self.raster(values, name=name); ds = None
@@ -286,6 +320,8 @@ class ParameterizeTests(unittest.TestCase):
         original = parameterize.exact_extract
         calls = []
 
+        # Record which statistics each extraction requested so the test can distinguish a shared
+        # scan from repeated per-parameter reads.
         def extract(source, features, stats):
             calls.append((source.ds.GetDescription(), stats))
             return original(source, features, stats)
@@ -303,6 +339,8 @@ class ParameterizeTests(unittest.TestCase):
             self.assertEqual(result[0]['repeat'], 4)
             self.assertEqual(len(calls), 4)
 
+    # Compare the batched area calculation with OGR on large projected values where subtracting
+    # global-coordinate products loses precision.
     def test_projected_areas_match_ogr_for_large_coordinates_and_both_orientations(self):
         # Include a narrow face and a degenerate face; chunk boundaries must
         # not affect face ordering or the sign of the unsigned area.
@@ -328,6 +366,8 @@ class ParameterizeTests(unittest.TestCase):
         result, _ = self.run_worker({'area': {}})
         self.assertEqual(result, [])
 
+    # Geographic faces need area in square metres. Check the path using an equal-area projection
+    # rather than planar degree units.
     def test_geographic_areas_keep_existing_projected_geometry_calculation(self):
         self.srs = osr.SpatialReference(); self.srs.ImportFromEPSG(4326)
         self.mesh['mesh']['vertex'] = [[-135., 68., 0.], [-134.99, 68., 0.], [-135., 68.01, 0.]]
@@ -339,6 +379,8 @@ class ParameterizeTests(unittest.TestCase):
                 result, _ = self.run_worker({'area': {}}, exact, geographic=True)
                 self.assertEqual(result[0]['area'], expected)
 
+    # A config can have side effects. Multiple triangles in one worker should share the same
+    # loaded module.
     def test_configuration_is_loaded_once_for_all_triangles(self):
         self.config.write_text('from pathlib import Path\np = Path(__file__).with_suffix(".count")\n'
                                'p.write_text(str(int(p.read_text())+1) if p.exists() else "1")\n')
@@ -347,6 +389,8 @@ class ParameterizeTests(unittest.TestCase):
         self.aggregate([ds])
         self.assertEqual(self.config.with_suffix('.count').read_text(), '1')
 
+    # Check disjoint face ranges and the backing mappings so transferring work to more ranks
+    # does not duplicate the prepared mesh.
     def test_rank_ownership_is_contiguous_and_arrays_remain_file_backed(self):
         np.save(self.work/'vertices.npy', np.zeros((100000, 3)))
         elements = np.arange(30).reshape(10, 3)
@@ -372,12 +416,16 @@ class ParameterizeTests(unittest.TestCase):
                 np.testing.assert_array_equal(mesh['mesh']['elem'], expected[rank])
             self.assertEqual(previous, len(elements))
 
+    # The manifest's row ownership assumes a specific communicator size. Catch a launcher
+    # mismatch before writing results.
     def test_worker_rejects_mismatched_launcher_size(self):
         inputs = self.work/'mismatched.pickle'
         inputs.write_bytes(cloudpickle.dumps({'nranks': 2}))
         with self.assertRaisesRegex(ValueError, 'expected 2 MPI ranks'):
             parameterize.main(str(inputs), False, str(self.config))
 
+    # Simulate missing or inconsistent worker results so the parent cannot silently accept an
+    # incomplete parameter column.
     def test_launcher_propagates_failure_and_rejects_invalid_rank_results(self):
         from mesher import mesher_cli
         metadata = {'gt': self.gt, 'is_geographic': False, 'parameter_files': {},
@@ -386,6 +434,8 @@ class ParameterizeTests(unittest.TestCase):
         # Exercise the Spawn path independently of a cluster launcher. Failed
         # jobs cannot reuse unrelated pickles in the working directory.
         for mode in ('failure', 'missing', 'wrong_ids'):
+            # Stand in for MPI.Spawn to inspect the shared manifest and control the result files
+            # seen by the parent.
             def spawn(*args, **kwargs):
                 inputs = Path(kwargs['args'][1])
                 prep = cloudpickle.loads(inputs.read_bytes())
@@ -406,6 +456,8 @@ class ParameterizeTests(unittest.TestCase):
                 self.assertEqual(fake_mpi.COMM_SELF.Spawn.call_count, 1)
                 self.assertEqual(list(self.work.glob('mesher-parameters-*')), [])
 
+    # Run config-defined callbacks across real Python processes, including a rank with no faces
+    # that must still complete.
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_mpi_callbacks_from_config_and_empty_rank(self):
         self.config.write_text('import numpy as np\nmesher_debug = False\n'

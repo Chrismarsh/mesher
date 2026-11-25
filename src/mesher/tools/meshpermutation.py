@@ -12,6 +12,8 @@ import importlib.util
 from mesher.mesh_store import batches
 from mesher.mesh_topology import audit_mesh, MeshTopologyError, validate_neighbours
 
+# Resolve the native library only when METIS is needed, allowing the other ordering methods to
+# run without it.
 def _load_metis():
     # Validate inputs before loading METIS. Respect an explicitly selected DLL;
     # otherwise use the library found at build time, or the wrapper's discovery.
@@ -48,7 +50,9 @@ MESH_PATCH = "0"
 
 
 def append_global_cell_id_to_mesh_file(args):
-    """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
+    """Store the face ordering in CHM metadata. METIS also supplies rank sizes,
+    which tell the reader where each contiguous block of faces begins.
+    """
     global MESH_MAJOR, MESH_MINOR, MESH_PATCH
 
     with open(args["infile"]) as f:
@@ -83,12 +87,13 @@ def append_global_cell_id_to_mesh_file(args):
 ############################################################################
 # permutation functions
 def compute_rcm_permutation(neighbor_list):
-    """Computes the permutation that minimizes the bandwidth of the connectivity matrix
-    - uses Reverse CutHill-McKee (RCM) algorithm, which needs CSC or CSR sparse matrix format"""
+    """Use reverse Cuthill-McKee to bring neighbouring faces closer in index space.
+
+    The adjacency graph is undirected, so its CSR matrix can use symmetric mode.
+    """
 
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
 
-    # Note we are always dealing with undirected (symmetric) graphs
     permutation = graph.reverse_cuthill_mckee(A,symmetric_mode=True)
 
     print_bandwidth_before_after_permutation(A,permutation)
@@ -96,10 +101,13 @@ def compute_rcm_permutation(neighbor_list):
     return permutation.tolist()
 
 def compute_nd_permutation(neighbor_list):
-    """Computes a nested dissection permutation (minimizes fill-in of matrix factors)"""
+    """Implement the historical nd option using SuperLU's column permutation.
+
+    Take the ordering from the sparse LU factorization so the file records the
+    same column order used to limit fill-in in the factors.
+    """
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list,sparse.csc_matrix)
 
-    # permutation is determined during the factorization
     LUperm = linalg.splu(A)
 
     # Not really necessary, but curious
@@ -160,6 +168,8 @@ def metis_face_order(neighbor_list, nrank):
     return rank_size, np.argsort(labels, kind='stable')
 
 
+# Adapt the numeric METIS result to the JSON tool's list format and report the connectivity
+# bandwidth in the proposed face order.
 def compute_metis_permutation_N(neighbor_list, nrank):
     rank_size, permutation = metis_face_order(neighbor_list, nrank)
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
@@ -169,8 +179,11 @@ def compute_metis_permutation_N(neighbor_list, nrank):
 
 
 def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
-    """Get a sparse compressed_format from a list of neighbors (assuming aij input)
-    - compressed_format is one of sparse.csr_matrix or sparse.csc_matrix"""
+    """Build a square face-adjacency matrix, skipping the -1 boundary slots.
+
+    Keep all faces as rows, including isolated ones. The caller selects CSR
+    for graph traversal or CSC for sparse factorization.
+    """
 
     N = len(neighbor_list)
     i = []
@@ -193,7 +206,9 @@ def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
 
 ## Bandwidth comparison
 def print_bandwidth_before_after_permutation(A,permutation):
-    """Display bandwidth before and after permutation"""
+    """Apply the same face order to rows and columns to compare bandwidths
+    and write sparsity plots of the same graph under each numbering.
+    """
     orig_band = compute_bandwidth_CSR(A)
     print("  Original bandwidth: ", orig_band)
     plot_mat_connectivity(A,"orig_order.png")
@@ -205,7 +220,10 @@ def print_bandwidth_before_after_permutation(A,permutation):
     return
 
 def compute_bandwidth_CSR(A):
-    """Compute the maximum bandwidth from a CSR sparse matrix A"""
+    """Return the largest upper-diagonal neighbour offset. On an undirected
+    face graph each edge occurs in both directions, so scanning the upper side
+    suffices. An isolated face contributes zero.
+    """
     assert(sparse.isspmatrix_csr(A))
     indices = A.indices
     indptr = A.indptr
@@ -220,8 +238,9 @@ def compute_bandwidth_CSR(A):
     return bandwidth
 
 def plot_mat_connectivity(A,filename,**kwargs):
-    """Plot the spy view of the connectivity matrix
-    - TODO kwargs can be used to get values to pass into matplotlib functions"""
+    """Write a sparsity plot using a headless backend so mesh ordering can be
+    inspected from a batch job without a display.
+    """
 
     import matplotlib as mpl
     mpl.use('AGG')
@@ -240,6 +259,8 @@ def plot_mat_connectivity(A,filename,**kwargs):
 ############################################################################
 
 
+# Select an ordering from the command line and write the face numbering that CHM will use when
+# reading this mesh.
 def main():
     # Parse the input arguments
     args = vars(parser.parse_args())

@@ -16,6 +16,8 @@ from mesher.mesher_utls.MPI_regularize_inputs import regularize_inputs
 
 
 class ProjectedParameterTests(unittest.TestCase):
+    # Use a private warp cache and a small georeferenced input so cache identity and on-disk
+    # publication can be inspected independently.
     def setUp(self):
         work = tempfile.TemporaryDirectory()
         self.addCleanup(work.cleanup)
@@ -30,11 +32,15 @@ class ProjectedParameterTests(unittest.TestCase):
         ds.GetRasterBand(1).Fill(12)
         ds = None
 
+    # Run the normal raster preparation step with the requested reuse policy against the same
+    # cache.
     def project(self, reuse=True, method='mean', xmax=4, fill=False, source=None):
         data = {'file': str(source or self.source), 'method': method}
         args = (str(self.cache), data, '', 'soil', -1, 1, 'EPSG:32613', xmax, 0, 4, 0, fill, reuse)
         return Path(regularize_inputs(args)['filename'][0])
 
+    # A fresh warp should be reusable while changed inputs or settings must select a new
+    # product.
     def test_reuse_after_default_run_and_refresh(self):
         raster = self.project(reuse=False)
         with patch.object(subprocess, 'check_call', side_effect=AssertionError('unexpected warp')):
@@ -57,6 +63,8 @@ class ProjectedParameterTests(unittest.TestCase):
         os.utime(self.source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1000000000))
         self.assertNotEqual(before, self.project(source=mosaic))
 
+    # Start actual GDAL workers and read back their projected results to check the launcher and
+    # per-rank result exchange together.
     @unittest.skipUnless(shutil.which('mpirun'), 'Requires an MPI launcher')
     def test_separate_gdal_job_runs_real_warps(self):
         srs = osr.SpatialReference()
@@ -85,6 +93,8 @@ class ProjectedParameterTests(unittest.TestCase):
             self.assertEqual(ds.ReadAsArray()[0, 0], 12)
         self.assertFalse(list((self.cache / 'shared cache').glob('.harmonize-*')))
 
+    # Fail the fill after a successful warp. The incomplete raster must never become a reusable
+    # cache entry.
     def test_failed_fill_never_publishes_an_unfilled_raster(self):
         with patch.object(gdal, 'FillNodata', side_effect=RuntimeError('failed fill')):
             with self.assertRaisesRegex(RuntimeError, 'failed fill'):
@@ -98,6 +108,8 @@ class GdalLauncherTests(unittest.TestCase):
             '--prtemca plm_ssh_args "-o SendEnv=PBS_JOBID -o LogLevel=ERROR" python')
     mesh = 'mpirun -n 4000 --map-by slot ' + site
 
+    # Use a GDAL limit below the meshing allocation so only the allowed number of concurrent
+    # raster workers can launch.
     def test_gdal_placement_and_job_wide_cap(self):
         template = 'mpirun -n {nworkers} --map-by node ' + self.site
         self.assertEqual(_gdal_launch(self.mesh, 4000, template, 5, 40),
@@ -108,6 +120,8 @@ class GdalLauncherTests(unittest.TestCase):
                          ('mpirun -n 5 --map-by slot ' + self.site, 5))
         self.assertEqual(_gdal_launch(None, 4000, None, 5, 2), (None, 2))
 
+    # Exercise commands whose rank count cannot be rewritten, including the case where it would
+    # exceed the GDAL limit.
     def test_legacy_wrapper_and_fixed_gdal_launcher(self):
         self.assertEqual(_gdal_launch('submit-job', 4, None, 4, 2), ('submit-job', 4))
         with self.assertRaisesRegex(ValueError, 'MPI_gdal_exec_str'):
@@ -117,6 +131,8 @@ class GdalLauncherTests(unittest.TestCase):
         self.assertEqual(_gdal_launch(self.mesh, 4000, 'mpiexec -np 2 python', 5, 40),
                          ('mpiexec -np 2 python', 2))
 
+    # A GDAL-specific launcher can use a different placement policy from mesh workers. Check
+    # which command each stage receives.
     def test_config_override_reaches_harmonization_only(self):
         # Stop at the first worker stage to exercise the CLI's actual config wiring.
         with tempfile.TemporaryDirectory() as directory, \
@@ -148,6 +164,7 @@ class GdalLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'nworkers_gdal must be a positive integer'):
                 cli.read_config(sys.argv[1])
 
+    # An empty parameter list needs neither a warp nor an MPI launch.
     def test_no_parameters_launches_no_workers(self):
         with patch.object(subprocess, 'check_call', side_effect=AssertionError('unexpected launch')):
             self.assertEqual(cli.regularize_inputs(None, '', {}, 1, 1, None, 1, 0, 1, 0, False,

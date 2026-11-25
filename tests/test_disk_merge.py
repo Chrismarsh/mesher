@@ -18,6 +18,8 @@ from test_mpi_remesh import grid
 
 @unittest.skipUnless(os.environ.get('MESHER_TEST_EXE'), 'Set MESHER_TEST_EXE')
 class DiskMergeTests(unittest.TestCase):
+    # Build two adjacent grid archives over a flat DEM. Their known triangles make it possible
+    # to check exactly which geometry survived the seam repair.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -40,10 +42,14 @@ class DiskMergeTests(unittest.TestCase):
                             remesh_max_attempts=6, remesh_max_vertices=10000)
         self.output = self.root/'merged.npz'
 
+    # Use the production archive-to-archive entry point with per-case overrides for retry
+    # counts, collar size and memory limits.
     def merge(self, **options):
         return disk_merge.merge_disk_cavity(self.inputs[0], self.bounds[0], self.inputs[1], self.bounds[1],
             self.domain, [], dict(self.options, **options), self.output)
 
+    # Reopen the published archive, compare its footprint to the domain, then rebuild and audit
+    # adjacency to catch defects at the disk join.
     def assert_valid(self):
         with np.load(self.output) as mesh:
             v, t = mesh['verts'], mesh['tris']
@@ -53,9 +59,13 @@ class DiskMergeTests(unittest.TestCase):
                                                 nelem=len(t), nvertex=len(v))})[0]['valid'])
         return v, t
 
+    # Count faces passed to the local solver and compare distant triangles by coordinates, since
+    # compaction can change their IDs.
     def test_only_seam_loaded_and_interiors_exactly_preserved(self):
         loaded = []
         original = mpi_remesh.merge_cavity
+        # Count the faces actually passed to each solve while leaving its geometry and result
+        # intact.
         def observe(av, at, ba, bv, bt, bb, *args, **kwargs):
             loaded.append(len(at)+len(bt))
             return original(av, at, ba, bv, bt, bb, *args, **kwargs)
@@ -74,6 +84,8 @@ class DiskMergeTests(unittest.TestCase):
                     if np.all(vv[face, 0] < 30) or np.all(vv[face, 0] > 50):
                         self.assertIn(tuple(sorted(map(tuple, vv[face]))), output_faces)
 
+    # Run publication through the MPI worker so NumPy scalars in a successful merge report
+    # cannot leave an unreadable JSON checkpoint.
     def test_merge_worker_publishes_numpy_face_count_as_json_integer(self):
         from mesher.mesher_utls.MPI_merge_tiles import merge_tiles
         domain = self.root / 'domain.geojson'
@@ -93,6 +105,8 @@ class DiskMergeTests(unittest.TestCase):
         _, triangles = self.assert_valid()
         self.assertEqual(report['output_faces'], len(triangles))
 
+    # Lengthen the tiles away from their common edge. That increases the disk archive size
+    # without increasing the seam solver's workload.
     def test_growing_only_the_interiors_does_not_grow_the_loaded_region(self):
         small = self.merge()
         self.bounds = ([0,0,400,10], [400,0,800,10])
@@ -105,6 +119,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(large['disk_interior_faces'], 15000)
         self.assert_valid()
 
+    # Split an exposed vertical edge and its triangle to imitate a valid local mesh whose
+    # neighbouring disk face still uses the original edge.
     @staticmethod
     def split_vertical_cut(v, t, fraction, x_range=(20, 40)):
         # Split one vertical boundary edge strictly inside the requested tile.
@@ -121,9 +137,13 @@ class DiskMergeTests(unittest.TestCase):
                     np.vstack((np.delete(t, face, axis=0), [[tip, a, child], [tip, child, b]])), point)
         return v, t, None
 
+    # A valid subdivision of the disk-side parent should reconnect the seam without another
+    # cavity solve.
     def test_split_disk_parent_matches_seam_in_one_attempt(self):
         original = mpi_remesh.merge_cavity
         points = []
+        # Introduce a midpoint at the disk cut after a real solve so parent subdivision has an
+        # exact chain to match.
         def split_boundary(*args, **kwargs):
             v, t, report = original(*args, **kwargs)
             if not points:
@@ -142,9 +162,13 @@ class DiskMergeTests(unittest.TestCase):
         v, _ = self.assert_valid()
         self.assertEqual(np.count_nonzero((v == points[0]).all(axis=1)), 1)
 
+    # Make a disk cut change during the solve and check that the next attempt carries forward
+    # already generated triangles.
     def test_changed_outer_interface_expands_and_reuses_generated_work(self):
         original = mpi_remesh.merge_cavity
         calls = []
+        # Return a subdivided cut from the solver to force the disk layer to reconcile it with
+        # the archived parent.
         def split_boundary(*args, **kwargs):
             calls.append(kwargs.get('initial_keep'))
             v, t, report = original(*args, **kwargs)
@@ -162,12 +186,16 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
 
+    # Two split edges can have different repair outcomes. Only the parent with rejected children
+    # should require a larger active region.
     def test_mixed_disk_subdivisions_expand_only_the_failed_parent(self):
         # Both interiors exceed the spare face budget. One exact split fits its
         # disk parent and one would create an 18.4-degree child. Only the
         # failed parent needs to draw its neighbours into the next solve.
         original = mpi_remesh.merge_cavity
         splits = []
+        # Introduce two independent cut subdivisions so the repair has to track acceptance per
+        # parent.
         def split_both_cuts(av, at, *args, **kwargs):
             if splits:
                 kept_xy = {tuple(xy) for xy in av[np.unique(at[kwargs['initial_keep']]), :2]}
@@ -198,8 +226,12 @@ class DiskMergeTests(unittest.TestCase):
         v, _ = self.assert_valid()
         self.assertEqual(np.count_nonzero((v == splits[0]).all(axis=1)), 1)
 
+    # Return a solver wrapper that splits the exposed cut again as it moves outward. This
+    # recreates a repeated mismatch across retries.
     def moving_cut(self, splits):
         original = mpi_remesh.merge_cavity
+        # Record the split position each time so the caller can observe how the recovery
+        # frontier moved.
         def split_boundary(*args, **kwargs):
             v, t, report = original(*args, **kwargs)
             v, t, point = self.split_vertical_cut(v, t, .5)
@@ -207,6 +239,8 @@ class DiskMergeTests(unittest.TestCase):
             return v, t, report
         return patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary)
 
+    # Put repeated mismatches in a narrow strip. Recovery should get past that strip while the
+    # distant interior stays on disk.
     def test_stalled_cut_clears_refined_band_without_loading_whole_interior(self):
         # Model a backend that splits any exposed vertical edge in a fixed
         # strip. The prescribed grid elsewhere keeps this moving-cut regression
@@ -214,6 +248,8 @@ class DiskMergeTests(unittest.TestCase):
         vertices, triangles = grid(0, 80, 0, 10)
         centers = points(vertices[triangles, :2].mean(axis=1))
         splits = []
+        # Keep the simulated split inside a fixed band of the original grid so widening the
+        # collar eventually clears it.
         def split_inside_strip(*args, prepared_domain, **kwargs):
             faces = triangles[covers(prepared_domain, centers)]
             used, index = np.unique(faces, return_inverse=True)
@@ -228,6 +264,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
 
+    # Force the cut to move repeatedly while limiting active faces so recovery has to choose
+    # which connected interior to load.
     def test_repeated_moving_cut_closes_only_affected_interior_within_budget(self):
         splits = []
         with self.moving_cut(splits):
@@ -239,6 +277,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 600)
         self.assert_valid()
 
+    # A cached repair on one side may split a previously conforming cut on the other. Exercise
+    # that change on the final retry.
     def test_final_cached_repair_handles_a_new_cut_on_the_other_tile(self):
         # A cached candidate split the left disk cut. On its last solve CGAL
         # can instead split the previously matching right cut. Both collars
@@ -253,6 +293,8 @@ class DiskMergeTests(unittest.TestCase):
 
         original = mpi_remesh.merge_cavity
         splits = []
+        # Choose opposite sides on successive solves to expose stale assumptions about which
+        # disk interface still matches.
         def split_opposite_sides(*args, **kwargs):
             v, t, report = original(*args, **kwargs)
             side = (20, 40) if not splits else (40, 60)
@@ -269,6 +311,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertEqual(report['disk_interior_faces'], island_faces)
         self.assert_valid()
 
+    # Add a component disconnected from the failing cut. Its faces should not count against the
+    # memory available to repair that cut.
     def test_disconnected_interior_on_same_tile_does_not_consume_recovery_budget(self):
         gap = box(19, 0, 20, 10)
         self.domain = self.domain.difference(gap)
@@ -284,17 +328,23 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 1100)
         self.assert_valid()
 
+    # Reject the first local result to exercise final recovery when there is no accepted
+    # candidate to reuse.
     def test_final_solve_after_rejected_candidate_closes_disk_cuts(self):
         # A rejection leaves no cached seam to extend. The final solve must
         # still close affordable cuts even if the new local mesh splits them.
         original = mpi_remesh.merge_cavity
         coverage = disk_merge.inactive_coverage
         cuts, loaded = {}, []
+        # Remember each tile's current disk cut so the simulated solver can choose an actual
+        # exposed edge.
         def observe_cut(vertices, *args):
             result = coverage(vertices, *args)
             cuts[id(vertices)] = result[1]
             return result
 
+        # Fail the initial solve, then split a remaining cut if one exists. This exposes
+        # incomplete final expansion.
         def reject_then_split(av, at, ba, bv, bt, bb, domain, constraints, options, directory, **kwargs):
             loaded.append(len(at)+len(bt))
             if len(loaded) == 1:
@@ -321,6 +371,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertEqual(report['disk_interior_faces'], 0)
         self.assert_valid()
 
+    # On exhaustion the error must identify the input pair for reproduction and the previous
+    # committed archive must remain usable.
     def test_exhausted_moving_cut_names_inputs_and_preserves_previous_output(self):
         splits = []
         self.output.write_bytes(b'previous completed mesh')
@@ -333,6 +385,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertEqual(splits, [True, True, True])
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 
+    # Use an insufficient active-face limit to verify rejection before allocating the local mesh
+    # or publishing an output.
     def test_active_budget_is_checked_before_materialization_and_keeps_previous_output(self):
         self.output.write_bytes(b'previous completed mesh')
         with patch.object(disk_merge, 'compact_region', side_effect=AssertionError('loaded seam')):
@@ -341,6 +395,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
         self.assertFalse(list(self.root.glob('seam-store-*')))
 
+    # A terminated backend cannot be repaired by widening the seam. Check that its failure
+    # leaves the existing archive alone.
     def test_native_failure_is_not_retried_or_published(self):
         self.output.write_bytes(b'previous completed mesh')
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=mpi_remesh.BackendTerminated('signal 11')) as native:
@@ -349,6 +405,8 @@ class DiskMergeTests(unittest.TestCase):
         self.assertEqual(native.call_count, 1)
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 
+    # Two empty inputs still need a valid empty archive with the vertex and face shapes expected
+    # by the next stage.
     def test_empty_pair_remains_empty(self):
         for path in self.inputs:
             np.savez(path, verts=np.empty((0,3)), tris=np.empty((0,3), dtype=np.int64))
@@ -359,9 +417,13 @@ class DiskMergeTests(unittest.TestCase):
             self.assertEqual(output['verts'].shape, (0,3))
             self.assertEqual(output['tris'].shape, (0,3))
 
+    # A local solve can succeed while the assembled mesh is invalid. Publication must wait for
+    # the final topology check.
     def test_final_topology_failure_cannot_replace_existing_archive(self):
         from mesher.mesh_topology import MeshTopologyError
         original = disk_merge.stream_join
+        # Inject invalid topology into the join so the check runs after local success and before
+        # archive replacement.
         def corrupt(*args, **kwargs):
             v, t = original(*args, **kwargs)
             t[-1] = t[0]
@@ -372,6 +434,8 @@ class DiskMergeTests(unittest.TestCase):
                 self.merge()
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 
+    # Use captured slivers to check that recovery releases their actual owners and keeps
+    # unrelated disk triangles.
     def test_production_roundoff_components_release_only_adjacent_faces(self):
         path = Path(__file__).parent / 'fixtures' / 'roundoff_boundary_cavity.geojson'
         cavity = shape(json.loads(path.read_text()))
@@ -379,6 +443,8 @@ class DiskMergeTests(unittest.TestCase):
         self.check_roundoff_merge(cavity, parts[:3], parts[3:], box(-1917200, 3717000, -1917000, 3717200),
             ([-1950000,3680000,-1890000,3740000], [-1890000,3680000,-1880000,3740000]), 20)
 
+    # Allow a single native solve at the coarse TVC tolerance so a preflight roundoff check
+    # cannot consume the whole retry budget.
     def test_coarse_tvc_roundoff_before_only_permitted_solve(self):
         path = Path(__file__).parent / 'fixtures' / 'tvc_coarse_roundoff.geojson'
         cavity = shape(json.loads(path.read_text()))
@@ -391,6 +457,8 @@ class DiskMergeTests(unittest.TestCase):
                 self.check_roundoff_merge(cavity, slivers, [main], box(-1510000, 3560000, -1509800, 3560200),
                                           bounds, tolerance)
 
+    # Construct the retained faces around the captured cavity and check both their release count
+    # and the exact geometry preserved outside it.
     def check_roundoff_merge(self, cavity, slivers, resolved_parts, island, bounds, tolerance):
         self.assertEqual(len(mpi_remesh._roundoff_chords(cavity)), len(slivers))
 
@@ -461,6 +529,8 @@ class DiskMergeTests(unittest.TestCase):
                 for face in t[-2:]:
                     self.assertIn(tuple(sorted(map(tuple, v[face]))), output)
 
+    # Use adjacent floating-point coordinates whose midpoint cannot be represented. Releasing
+    # the owner first avoids sending that split to CGAL.
     def test_unbisectable_corner_releases_its_parent_before_native_refinement(self):
         cavity = shape(json.loads((Path(__file__).parent/'fixtures'/'tvc_r2c1_unbisectable_corner.geojson').read_text()))
         a, b, c, *others = cavity.exterior.coords[:-1]
@@ -497,6 +567,8 @@ class DiskMergeTests(unittest.TestCase):
                 self.assertEqual(report['attempts'], 1)
                 mpi_remesh.validate_patch(result_v, result_t, self.domain)
 
+    # A hole inside the archived interior must survive reconstruction of the target footprint
+    # and the final seam join.
     def test_physical_hole_in_disk_interior_is_preserved(self):
         hole = box(5, 3, 7, 5)
         self.domain = self.domain.difference(hole)

@@ -41,8 +41,8 @@ public:
 
     bool is_nan;
 
-    //vertexes transformed to rasterized pixel offsets
-    //x,y,z
+    // make_rasterized stores map XY and sampled Z. The RMSE and maximum-error metrics
+    // replace XY with window pixel indices before fitting the plane to these vertices.
     double v0[3];
     double v1[3];
     double v2[3];

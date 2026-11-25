@@ -5,6 +5,8 @@ import vtk
 
 import sys
 
+# Rebuild VTK cells from the saved mesh and attach parameter rows as cell data. Mean vertex Z
+# supplies a face elevation for visualization.
 def main():
 
     if len(sys.argv) != 4:

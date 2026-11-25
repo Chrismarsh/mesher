@@ -16,6 +16,7 @@ if __package__ in (None, ''):  # launched by the configured MPI Python command
 from mesher.mesh_store import batches, copy_array, disk_array, rank_face_range
 
 
+# Load h5py only when HDF5 output is requested. The text exporters can run without it.
 def require_h5py():
     try:
         import h5py
@@ -26,12 +27,16 @@ def require_h5py():
     return h5py
 
 
+# Each writer reopens the shared NPY files read-only so starting another rank does not copy the
+# mesh into its heap.
 def _open_inputs(plan):
     geometry = {key: np.load(path, mmap_mode='r') for key, path in plan['geometry'].items()}
     params = {key: np.load(path, mmap_mode='r') for key, path in plan['parameters'].items()}
     return geometry, params
 
 
+# Create CHM's schema collectively, then give each writer disjoint vertex and face ranges. Face
+# ownership is in output order, including after METIS reordering.
 def _write_slices(plan, arrays, params, h5py, comm=None):
     rank, workers = (0, 1) if comm is None else (comm.rank, comm.size)
     driver = dict(driver='mpio', comm=comm) if workers > 1 else {}
@@ -85,6 +90,8 @@ def _write_slices(plan, arrays, params, h5py, comm=None):
                 dataset[rows] = params[key][source]
 
 
+# CHM uses the mesh row number to look up parameters. Prepare one face order for both files and
+# stage the pair before exposing the new mesh to readers.
 def export_hdf5(prefix, mesh, params, proj4, partitions, workers, launcher):
     nfaces, nverts = len(mesh['elem']), len(mesh['vertex'])
     if max(nfaces, nverts) > np.iinfo(np.int32).max:
@@ -145,6 +152,8 @@ def export_hdf5(prefix, mesh, params, proj4, partitions, workers, launcher):
         os.replace(directory / 'mesh.h5', mesh_path)
 
 
+# Support both site MPI launchers and MPI.Spawn. A spawned writer has to return its status
+# explicitly across the parent/child boundary.
 def launch_writers(manifest, workers, launcher):
     from mpi4py import MPI
 
@@ -166,6 +175,8 @@ def launch_writers(manifest, workers, launcher):
                 raise RuntimeError(error)
 
 
+# A rank that cannot open its input must tell its peers before they enter collective HDF5 calls.
+# The same setup path serves the configuration probe and the real write.
 def _worker(manifest, expected, result=None):
     from mpi4py import MPI
 

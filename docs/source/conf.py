@@ -78,7 +78,8 @@ html_css_files = [
 ]
 
 
-# Extensions to theme docs
+# Register config values with Sphinx so settings can be indexed and cross-referenced with
+# their types and defaults in the configuration guide.
 def setup(app):
     from sphinx.domains.python import PyField
     from sphinx.util.docfields import Field

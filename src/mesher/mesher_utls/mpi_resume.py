@@ -11,6 +11,8 @@ import numpy as np
 from osgeo import gdal
 
 
+# Hold one exclusive lock across cleanup and publication so two jobs cannot mix their tile
+# generations in the same output directory.
 @contextmanager
 def output_lock(directory):
     import fcntl
@@ -28,8 +30,8 @@ def output_lock(directory):
 def input_files(paths):
     """Identify local datasets, including shapefile members and nested VRT sources."""
     files = {}
-    # GDAL may get masks, georeferencing or source pixels from sidecars.
-    # Descend through nested VRTs, and only stat members of each dataset.
+    # Key by real path so files reached through several VRTs are visited once. Returning
+    # False also stops traversal from following a reference back to a known dataset.
     def record(path):
         key = os.path.realpath(path)
         if key in files:
@@ -58,6 +60,8 @@ def input_files(paths):
     return files
 
 
+# A normal resume needs a validated checkpoint. Legacy mode also accepts an absent plan so the
+# caller can inspect older tile markers.
 def read_plan(path, mode):
     if not mode:
         return None
@@ -76,6 +80,8 @@ def read_plan(path, mode):
     return plan
 
 
+# Write beside the destination and rename the complete JSON into place so readers cannot observe
+# a partial checkpoint.
 def write_marker(path, data):
     temporary = path.with_name(f'.{path.name}.{uuid.uuid4().hex}.tmp')
     try:
@@ -86,6 +92,8 @@ def write_marker(path, data):
         temporary.unlink(missing_ok=True)
 
 
+# A restart may reuse a run ID only when its recipe and tile grid match. A fresh run gets a new
+# generation of checkpoints.
 def start_plan(path, previous, recipe, grid, legacy):
     recipe = json.loads(json.dumps(recipe))  # normalize Python tuples for comparison on reload
     if previous:
@@ -125,6 +133,8 @@ def archive_info(path):
     return members, shape[0]  # tris is the second member
 
 
+# Read both inputs in task order. The child stores their generation IDs in this same order when
+# recording which pair it merged.
 def parent_markers(task):
     for tile in (task['tile_a'], task['tile_b']):
         with open(tile['meta']) as stream:
@@ -150,6 +160,8 @@ def publish(staged, prefix, marker, task):
     os.replace(staged_marker, metadata)
 
 
+# Schedule any tile or merge whose committed archive or parent generations no longer match. A
+# rebuilt parent must invalidate previously completed descendants.
 def unfinished(tasks, plan, label):
     pending = []
     for task in tasks:

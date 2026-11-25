@@ -14,6 +14,8 @@ using PatchCDT = CGAL::Constrained_triangulation_plus_2<CDT>;
 using PatchMesher = CGAL::Delaunay_mesher_2<PatchCDT, Criteria>;
 using PatchClock = std::chrono::steady_clock;
 
+// Use a monotonic clock for elapsed patch timings so wall-clock corrections cannot change a
+// retry's reported cost.
 double patch_seconds(PatchClock::time_point start) {
     return std::chrono::duration<double>(PatchClock::now() - start).count();
 }
@@ -27,6 +29,8 @@ struct PatchStatistics {
 };
 static PatchStatistics patch_stats;
 
+// Write the statistics separately from the mesh so a failed refinement can still report where
+// it spent its time.
 void write_patch_statistics(const std::string& output) {
     if (output.empty()) return;
     const double refinement_seconds = patch_stats.refining
@@ -40,6 +44,8 @@ void write_patch_statistics(const std::string& output) {
         << ",\"raster_seconds\":" << mesher_raster_stats.seconds << "}\n";
 }
 
+// Only finite XY coordinates can enter CGAL's triangulation. Any remaining coordinate
+// components are irrelevant to a planar constraint.
 Point patch_point(const pt::ptree& coordinate) {
     if (coordinate.size() < 2) throw std::invalid_argument("Patch coordinate needs x and y");
     auto it = coordinate.begin();
@@ -48,6 +54,8 @@ Point patch_point(const pt::ptree& coordinate) {
     return Point(x, y);
 }
 
+// Assign in-domain flags using connectivity across unconstrained edges. This works for domains
+// with holes and for physical streams that divide a polygon into regions.
 template<class Triangulation>
 void mark_patch_domain(Triangulation& cdt, OGRGeometry* domain) {
     // A single rounded centroid near a raster-stair boundary can falsely mark
@@ -98,6 +106,8 @@ void mark_patch_domain(Triangulation& cdt, OGRGeometry* domain) {
 bool acute_constraint_sector(const PatchCDT& cdt, Face_handle face, int corner, double bound,
                              std::array<Vertex_handle, 2>* rays = nullptr) {
     const auto vertex = face->vertex(corner);
+    // Walk from this face in either direction around the same vertex. The first
+    // constrained edge in each direction bounds the sector containing the face.
     auto ray = [&](int direction) -> Vertex_handle {
         auto current = face;
         do {
@@ -227,6 +237,8 @@ PatchAudit audit_input_sectors(const PatchCDT& cdt, double bound,
     return audit;
 }
 
+// Reapply the original criteria to every in-domain face after refinement. Record which failures
+// a shape-only repair could address and which need a different cavity.
 PatchAudit audit_patch_faces(PatchCDT& cdt, const Criteria& criteria) {
     PatchAudit audit;
     auto is_bad = criteria.is_bad_object();
@@ -252,6 +264,8 @@ PatchAudit audit_patch_faces(PatchCDT& cdt, const Criteria& criteria) {
     return audit;
 }
 
+// Write the failed triangles and their constrained edges before raising. The Python merge uses
+// that geometry to decide which retained faces it can release.
 void require_patch_quality(const PatchAudit& audit, const std::string& output) {
     const size_t bad = audit.failures.size();
     if (!bad && audit.faces) return;
@@ -314,12 +328,16 @@ void require_patch_quality(const PatchAudit& audit, const std::string& output) {
         " triangles failing Mesher criteria (or an empty domain)");
 }
 
+// Save the failed split's endpoints while they are still available so recovery can find the
+// segment after the backend exits.
 void record_failed_patch_edge(const std::string& output, const Point& a, const Point& b) {
     std::ofstream report(output + ".edge.json");
     report << std::setprecision(std::numeric_limits<double>::max_digits10)
            << "{\"edge\":[[" << a.x() << ',' << a.y() << "],[" << b.x() << ',' << b.y() << "]]}\n";
 }
 
+// Triangulate the noded cavity under the shared refinement criteria. Keep each retained
+// interface's ordered child vertices so the merge can reconnect both sides exactly.
 int mesh_patch(const std::string& domain_file, const std::string& constraints_file,
                const std::string& output, const Criteria& criteria, size_t max_vertices,
                const std::string& interface_file = "")
@@ -376,6 +394,7 @@ int mesh_patch(const std::string& domain_file, const std::string& constraints_fi
         throw std::runtime_error("Patch constraint graph is not two-dimensional");
     const size_t input_vertices = cdt.number_of_vertices();
     size_t steps = 0;
+    // Distinguish a constraint graph that starts over budget from growth during refinement.
     auto budget_error = [&]() {
         return std::runtime_error("Patch vertex budget exceeded: vertices=" + std::to_string(cdt.number_of_vertices()) +
             ", limit=" + std::to_string(max_vertices) + ", input_vertices=" + std::to_string(input_vertices) +

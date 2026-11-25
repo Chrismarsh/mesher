@@ -40,6 +40,8 @@ class BackendTerminated(PatchError):
 
 class PatchResult(tuple):
     """Validated immutable arrays plus explicit CGAL interface lineage."""
+    # Keep two-value unpacking for mesh callers while carrying interface lineage and statistics
+    # into repair. Read-only geometry can safely be reused by a retry.
     def __new__(cls, vertices, triangles, interfaces, stats):
         vertices.setflags(write=False)
         triangles.setflags(write=False)
@@ -76,6 +78,8 @@ def _run_backend(command, work, options):
 
 
 class PatchQualityError(PatchError):
+    # Keep the backend's per-face geometry and failure reasons so recovery can find the retained
+    # owners near the failed faces.
     def __init__(self, message, failures):
         self.failures = failures
         super().__init__(message)
@@ -87,6 +91,8 @@ class PhysicalConstraintAngle(PatchQualityError):
 
 class PatchBoundaryRoundoff(PatchError):
     """Carry the unresolved geometry to the layer that owns its boundary faces."""
+    # Pass the suspect chords and any known owners to the layer able to release them. Remember
+    # whether the diagnosis came before native refinement.
     def __init__(self, message, chords, owners=None, *, preflight_only=False):
         self.preflight_only = preflight_only
         self.chords = chords
@@ -95,12 +101,16 @@ class PatchBoundaryRoundoff(PatchError):
 
 
 class PatchEdgeError(PatchError):
+    # Preserve the failed segment's endpoints so the caller can locate its owners in this
+    # attempt's mesh.
     def __init__(self, message, edge):
         self.edge = edge
         super().__init__(message)
 
 
 class PatchPrecisionError(PatchError):
+    # Several near misses may identify the same retained interface. Carry each interface ID once
+    # so the caller can release the corresponding faces.
     def __init__(self, interface_ids, epsilon):
         self.interface_ids = np.unique(interface_ids)
         super().__init__(f'Retained interfaces have a nonzero clearance below coordinate precision '
@@ -109,6 +119,8 @@ class PatchPrecisionError(PatchError):
 
 class InterfaceChanged(PatchError):
     """Face IDs index the retained_t argument of the failing _stitch call."""
+    # Collect unique owners in retained-face numbering. The caller maps them back to
+    # working-mesh rows before expanding the cavity.
     def __init__(self, faces):
         self.faces = np.unique(faces)
         super().__init__(f'Refinement changed a retained interface at {len(self.faces)} faces; cavity must grow')
@@ -125,6 +137,8 @@ def polygon_domain(geometry):
     return geometry
 
 
+# Combine the layer's polygon features into one validated footprint while keeping disconnected
+# components and interior holes.
 def load_domain(path):
     ds = ogr.Open(str(path))
     if ds is None:
@@ -179,6 +193,8 @@ def _clipped_domain(domain, bounds, padding, corner_radius, context=None, mesher
         return Polygon()
     window = box(bounds[0]-padding, bounds[1]-padding, bounds[2]+padding, bounds[3]+padding)
 
+    # A halo can reach a disconnected island owned entirely by another tile. Include a clipped
+    # component only if it has positive area inside this core.
     def owned_parts(window):
         clipped = polygon_domain(domain.intersection(window))
         parts = [clipped] if clipped.geom_type == 'Polygon' else clipped.geoms
@@ -213,6 +229,8 @@ def tile_domain(domain, bounds, halo_width, context=None, mesher_debug=False):
     return _clipped_domain(domain, bounds, halo_width, halo_width/2, context, mesher_debug)
 
 
+# Read all configured feature layers into line segments that can be clipped to the domain of
+# each tile or patch.
 def load_constraints(paths):
     lines = []
     for path in paths:
@@ -226,6 +244,8 @@ def load_constraints(paths):
     return lines
 
 
+# Clipping can produce polygons, multipart lines and isolated points. Keep the linear pieces,
+# including polygon rings, that can constrain a triangulation.
 def line_parts(geometry):
     if geometry.is_empty:
         return []
@@ -277,6 +297,8 @@ def mesh_coverage(vertices, triangles, neighbours=None):
     return coverage
 
 
+# A roundoff-width displacement along a long perimeter can have measurable area. Scale coverage
+# comparisons by perimeter and coordinate magnitude.
 def area_tolerance(domain):
     if domain.is_empty:
         return 1e-10
@@ -287,6 +309,8 @@ def area_tolerance(domain):
     return max(1e-10, 64 * np.finfo(float).eps * scale * domain.length)
 
 
+# Coordinate precision depends on the magnitude of the projected values. Use this length scale
+# for incidence checks that are sensitive to floating-point roundoff.
 def _coordinate_tolerance(domain):
     scale = max(1.0, *(abs(x) for x in domain.bounds))
     return max(1e-10, 64 * np.finfo(float).eps * scale)
@@ -360,6 +384,8 @@ def _roundoff_owners(chords, edges):
 
 
 class _PhysicalBoundary:
+    # Keep each physical ring and its precision buffer separately indexed so even components
+    # meeting at a single vertex retain their boundaries.
     def __init__(self, domain):
         # Buffer individual rings: combining point-touching rings in one tiny
         # GEOS buffer can erase entire components at projected coordinates.
@@ -367,6 +393,8 @@ class _PhysicalBoundary:
         epsilon = _coordinate_tolerance(domain)
         self.index = STRtree([*rings, *(ring.buffer(epsilon) for ring in rings)])
 
+    # Test the whole candidate edge against individual boundary rings and their buffers. Two
+    # endpoints on the physical boundary can still span a cavity.
     def covers(self, edge):
         return self.index.query(edge, predicate='covered_by').size > 0
 
@@ -397,6 +425,8 @@ def split_edge_chain(a, b, adjacent, epsilon=None):
     return chain
 
 
+# Each clipped stream segment must survive as a continuous chain of mesh edges. Where CGAL
+# supplies constraint labels, require the chain to follow those edges.
 def _validate_stream_edges(vertices, triangles, neighbours, domain, constraints, constrained_edges):
     lines = [part for line in constraints for part in line_parts(line.intersection(domain))]
     if not lines:
@@ -465,6 +495,8 @@ def validate_patch(vertices, triangles, domain, physical_constraints=(), constra
     return neighbours
 
 
+# Translate the shared refinement settings into backend arguments so tile generation and seam
+# repair use the same area, terrain and parameter criteria.
 def _mesher_arguments(options):
     args = [options['mesher_path'], '--area', str(options['max_area']),
             '--min-area', str(options['min_area']), '--error-metric', options['errormetric'],
@@ -521,6 +553,8 @@ def _precision_interface_ids(linework, fixed_edges, epsilon):
     if not len(owners) or not len(segments):
         return np.empty(0, dtype=np.int64)
 
+    # Use the spatial index to narrow the search, then distinguish genuine incidence from
+    # distinct geometry closer than coordinate precision.
     def near_pairs(vertices, edges):
         xy = get_coordinates(vertices)
         # Bounding-box query plus a distance filter also supports Shapely 2
@@ -1040,6 +1074,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
     totals = {'subdivided_parents': 0, 'local_repairs': 0, 'patch_triangles_generated': 0,
               'failed_subdivision_parents': 0, 'candidate_interface_faces': 0}
 
+    # Release connected retained components along artificial interfaces on the last recovery.
+    # Components bounded only by physical edges can stay intact.
     def final_recovery():
         nonlocal interface_recovery
         retained_ids = np.flatnonzero(keep)
@@ -1056,6 +1092,8 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
             debug_log(options, f'Final interface recovery{label}: removed={removed}, retained={np.count_nonzero(keep)}; '
                       'remeshing components touching the cavity with unchanged quality checks and vertex budget')
 
+    # Use face provenance to distinguish original triangles from reused patch work and
+    # accumulate costs from every attempt into the merge report.
     def finish(v, t, provenance, attempt, patch_count):
         stats = dict(totals, attempts=attempt+1, band_width=width, patch_triangles=patch_count,
                      boundary_halo_area=domain.area-core_area,

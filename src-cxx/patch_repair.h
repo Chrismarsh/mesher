@@ -1,6 +1,8 @@
 // Batched conforming subdivisions. Never add Steiner points or weaken Criteria.
 #pragma once
 
+// Retriangulate each retained parent using its supplied boundary vertices. Returning children
+// only for a complete, passing subdivision lets Python retry the other parents locally.
 int repair_patch(const std::string& input, const std::string& output,
                  const Criteria& criteria, size_t max_vertices)
 {

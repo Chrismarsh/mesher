@@ -1,4 +1,6 @@
 
+# Use class 18 where the mask differs from 1 or the land classification is zero. Elsewhere
+# preserve the supplied land class.
 def make_landcover(land,water):
     outtype = land
 
@@ -7,6 +9,7 @@ def make_landcover(land,water):
 
     return outtype
 
+# Turn the aggregated mask class into a binary field for the example's watermask parameter.
 def water(w):
     out = 1
     if w != 1:

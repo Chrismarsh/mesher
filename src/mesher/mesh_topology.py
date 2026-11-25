@@ -20,6 +20,8 @@ EDGE_DTYPE = np.dtype([('a', '<i8'), ('b', '<i8'), ('owner', '<i8')])
 DEFAULT_CHUNK_SIZE = 1_000_000
 
 
+# Connectivity is indexed directly into arrays. Check the shape and range before converting to
+# signed IDs so an oversized unsigned index cannot wrap to a boundary sentinel.
 def integer_rows(values, name, width=3):
     array = np.asarray(values)
     if array.ndim != 2 or array.shape[1] != width:
@@ -31,6 +33,8 @@ def integer_rows(values, name, width=3):
     return np.asarray(array, dtype=np.int64)
 
 
+# Sort edges by their unordered endpoint IDs so owners from different faces meet. Packing face *
+# 3 + slot lets the match write directly into the neighbour table.
 def _edge_records(triangles, first_face):
     edges = np.empty(3 * len(triangles), dtype=EDGE_DTYPE)
     for slot, (a, b) in enumerate(((1, 2), (2, 0), (0, 1))):
@@ -41,6 +45,8 @@ def _edge_records(triangles, first_face):
     return edges
 
 
+# One owner leaves a boundary, two owners fill reciprocal slots, and a third makes adjacency
+# ambiguous. Equal endpoint pairs are consecutive after the sort.
 def _match_sorted_edges(edges, neighbours):
     same = (edges['a'][1:] == edges['a'][:-1]) & (edges['b'][1:] == edges['b'][:-1])
     triples = np.flatnonzero(same[:-1] & same[1:])
@@ -54,11 +60,15 @@ def _match_sorted_edges(edges, neighbours):
     neighbours.flat[right] = left // 3
 
 
+# Yield ordinary ordered tuples so the external merge can compare records from different NumPy
+# runs using the same endpoint keys.
 def _records(array):
     for record in array:
         yield int(record['a']), int(record['b']), int(record['owner'])
 
 
+# An edge's two owners can be in different files. Carry the preceding key across run boundaries
+# to pair them and catch a third owner.
 def _match_edge_runs(paths, neighbours):
     runs = [np.load(path, mmap_mode='r') for path in paths]
     try:
@@ -224,6 +234,8 @@ def boundary_node_conflicts(vertices, triangles, neighbours, tolerance):
     distances, _ = tree.query(xy, k=2)
     coincident = ids[distances[:, 1] <= tolerance]
 
+    # Project candidate vertices onto each open segment. Returning interior IDs in distance
+    # order gives the stitcher a chain from the first endpoint to the second.
     def subdivisions():
         for face, slot, va, vb in zip(faces, slots, a, b):
             p, q = vertices[va, :2], vertices[vb, :2]

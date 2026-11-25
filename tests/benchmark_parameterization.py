@@ -23,6 +23,8 @@ from osgeo import gdal, osr
 from mesher.mesher_utls import MPI_do_parameterize as current
 
 
+# Run both parameterization implementations on the same generated faces and rasters so timing
+# differences can be checked against their numerical results.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline-ref', default='a37a011e378408da43860a691edec01822ef0b80')

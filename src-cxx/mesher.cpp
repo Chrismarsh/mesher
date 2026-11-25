@@ -45,6 +45,8 @@ namespace po = boost::program_options;
 
 
 
+// Keep filename and line information when reporting malformed backend input. MPI workers can
+// then associate a parser error with the saved reproduction.
 pt::ptree read_json(const std::string& path)
 {
  // the imbue appears to fix some oddness in how the json parser parses the str.
@@ -86,6 +88,8 @@ pt::ptree read_json(const std::string& path)
 #include "patch_mesher.h"
 #include "patch_repair.h"
 
+// Build one set of refinement criteria from the command line. Whole-domain meshing, cavity
+// meshing and retained-parent repairs all use those bounds.
 int main(int argc, char *argv[])
 {
     GDALAllRegister();

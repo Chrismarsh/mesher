@@ -17,6 +17,8 @@ from mesher.mesher_utls import MPI_do_parameterize as worker
 
 
 class MeshStoreTests(unittest.TestCase):
+    # Use a temporary preparation directory so each test can inspect the arrays and outputs
+    # produced by a single run.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -24,6 +26,8 @@ class MeshStoreTests(unittest.TestCase):
         self.v = np.array([[0., 0, 0], [1., 0, 0], [1., 1, 0], [0., 1, 0]])
         self.t = np.array([[0, 1, 2], [0, 2, 3]])
 
+    # Read the archive through the mapping interface and compare the resulting neighbour table
+    # to the one computed in memory.
     def test_archive_mapping_and_disk_topology(self):
         for save in (np.savez, np.savez_compressed):
             path = self.root/'old.npz'
@@ -38,6 +42,8 @@ class MeshStoreTests(unittest.TestCase):
                 store.check_boundary_geometry(v, t, neigh, self.root)
             self.assertEqual(list(self.root.glob('mesh-arrays-*')), [])
 
+    # Exercise both failure modes of the disk index, including a point on an edge whose
+    # endpoints have different IDs.
     def test_disk_boundary_index_rejects_hanging_and_coincident(self):
         v = np.vstack([self.v, [[.5, 0, 0], [.5, -.5, 0], [1, -.5, 0]]])
         t = np.vstack([self.t, [[4, 5, 6]]])
@@ -47,6 +53,8 @@ class MeshStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(MeshTopologyError, 'Coincident'):
             store.check_boundary_geometry(v, t, build_neighbours(t, len(v)), self.root)
 
+    # Read the emitted formats back to catch schema, index or binary-offset changes that array
+    # equality before export would miss.
     def test_preparation_and_stream_exports_round_trip(self):
         ds = gdal.GetDriverByName('MEM').Create('', 2, 2, 1, gdal.GDT_Float64)
         ds.SetGeoTransform((0, 1, 0, 2, 0, -1))
@@ -70,6 +78,8 @@ class MeshStoreTests(unittest.TestCase):
         np.testing.assert_array_equal(vtk_to_numpy(result.GetCellData().GetArray('[param] x<&')), params['x<&'])
         self.assertEqual(result.GetFieldData().GetAbstractArray('proj4').GetValue(0), srs.ExportToProj4())
 
+    # Observe the worker's input block sizes and inspect the shared column values to check
+    # memory bounds and global row placement together.
     def test_parameter_worker_bounds_batches_and_writes_columns(self):
         import cloudpickle
         np.save(self.root/'v.npy', self.v)
@@ -85,6 +95,8 @@ class MeshStoreTests(unittest.TestCase):
         inputs = self.root/'input.pickle'; inputs.write_bytes(cloudpickle.dumps(prep))
         sizes = []
         original = worker._parameterize_batch
+        # Record the face count seen by the reducer and return recognizable values for verifying
+        # its output slices.
         def batch(prep, mesh, *args):
             sizes.append(mesh['mesh']['nelem'])
             return original(prep, mesh, *args)

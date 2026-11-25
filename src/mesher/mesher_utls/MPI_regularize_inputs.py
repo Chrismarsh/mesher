@@ -19,6 +19,8 @@ from mesher.mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
 
+# External launchers pass strings. Treating the literal False as a Python truth value would try
+# to disconnect a nonexistent parent.
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
@@ -26,6 +28,8 @@ def str2bool(s: str) -> bool:
     return False
 
 
+# Key a cached warp by its inputs, GDAL version and warp/fill settings. A source with no usable
+# file metadata gets a fresh name to prevent stale reuse.
 def projected_path(directory, filename, dataset, warp_options, fill_distance):
     # Include GDAL-reported dependencies (e.g. tiles behind a VRT) without reading raster data.
     dependencies = {}
@@ -53,6 +57,8 @@ def projected_path(directory, filename, dataset, warp_options, fill_distance):
     return os.path.join(directory, f'{stem}_{digest}_projected.tif')
 
 
+# Put each raster for one parameter on the DEM grid. Stage each warp and optional fill before
+# publishing so another rank can safely reuse the result.
 def regularize_inputs(args):
     (parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width, srs_out,
      xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters) = args
@@ -127,6 +133,8 @@ def regularize_inputs(args):
     return ret_df
 
 
+# Split parameter entries among the allotted GDAL ranks. A separate result file per rank lets
+# the parent collect projected paths on shared storage.
 def main(pickle_file: str,
          disconnect: bool, expected_workers=None):
     check_worker_count(MPI.COMM_WORLD.size, expected_workers, 'expected GDAL worker count')

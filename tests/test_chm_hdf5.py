@@ -16,6 +16,8 @@ from mesher.mesh_topology import build_neighbours
 
 @unittest.skipUnless(importlib.util.find_spec('h5py'), 'h5py is optional')
 class ChmHdf5Tests(unittest.TestCase):
+    # Use file-backed geometry and recognizable per-face values so a misplaced row can be traced
+    # through the export.
     def setUp(self):
         import h5py
         self.h5py = h5py
@@ -34,6 +36,8 @@ class ChmHdf5Tests(unittest.TestCase):
                        [('id', np.arange(8)), ('snow', np.arange(8, dtype=float) + .125)]}
         self.proj4 = '+proj=longlat +datum=WGS84 +no_defs'
 
+    # Read the files the way CHM expects, checking array datatypes, root attributes, neighbour
+    # numbering and parameter correspondence under the supplied order.
     def check_files(self, sizes, order):
         with self.h5py.File(self.directory / 'terrain_mesh.h5') as mesh:
             g = mesh['mesh']
@@ -58,6 +62,8 @@ class ChmHdf5Tests(unittest.TestCase):
                 self.assertEqual(dataset.dtype, np.float64)
                 np.testing.assert_equal(dataset[:], values[order])
 
+    # Force short writes across permutation boundaries so an incorrect inverse neighbour map
+    # cannot hide within a single batch.
     def test_serial_identity_and_nontrivial_order(self):
         export_hdf5(self.prefix, self.mesh, self.params, self.proj4, 1, 1, None)
         self.check_files([8], np.arange(8))
@@ -67,6 +73,8 @@ class ChmHdf5Tests(unittest.TestCase):
             export_hdf5(self.prefix, self.mesh, self.params, self.proj4, 2, 1, None)
         self.check_files([3, 5], order)
 
+    # Simulate running out of disk space during a write and check that a reader still sees the
+    # previous complete pair.
     def test_failed_export_preserves_prior_outputs(self):
         export_hdf5(self.prefix, self.mesh, self.params, self.proj4, 1, 1, None)
         with patch('mesher.chm_hdf5._write_slices', side_effect=OSError('disk full')):
@@ -74,6 +82,8 @@ class ChmHdf5Tests(unittest.TestCase):
                 export_hdf5(self.prefix, self.mesh, self.params, self.proj4, 1, 1, None)
         self.check_files([8], np.arange(8))
 
+    # Read back a file produced by real MPI writers to catch collective schema or slice-order
+    # errors that a serial export cannot exercise.
     @unittest.skipUnless(shutil.which('mpirun') and os.environ.get('MESHER_TEST_MPI_HDF5'),
                          'enable with MESHER_TEST_MPI_HDF5=1 on a parallel h5py installation')
     def test_parallel_metis_export(self):
@@ -83,6 +93,8 @@ class ChmHdf5Tests(unittest.TestCase):
             export_hdf5(self.prefix, self.mesh, self.params, self.proj4, 2, 3, f'mpirun -n 3 {sys.executable}')
         self.check_files(sizes, order)
 
+    # Reuse a completed mesh to exercise the CLI's HDF5 and optional text outputs independently
+    # of terrain refinement.
     @unittest.skipUnless(importlib.util.find_spec('exactextract') and shutil.which('mpirun')
                          and shutil.which('gdal-config'), 'requires the Mesher CLI dependencies')
     def test_cli_export_switches_with_reused_mpi_mesh(self):

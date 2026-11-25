@@ -8,6 +8,8 @@ import threading
 import time
 
 
+# Flush per-worker messages only in debug mode so ordinary runs can show a single stage progress
+# display.
 def debug_log(options, message):
     if options.get('mesher_debug', False):
         print(message, flush=True)
@@ -34,6 +36,8 @@ class StageProgress:
     cannot inflate completion counts. Backend reproduction files are separate.
     """
 
+    # Copy tasks before assigning run-specific marker paths so the caller can reuse its original
+    # task descriptions.
     def __init__(self, tasks, label, directory=None, stream=None, debug=False):
         self.tasks = [dict(task) for task in tasks]
         self.label = label
@@ -45,6 +49,8 @@ class StageProgress:
         self._last_line_length = 0
         self._last_update = None
 
+    # Give this launch its own shared marker directory. A resumed stage must count only tasks
+    # scheduled in this invocation.
     def __enter__(self):
         self._temporary = tempfile.TemporaryDirectory(prefix='.mesher-progress-', dir=self.root)
         self.directory = Path(self._temporary.name).resolve()
@@ -56,10 +62,14 @@ class StageProgress:
         self._thread.start()
         return self
 
+    # Count only completion markers. The same directory also holds launch arguments and can be
+    # read while tasks are still running.
     def _count(self):
         with os.scandir(self.directory) as entries:
             self.completed = sum(entry.name.endswith('.done') for entry in entries)
 
+    # A terminal can overwrite its last line. A batch log needs occasional newline-delimited
+    # updates that remain readable after a long run.
     def _render(self, force=False, state=None):
         now = time.monotonic()
         # PBS/redirected output gets start/end lines and a 30-second heartbeat;
@@ -87,6 +97,8 @@ class StageProgress:
         self._last_line_length = len(line)
         self._last_update = now
 
+    # Poll from a background thread in the parent process. Workers publish markers without
+    # entering extra MPI calls or barriers.
     def _monitor(self):
         while not self._stop.wait(1):
             try:
@@ -97,6 +109,8 @@ class StageProgress:
                 # interrupt meshing or replace the actual MPI error.
                 return
 
+    # Join the monitor before deleting its directory. On launcher failure, count actual markers
+    # so the final line shows how many tasks finished.
     def __exit__(self, exc_type, exc, traceback):
         self._stop.set()
         self._thread.join()

@@ -25,6 +25,8 @@ class Walltime(Exception):
 
 @unittest.skipUnless(os.environ.get('MESHER_TEST_EXE'), 'set MESHER_TEST_EXE to a built backend')
 class RestartTests(unittest.TestCase):
+    # Put the DEM, config and outputs in an isolated working directory so successive runs see
+    # exactly the checkpoints written by that case.
     def setUp(self):
         old_cwd = os.getcwd()
         directory = tempfile.TemporaryDirectory()
@@ -46,6 +48,8 @@ class RestartTests(unittest.TestCase):
         self.write_config()
         self.ran = []
 
+    # Vary workers, tile count and tolerance independently to distinguish resource changes from
+    # changes to mesh identity.
     def write_config(self, ranks=2, tiles=6, tolerance=1):
         self.config.write_text(f"""
 dem_filename = 'dem.tif'
@@ -62,8 +66,12 @@ write_vtu = write_shp = False
         sys.modules.pop('config', None)
         Path(importlib.util.cache_from_source(str(self.config))).unlink(missing_ok=True)
 
+    # Exercise the normal CLI and checkpoint logic while controlling exactly which tile or pair
+    # finishes before an interruption.
     def run_cli(self, *flags, stop=None):
         self.ran = []
+        # Dispatch real worker functions locally so the test can stop between publications and
+        # record which tasks a restart reruns.
         def run_tasks(tasks, launcher, workers, worker, label):
             for task in tasks:
                 if worker == 'MPI_mesh_tiles.py':
@@ -89,6 +97,8 @@ write_vtu = write_shp = False
             cli.main()
             return log.getvalue()
 
+    # Interrupt a merge stage, then replace a leaf. Only unfinished work and descendants of the
+    # new leaf should need another solve.
     def test_restarts_mid_stage_and_after_replaced_leaf(self):
         first = 'dem_mpi_stage0_r0_c0'
         with self.assertRaises(Walltime):
@@ -126,6 +136,8 @@ write_vtu = write_shp = False
             for key in expected:
                 np.testing.assert_array_equal(expected[key], clean[key])
 
+    # Compare the evidence available in old tile markers with the stronger identity checks
+    # possible once a run manifest exists.
     def test_legacy_adoption_checks_layout_and_tracked_resume_checks_inputs(self):
         first = 'dem_mpi_stage0_r0_c0'
         with self.assertRaises(Walltime):
@@ -164,6 +176,8 @@ write_vtu = write_shp = False
 
 
 class CheckpointTests(unittest.TestCase):
+    # Interrupt the interval between archive and marker renames. A leftover NPZ cannot prove
+    # that this task completed.
     def test_kill_between_publications_leaves_task_pending(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -173,6 +187,8 @@ class CheckpointTests(unittest.TestCase):
                         tile_bbox=[0, 0, 10, 10], band_width=1)
             marker = dict(core_bbox=task['tile_bbox'], band_width=1, empty_tile=True, merge_method='remesh')
             plan = dict(run_id='run', legacy=False)
+            # Recreate the worker's temporary archive before each attempted publication because
+            # a successful rename consumes it.
             def stage():
                 np.savez(staged, verts=np.empty((0, 3)), tris=np.empty((0, 3), dtype=int))
             stage()
@@ -180,6 +196,8 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(mpi_resume.unfinished([task], plan, 'tiles'), [])
             stage()
             replace = os.replace
+            # Let the archive reach its final path and fail the marker rename to reproduce the
+            # vulnerable publication interval.
             def interrupt_before_metadata(source, destination):
                 if destination.suffix == '.json':
                     raise Walltime()
@@ -190,6 +208,8 @@ class CheckpointTests(unittest.TestCase):
             self.assertFalse(prefix.with_suffix('.json').exists())
             self.assertEqual(mpi_resume.unfinished([task], plan, 'tiles'), [task])
 
+    # Reuse recorded warp paths and a config callback on resume so parameter restoration cannot
+    # depend on relaunching GDAL workers.
     def test_projected_parameter_paths_and_classifier_are_restored_without_mpi(self):
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(32608)
@@ -205,6 +225,8 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNone(data['soil']['file'])
         self.assertIsInstance(data['soil']['classifier'], bytes)
 
+    # Competing writers to one output tree could mix checkpoint generations. Verify the second
+    # lock acquisition fails.
     def test_concurrent_writer_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'dem'

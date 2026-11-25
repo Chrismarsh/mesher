@@ -15,12 +15,15 @@ from mesher.mesher_utls.mpi_resume import publish
 from mesher.mesher_utls.mpi_progress import complete_task, debug_log
 
 
+# Decode the launcher's text flag so a worker disconnects only when it was started by MPI.Spawn.
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
     return False
 
 
+# The halo gives seam refinement room outside the owned core. Publish an empty tile too, since
+# later merges still need its core bounds.
 def mesh_tile(args):
     if args.get("merge_method", "remesh") != "remesh":
         raise ValueError('Shared-edge meshing has been retired; regenerate tasks with mpi_merge_method="remesh"')
@@ -42,6 +45,8 @@ def mesh_tile(args):
                                      empty_tile=len(tris) == 0, merge_method='remesh'), args)
 
 
+# Distribute pending tiles across the ranks that actually started. Each completion marker
+# corresponds to a published tile, even when one rank handles several tiles.
 def main(pickle_file: str, disconnect: bool, expected_workers=None):
     check_worker_count(MPI.COMM_WORLD.size, expected_workers)
     if isinstance(disconnect, str):

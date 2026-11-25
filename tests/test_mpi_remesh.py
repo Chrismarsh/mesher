@@ -25,6 +25,8 @@ from mesher.mesh_topology import MeshTopologyError, audit_mesh
 gdal.UseExceptions()
 
 
+# Use the same diagonal in every rectangular cell so retained faces can be identified by
+# coordinates after a merge renumbers the vertices.
 def grid(x0, x1, y0, y1, step=1):
     xs, ys = np.arange(x0, x1 + step / 2, step), np.arange(y0, y1 + step / 2, step)
     vertices = np.array([[x, y, 0] for y in ys for x in xs], dtype=float)
@@ -36,6 +38,8 @@ def grid(x0, x1, y0, y1, step=1):
     return vertices, np.array(tris)
 
 
+# Rebuild opposite-edge neighbours from the output triangles before applying the CHM mesh audit.
+# This also checks the connectivity needed by partitioning.
 def audit(vertices, triangles):
     from mesher.mesh_topology import build_neighbours
     return audit_mesh({'mesh': {'vertex': vertices.tolist(), 'elem': triangles.tolist(),
@@ -43,6 +47,8 @@ def audit(vertices, triangles):
         'nvertex': len(vertices), 'nelem': len(triangles)}})[0]
 
 
+# A sloping boundary produced by the same buffer/simplify operations as the CLI creates narrow
+# intersections with axis-aligned tile cuts.
 def buffered_slanted_domain():
     # The physical rectangle has right angles; rectangular clipping creates
     # the acute 20.1093-degree corner reported for the five-vertex tile input.
@@ -52,6 +58,8 @@ def buffered_slanted_domain():
 
 
 class CavityGeometryTests(unittest.TestCase):
+    # Only a positive-length overlap identifies a face owning a roundoff chord. A nearby edge
+    # touching its endpoint should stay retained.
     def test_roundoff_repair_finds_noded_edges_and_excludes_point_contacts(self):
         from mesher.mesher_utls.mpi_remesh import _roundoff_chords, _roundoff_owners
         x, y = -1900000., 3700000.
@@ -66,6 +74,8 @@ class CavityGeometryTests(unittest.TestCase):
         # A narrow physical polygon wider than coordinate roundoff is retained.
         self.assertFalse(_roundoff_chords(box(x, y, x+2000, y+20*ulp)))
 
+    # A representable island can be both tiny and well shaped. Coordinate scale alone is
+    # insufficient grounds for rejecting it.
     def test_one_ulp_physical_square_has_no_forced_bad_corner(self):
         from mesher.mesher_utls.mpi_remesh import _roundoff_chords
         x, y = -1500000., 3400000.
@@ -74,6 +84,8 @@ class CavityGeometryTests(unittest.TestCase):
         self.assertTrue(_roundoff_chords(island))
         self.assertFalse(_roundoff_chords(island, acute_only=True))
 
+    # Compare exact contact with gaps on either side of the precision threshold so a stream
+    # meeting an edge is not mistaken for an unresolved gap.
     def test_precision_selection_distinguishes_incidence_roundoff_and_resolved_gaps(self):
         x, y = -1500000., 3400000.
         boundary = LineString([(x, y), (x+100, y)])
@@ -89,6 +101,8 @@ class CavityGeometryTests(unittest.TestCase):
         self.assertEqual(_precision_interface_ids([physical, boundary], [boundary], epsilon).tolist(), [0])
         self.assertEqual(_precision_interface_ids([boundary], [], epsilon).tolist(), [])
 
+    # An artificial acute corner can be relieved by extending the halo. Check the extension
+    # against the original domain and its holes.
     def test_local_cut_extensions_keep_owned_area_holes_and_physical_boundary(self):
         for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
             with self.subTest(origin=(x, y)):
@@ -107,11 +121,15 @@ class CavityGeometryTests(unittest.TestCase):
                 self.assertEqual(result.intersection(hole).area, 0)
                 self.assertEqual(result.difference(raw).intersection(core).area, 0)
 
+    # A tile that meets a component only at an edge or vertex must not generate a duplicate
+    # patch for its neighbour's land.
     def test_halo_point_or_line_contact_does_not_own_core_area(self):
         for domain in (box(-2, 2, -1, 3), box(-2, 2, 0, 3), box(-2, -2, 0, 0)):
             with self.subTest(domain=domain.wkt):
                 self.assertTrue(tile_domain(domain, [0, 0, 10, 10], 3).is_empty)
 
+    # A halo is needed for components crossing a core boundary, but it may also intersect a
+    # separate island with no area in that core.
     def test_tile_keeps_owned_halo_and_holes_but_omits_unowned_components(self):
         owned = box(-1, -1, 4, 4).difference(box(1, 1, 2, 2))
         outside = box(11, 1, 13, 2)
@@ -123,6 +141,8 @@ class CavityGeometryTests(unittest.TestCase):
         # Dropped components remain in the unchanged global domain.
         self.assertTrue(domain.covers(outside.union(touching)))
 
+    # A thin positive-area intersection still assigns ownership. An absolute area cutoff would
+    # drop real terrain.
     def test_arbitrarily_thin_owned_component_keeps_its_full_halo(self):
         main = box(1, 1, 3, 3)
         thin = box(-1, 6, 1e-9, 7)
@@ -131,6 +151,8 @@ class CavityGeometryTests(unittest.TestCase):
         self.assertGreater(thin.intersection(box(0, 0, 10, 10)).area, 0)
         self.assertEqual(result.symmetric_difference(domain).area, 0)
 
+    # Exercise both an interior ring and a second island so reconstructing coverage cannot fill
+    # every closed boundary loop indiscriminately.
     def test_directed_coverage_preserves_hole_and_disconnected_component(self):
         v, t = grid(0, 5, 0, 5)
         centers = v[t, :2].mean(axis=1)
@@ -141,6 +163,8 @@ class CavityGeometryTests(unittest.TestCase):
         expected = box(0, 0, 5, 5).difference(box(1, 1, 3, 3)).union(box(7, 0, 8, 1))
         self.assertEqual(coverage.symmetric_difference(expected).area, 0)
 
+    # Different defects can cancel in a sum of triangle areas. Check each with geometries whose
+    # intended footprint is known.
     def test_rejects_overlap_gap_and_degenerate_triangles(self):
         v, t = grid(0, 2, 0, 2)
         with self.assertRaisesRegex(PatchError, 'cover exactly'):
@@ -151,6 +175,8 @@ class CavityGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(MeshTopologyError, 'degenerate'):
             validate_patch(np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]]), np.array([[0, 1, 2]]), box(0, 0, 2, 2))
 
+    # A midpoint inserted on only one side leaves a T-junction even though the geometric union
+    # exactly covers the domain.
     def test_split_retained_interface_is_rejected_even_with_exact_coverage(self):
         for x, y in ((0, 0), (-1934381.4845238777, 3429022.4631309444)):
             with self.subTest(origin=(x, y)):
@@ -162,6 +188,8 @@ class CavityGeometryTests(unittest.TestCase):
                 with self.assertRaisesRegex(PatchError, 'retained interface'):
                     _stitch(v, t, p, q, box(x, y, x+2, y+1))
 
+    # After staging, owner IDs refer to candidate rows. Using original input indices would
+    # release unrelated faces.
     def test_staged_coincident_vertices_release_incident_faces_in_candidate_indices(self):
         from mesher.mesher_utls.mpi_remesh import _conforming_remainder
         from mesher.mesh_topology import build_neighbours
@@ -173,6 +201,8 @@ class CavityGeometryTests(unittest.TestCase):
         np.testing.assert_array_equal(keep, [False, False, True, False])
         self.assertTrue(remaining.equals(Polygon(v[t[2]])))
 
+    # Choose a genuine missing strip to distinguish a coverage defect from accumulated
+    # floating-point error along the perimeter.
     def test_boundary_roundoff_allowance_does_not_accept_a_real_gap(self):
         x, y = -1934381.4845238777, 3429022.4631309444
         v = np.array([[x, y, 0], [x+1, y, 0], [x+1, y+1-1e-5, 0], [x, y+1-1e-5, 0]])
@@ -180,6 +210,8 @@ class CavityGeometryTests(unittest.TestCase):
         with self.assertRaises(InterfaceChanged):
             _stitch(v, t, np.empty((0, 3)), np.empty((0, 3), dtype=int), box(x, y, x+1, y+1))
 
+    # A removed face breaks the retained adjacency path. Ring growth must stop there to avoid
+    # consuming an unrelated region.
     def test_local_growth_does_not_cross_existing_cavities(self):
         # A face chain separated by an already removed face. Even a deep local
         # expansion must stop at that gap and preserve the other component.
@@ -191,6 +223,8 @@ class CavityGeometryTests(unittest.TestCase):
         self.assertEqual(_grow_cavity(keep, neighbours, [0], 100), 10)
         np.testing.assert_array_equal(np.flatnonzero(keep), np.arange(11, 20))
 
+    # Use a systematically finer patch so the interface moves on successive attempts. One ring
+    # per retry can exhaust the budget.
     def test_repeated_interface_splits_expand_faster_than_one_ring(self):
         # Each valid finer patch bisects the retained grid's edges. A one-ring
         # retry keeps moving the mismatch and exhausts eight attempts. Growing
@@ -207,6 +241,8 @@ class CavityGeometryTests(unittest.TestCase):
         for limit in (4, 10):
             with self.subTest(attempt_limit=limit):
                 calls, interfaces = [], []
+                # Clip a known fine grid to each requested cavity and record its area and
+                # interface count to expose how the retry region changes.
                 def finer_patch(cavity, constraints, options, directory, fixed):
                     calls.append(cavity.area)
                     interfaces.append(len(fixed))
@@ -232,6 +268,8 @@ class CavityGeometryTests(unittest.TestCase):
                 self.assertTrue(report['valid'], report)
                 self.assertEqual(report['components'], 2)
 
+    # Force the recovery path to reach a candidate with either invalid coverage or excessive
+    # cost. Neither may become a successful final mesh.
     def test_interface_recovery_cannot_skip_validation_or_vertex_budget(self):
         a, ta = grid(0, 20, 0, 20, 2)
         b, tb = grid(20, 40, 0, 20, 2)
@@ -239,6 +277,8 @@ class CavityGeometryTests(unittest.TestCase):
         for failure in ('budget', 'gap', 'generic_gap'):
             with self.subTest(failure=failure):
                 calls = []
+                # Select a controlled failure before and after interface removal to check which
+                # validations still run during recovery.
                 def candidate(cavity, constraints, options, directory, fixed):
                     calls.append(len(fixed))
                     if fixed:
@@ -258,9 +298,12 @@ class CavityGeometryTests(unittest.TestCase):
                 np.testing.assert_array_equal(ta, before_a)
                 np.testing.assert_array_equal(tb, before_b)
 
+    # A final failed solve cannot justify reporting a larger, unsolved cavity as repaired work.
     def test_last_attempt_does_not_grow_an_untested_cavity(self):
         a, ta = grid(0, 20, 0, 20, 2)
         b, tb = grid(20, 40, 0, 20, 2)
+        # Always report a changed retained interface so the single allowed attempt reaches the
+        # retry boundary.
         def changed(*args): raise InterfaceChanged([0])
         log = io.StringIO()
         with redirect_stdout(log), patch('mesher.mesher_utls.mpi_remesh._grow_cavity') as grow:
@@ -272,11 +315,15 @@ class CavityGeometryTests(unittest.TestCase):
         self.assertNotIn('Growing cavity', log.getvalue())
         self.assertIn('[stage0_r4_c0]', log.getvalue())
 
+    # Domain coverage alone can pass when triangles cross a required stream. Require its segment
+    # to be represented by mesh edges.
     def test_unrepresented_physical_constraint_is_rejected(self):
         v, t = grid(0, 2, 0, 2)
         with self.assertRaisesRegex(PatchError, 'physical constraint'):
             validate_patch(v, t, box(0, 0, 2, 2), [LineString([(0, .3), (2, .3)])])
 
+    # Removing a single constrained link breaks the stream even if nearby triangles still
+    # provide an apparent route between endpoints.
     def test_stream_validation_requires_every_declared_link(self):
         v, t = grid(0, 4, 0, 4)
         domain = box(0, 0, 4, 4)
@@ -293,6 +340,8 @@ class CavityGeometryTests(unittest.TestCase):
         with self.assertRaisesRegex(PatchError, 'physical constraint'):
             validate_patch(v, t, domain, shifted, chain)
 
+    # Use projected coordinates and a known bad face to check that recovery targets the owners
+    # in contact with it.
     def test_quality_failure_selects_only_touching_interface_owners_at_large_coordinates(self):
         # From the production cavity: a refined point is about 2e-10 m off
         # the sloping interface after rounding. Selection may tolerate that;
@@ -311,6 +360,8 @@ class CavityGeometryTests(unittest.TestCase):
         np.testing.assert_array_equal(_quality_interface_faces(edges, [3, 7, 9], failures, domain), [3, 7])
         self.assertEqual(len(_quality_interface_faces([], [], failures, domain)), 0)
 
+    # Once the backend exhausts its vertex budget, retrying with a larger domain would spend
+    # more work under the same limit.
     def test_vertex_budget_failure_does_not_retry_a_larger_cavity(self):
         a, ta = grid(0, 20, 0, 20, 2)
         b, tb = grid(20, 40, 0, 20, 2)
@@ -321,6 +372,8 @@ class CavityGeometryTests(unittest.TestCase):
                              {'max_area': 8, 'remesh_band_width': 2}, '.', backend)
         self.assertEqual(backend.call_count, 1)
 
+    # The backend reads weights positionally. Interleaved continuous and categorical inputs must
+    # arrive in its expected order.
     def test_mixed_raster_weights_follow_cpp_reader_order(self):
         args = _mesher_arguments({'mesher_path': 'meshercxx', 'max_area': 8, 'min_area': .25,
             'errormetric': 'rmse', 'dem_path': 'dem.tif', 'max_tolerance': 1,
@@ -328,11 +381,15 @@ class CavityGeometryTests(unittest.TestCase):
             'parameter_files': {
                 'landcover': {'filename': ['landcover.tif'], 'method': 'mode', 'tolerance': .8, 'weight': .5},
                 'slope': {'filename': ['slope.tif'], 'method': 'mean', 'tolerance': 2, 'weight': .3}}})
+        # Collect all values of one repeated backend flag so the order of raster paths,
+        # tolerances and weights can be compared.
         def values(flag): return [args[i+1] for i, arg in enumerate(args) if arg == flag]
         self.assertEqual(values('--raster'), ['dem.tif', 'slope.tif'])
         self.assertEqual(values('--category-raster'), ['landcover.tif'])
         self.assertEqual(values('--weight'), ['0.2', '0.3', '0.5'])
 
+    # Failure after geometry has been generated must preserve the previous archive and marker as
+    # a usable pair.
     def test_failed_merge_does_not_publish_candidate(self):
         from mesher.mesher_utls.MPI_merge_tiles import merge_tiles
         with tempfile.TemporaryDirectory() as directory:
@@ -352,6 +409,8 @@ class CavityGeometryTests(unittest.TestCase):
             self.assertEqual((work / 'joined.npz').read_bytes(), b'previous mesh')
             self.assertEqual((work / 'joined.json').read_bytes(), b'previous metadata')
 
+            # Produce staged mesh bytes but an unserializable report to fail exactly between
+            # solving geometry and preparing the checkpoint.
             def unencodable_report(*args):
                 Path(args[-1]).write_bytes(b'new mesh')
                 return {'output_faces': 1, 'invalid': object()}
@@ -368,6 +427,8 @@ class CavityGeometryTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('MESHER_TEST_EXE'), 'Set MESHER_TEST_EXE to the rebuilt meshercxx')
 class CgalCavityTests(unittest.TestCase):
+    # Give the native backend a real georeferenced DEM and an isolated output directory so each
+    # test can examine its mesh or failure diagnostics.
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -382,9 +443,13 @@ class CgalCavityTests(unittest.TestCase):
             'dem_path': str(self.dem), 'remesh_band_width': 2, 'remesh_max_attempts': 6,
             'remesh_max_vertices': 10000}
 
+    # Run the native patch entry point with this case's geometry, physical constraints and
+    # shared refinement settings.
     def mesh(self, domain, constraints=()):
         return remesh_domain(domain, constraints, self.options, self.work)
 
+    # A buffered sliver in the halo has no owner in an empty core. Check it cannot abort a tile
+    # whose correct output is empty.
     def test_buffered_halo_only_triangle_does_not_abort_empty_core_tile(self):
         from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
         angle = np.deg2rad(19.2648)
@@ -427,6 +492,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Extending an artificial cut cannot improve an acute corner imposed by the source domain.
+    # The physical quality failure must remain visible.
     def test_owned_acute_physical_corner_still_fails_tile_quality(self):
         from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
         domain_file = self.work / 'acute.geojson'
@@ -439,6 +506,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertFalse((self.work / 'owned.npz').exists())
         self.assertFalse((self.work / 'owned.json').exists())
 
+    # Use a small clipped polygon where the shape bound is impossible at the cut. Expanding
+    # locally should preserve its physical boundary.
     def test_five_vertex_owned_tile_extends_only_its_artificial_corner(self):
         from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
         options = dict(self.options, max_area=6250000, min_area=2500, max_tolerance=-1,
@@ -469,6 +538,8 @@ class CgalCavityTests(unittest.TestCase):
                     self.assertLess(covered_core.symmetric_difference(domain.intersection(box(*bounds))).area, 1e-5)
                 self.assertFalse(json.loads((self.work / 'owned_cut.json').read_text())['empty_tile'])
 
+    # Intermediate merges may temporarily extend acute tile cuts. Verify the completed merge
+    # covers the actual domain after those cuts disappear.
     def test_intermediate_cut_halos_disappear_in_complete_merge(self):
         from mesher.mesher_utls.MPI_mesh_tiles import mesh_tile
         from mesher.mesher_utls.MPI_merge_tiles import merge_tiles
@@ -480,6 +551,8 @@ class CgalCavityTests(unittest.TestCase):
                        outer_polygon_shp=str(domain_file), constraints=[])
         bounds = [[-80000, -40000, 0, 0], [0, -40000, 40000, 0],
                   [-80000, 0, 0, 20000], [0, 0, 40000, 20000]]
+        # Pair each test archive with its metadata path just as the next merge stage will
+        # receive them.
         def files(name):
             return {'npz': str(self.work / (name+'.npz')), 'meta': str(self.work / (name+'.json'))}
         for i, core in enumerate(bounds):
@@ -508,6 +581,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertAlmostEqual(metadata['boundary_halo_area'], 0)
         self.assertGreater(metadata['original_triangles_retained'], 0)
 
+    # Split more than one side of a retained parent at projected coordinates so the exact vertex
+    # chains must survive the native JSON round trip.
     def test_batched_subdivision_multiple_sides_at_large_coordinates(self):
         from mesher.mesher_utls.mpi_remesh import subdivide_parents
         records = []
@@ -521,6 +596,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(result['stats']['raster_evaluations'], 0)
         self.assertEqual(len(list(self.work.glob('repair-*'))), 0)
 
+    # Subdivision children below the minimum area can stop raster refinement while still failing
+    # the minimum-angle requirement.
     def test_small_children_skip_rasters_but_bad_shape_is_rejected(self):
         from mesher.mesher_utls.mpi_remesh import subdivide_parents
         records = [
@@ -536,6 +613,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertFalse(above['repairs'][0]['accepted'])
         self.assertGreater(above['stats']['raster_evaluations'], 0)
 
+    # Track triangles across a failed parent repair and a later injected error to check reuse
+    # and protection of the original inputs.
     def test_patch_interiors_survive_repair_and_later_failure_is_transactional(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)
         xx, yy = np.meshgrid(-20+(np.arange(160)+.5)*.5, 40-(np.arange(120)+.5)*.5)
@@ -544,6 +623,8 @@ class CgalCavityTests(unittest.TestCase):
         a, ta = self.mesh(box(0, 0, 23, 20)); b, tb = self.mesh(box(17, 0, 40, 20))
         originals = [x.copy() for x in (a, ta, b, tb)]
         calls, results = [], []
+        # Save the actual cavity and native mesh from each attempt so retained triangles can be
+        # compared across repairs.
         def capture(cavity, constraints, options, directory, fixed):
             calls.append(cavity)
             result = remesh_domain(cavity, constraints, options, directory, fixed)
@@ -555,6 +636,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertGreater(stats['local_repairs'], 0)
         self.assertFalse(stats['interface_recovery'])
         self.assertLess(calls[-1].area, calls[0].area)
+        # Key faces by sorted vertex coordinates so changed row numbers or vertex order cannot
+        # mask geometric reuse.
         def keys(vertices, triangles):
             return {tuple(sorted(map(tuple, face))) for face in vertices[triangles]}
         final = keys(v, t)
@@ -570,6 +653,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         # Fail after promotion of the first valid patch. No input array changes.
         invocations = []
+        # Allow the initial real patch, then exhaust the budget on the next call to exercise
+        # rollback after useful work exists.
         def fail_after_preservation(*args):
             invocations.append(1)
             if len(invocations) > 1:
@@ -581,6 +666,8 @@ class CgalCavityTests(unittest.TestCase):
         for actual, expected in zip((a, ta, b, tb), originals):
             np.testing.assert_array_equal(actual, expected)
 
+    # Make the defect appear after staging, where numbering has changed, and check that the next
+    # solve reopens the right region.
     def test_candidate_interface_recovery_uses_candidate_faces_and_preserves_work(self):
         from mesher.mesher_utls import mpi_remesh
         from mesher.mesh_topology import build_neighbours
@@ -596,6 +683,8 @@ class CgalCavityTests(unittest.TestCase):
             with self.subTest(budget_failure=budget_failure):
                 injected, next_cavities = [], []
 
+                # Alter an otherwise accepted staged candidate to expose an interface in its new
+                # face numbering.
                 def leave_gap(*args):
                     # Use real CGAL patches and subdivisions. Remove one interior
                     # face from an otherwise accepted candidate to make its final
@@ -622,6 +711,8 @@ class CgalCavityTests(unittest.TestCase):
                     injected.append((v.copy(), t.copy(), sources.copy(), gap))
                     return v, t, sources, keep, neighbours, stats, accepted, failed
 
+                # Record the follow-up cavity or fail it on demand so local reuse and cleanup
+                # can be checked independently.
                 def capture(cavity, *args):
                     if injected:
                         next_cavities.append(cavity)
@@ -660,6 +751,8 @@ class CgalCavityTests(unittest.TestCase):
                 for actual, expected in zip((a, ta, b, tb), originals):
                     np.testing.assert_array_equal(actual, expected)
 
+    # Use the captured TVC corner as a standalone patch, where no parent can move. Require a
+    # diagnostic tied to the failed segment.
     def test_standalone_tvc_corner_identifies_failing_edge_without_publishing(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         path = Path(__file__).parent/'fixtures'/'tvc_r2c1_unbisectable_corner.geojson'
@@ -677,6 +770,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(any(xy in (a, b) for xy in map(tuple, edge)))
         self.assertFalse((bundle/'mesh.json').exists())
 
+    # Replay the coarse TVC cavity without its parent mesh. Isolated roundoff rings need a
+    # geometric diagnosis at this layer.
     def test_coarse_tvc_without_source_owners_reports_unmeshable_rings(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         path = Path(__file__).parent / 'fixtures' / 'tvc_coarse_roundoff.geojson'
@@ -691,6 +786,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(shape(json.loads((bundle/'domain.json').read_text())).equals(domain))
         self.assertIn('no matching local faces', (bundle/'backend.log').read_text())
 
+    # The captured slivers can be identified before CGAL starts. Verify they reach the recovery
+    # path without spending a native solve.
     def test_r2c1_roundoff_preflight_precedes_native_refinement(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         path = Path(__file__).parent / 'fixtures' / 'r2c1_roundoff_cavity.geojson'
@@ -717,6 +814,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(caught.exception.owners, list(range(56)))
         self.assertEqual(len(caught.exception.chords), 26)
 
+    # Alternate failed parents so the next attempt must remember earlier releases instead of
+    # recreating an already failed cavity.
     def test_alternating_parent_failures_enlarge_the_existing_cavity(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         vertices, faces = grid(0, 20, 0, 8, 2)
@@ -729,6 +828,8 @@ class CgalCavityTests(unittest.TestCase):
         staged = []
         original = remesh._repair_candidate
 
+        # Identify each simulated failure by its current face coordinates while varying
+        # candidate ordering between attempts.
         def alternate(v, retained, *args):
             if len(staged) == 3:
                 return original(v, retained, *args)
@@ -753,6 +854,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertFalse(report['interface_recovery'])
         self.assertGreater(report['original_triangles_retained'], 0)
 
+    # A T-junction introduced during staging should be repairable in the current band by
+    # reopening the incident faces.
     def test_staged_hanging_node_recovers_without_widening(self):
         from mesher.mesher_utls import mpi_remesh as remesh
 
@@ -776,6 +879,8 @@ class CgalCavityTests(unittest.TestCase):
         original_repair = remesh._repair_candidate
         staged = []
 
+        # Supply the staged mismatch once, then delegate to real repair so the next attempt has
+        # to resolve it.
         def repair(*args):
             if staged:
                 return original_repair(*args)
@@ -795,6 +900,8 @@ class CgalCavityTests(unittest.TestCase):
         for f in t[[5, -3]]:
             self.assertIn(tuple(sorted(map(tuple, v[f]))), output)
 
+    # A killed backend has no geometric result to repair. Preserve the reproduction and
+    # propagate the termination immediately.
     def test_backend_signal_stops_retry_and_keeps_diagnostics(self):
         from mesher.mesher_utls.mpi_remesh import BackendTerminated
         executable = self.work / 'terminated-backend'
@@ -806,10 +913,14 @@ class CgalCavityTests(unittest.TestCase):
                          dict(self.options, mesher_path=str(executable)), self.work)
         self.assertEqual(len(list(self.work.glob('cavity-*'))), 1)
 
+    # Even an accepted repair record must have valid child geometry before the parent can be
+    # replaced.
     def test_bad_subdivision_output_is_rejected_before_promotion(self):
         from mesher.mesher_utls.mpi_remesh import subdivide_parents
         record = {'id': 0, 'parent': [[0, 0], [2, 0], [0, 2]],
                   'boundary': [[0, 0], [2, 0], [1, 1], [0, 2]]}
+        # Claim success for a triangle with the wrong footprint to exercise geometric validation
+        # of the backend response.
         def wrong_output(command, work, options):
             (work / 'mesh.json').write_text(json.dumps({'repairs': [
                 {'id': 0, 'accepted': True, 'triangles': [[[0, 0], [2, 0], [0, 1]]]}]}))
@@ -819,6 +930,8 @@ class CgalCavityTests(unittest.TestCase):
                 subdivide_parents([record], self.options, self.work)
         self.assertEqual(len(list(self.work.glob('repair-*'))), 1)
 
+    # Combine disconnected pieces, holes and intersecting lines so domain marking and
+    # constrained-edge noding are tested together.
     def test_backend_holes_components_and_crossing_constraints(self):
         domain = box(0, 0, 20, 20).difference(box(7, 7, 13, 13)).union(box(25, 0, 30, 5))
         lines = [LineString([(0, 5), (20, 5)]), LineString([(5, 0), (5, 20)])]
@@ -827,6 +940,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         self.assertEqual(audit(v, t)['components'], 2)
 
+    # A closed stream loop constrains edges inside the domain. Both sides of that loop can still
+    # contain terrain.
     def test_closed_physical_constraint_does_not_create_a_hole(self):
         domain = box(0, 0, 20, 20)
         lines = [LineString(box(5, 5, 15, 15).exterior.coords)]
@@ -835,6 +950,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         self.assertEqual(audit(v, t)['components'], 1)
 
+    # Measure angles from the exported coordinates so acceptance does not depend solely on the
+    # native solver's internal quality score.
     def assert_angles_pass(self, vertices, triangles):
         xy = vertices[triangles, :2]
         for corner in range(3):
@@ -844,6 +961,8 @@ class CgalCavityTests(unittest.TestCase):
             cross = abs(left[:, 0]*right[:, 1] - left[:, 1]*right[:, 0])
             self.assertGreaterEqual(np.arctan2(cross, dot).min(), np.arcsin(np.sqrt(.125)))
 
+    # Replay the residual TVC angle failure and check that repairing it still leaves traceable
+    # child edges for the retained parents.
     def test_tvc_residual_shape_repaired_with_interface_lineage(self):
         fixture = Path(__file__).parent / 'fixtures' / 'tvc_residual_shape.geojson'
         domain = shape(json.loads(fixture.read_text()))
@@ -864,6 +983,8 @@ class CgalCavityTests(unittest.TestCase):
             coords = v[edge['vertices'], :2]
             np.testing.assert_array_equal(coords[[0,-1]], fixed[edge['id']].coords)
 
+    # Vary raster refinement on a projected domain while requiring a continuous physical stream
+    # through the artificial tile cuts.
     def test_projected_stream_survives_coarse_and_fine_raster_tolerances_across_tile_cuts(self):
         from mesher.mesher_utls.disk_merge import merge_disk_cavity
         x, y = -1817361., 3677022.
@@ -893,6 +1014,8 @@ class CgalCavityTests(unittest.TestCase):
                     self.assertTrue(audit(v, t)['valid'])
                     self.assert_angles_pass(v, t)
 
+    # Oblique intersections at large coordinates exercise constrained-edge noding and the
+    # precision checks together.
     def test_oblique_crossing_streams_at_projected_coordinates(self):
         x, y = -1805000., 3543000.
         domain = box(x, y, x+1800, y+1400)
@@ -907,6 +1030,8 @@ class CgalCavityTests(unittest.TestCase):
         junction = lines[0].intersection(lines[1])
         self.assertEqual(np.count_nonzero((v[:, :2] == junction.coords[0]).all(axis=1)), 1)
 
+    # An acute angle formed by prescribed streams cannot be enlarged by inserting an interior
+    # point. Locate the constrained sector in the failure.
     def test_acute_stream_junction_identifies_constrained_corner(self):
         domain = box(0, 0, 20, 20)
         lines = [LineString([(8, 8), (18, 8)]), LineString([(8, 8), (18, 9)])]
@@ -924,6 +1049,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(sector['input_interface_ids'], [])
         self.assertFalse(list(self.work.glob('cavity-*/mesh.json')))
 
+    # Identify which prescribed ray can actually move so recovery does not release distant
+    # retained faces.
     def test_input_sector_names_its_retained_ray_and_excludes_unrelated_interfaces(self):
         domain = box(0, 0, 20, 20)
         tip = (8, 8)
@@ -937,6 +1064,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(ids, [0])
         self.assertEqual(_quality_interface_faces(fixed, [12, 13], error.exception.failures, domain).tolist(), [12])
 
+    # With both sector rays fixed by physical streams, widening the retained seam cannot improve
+    # the angle. Detect that on the first solve.
     def test_physical_stream_angle_stops_after_one_merge_attempt(self):
         from mesher.mesher_utls import mpi_remesh as remesh
         domain = box(0, 0, 20, 20)
@@ -953,11 +1082,15 @@ class CgalCavityTests(unittest.TestCase):
                                  domain, streams, options, self.work)
                 self.assertEqual(backend.call_count, 1)
 
+    # Scale the DEM transform and area bounds to the projected notch cases so their captured
+    # dimensions are meaningful to the native solver.
     def notch_options(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)
         ds.SetGeoTransform((0, 50, 0, 6000, 0, -50)); ds = None
         return dict(self.options, max_area=6250000, min_area=2500, remesh_band_width=1000)
 
+    # A useful quality failure must retain coordinates and a reason so the caller can identify
+    # the faces eligible for repair.
     def test_quality_report_preserves_locations_and_rejects_bad_mesh(self):
         options = self.notch_options()
         notch = Polygon([(1000, 0), (3000, 0), (2000, 3450)])
@@ -980,6 +1113,8 @@ class CgalCavityTests(unittest.TestCase):
             self.assertEqual(len(face['constrained_edges']), 3)
         self.assertIn('reason=angle', (folders[0] / 'backend.log').read_text())
 
+    # Make a retained protrusion responsible for the quality failure and check the retry
+    # enlarges the cavity near that owner.
     def test_quality_retry_absorbs_protrusion_without_widening_the_entire_band(self):
         options = self.notch_options()
         a = np.array([[1000, 0, 0], [3000, 0, 0], [2000, 3450, 0]], dtype=float)
@@ -990,6 +1125,8 @@ class CgalCavityTests(unittest.TestCase):
             with self.subTest(debug=debug):
                 log = io.StringIO()
                 cavities = []
+                # Capture each requested footprint before calling CGAL so local growth can be
+                # distinguished from widening the entire band.
                 def record_cavity(cavity, constraints, args, directory, fixed):
                     cavities.append(cavity)
                     return remesh_domain(cavity, constraints, args, directory, fixed)
@@ -1017,6 +1154,8 @@ class CgalCavityTests(unittest.TestCase):
                 folder = sorted(self.work.glob('cavity-*'))[-1]
                 self.assertIn('reason=angle', (folder / 'backend.log').read_text())
 
+    # Use captured interior tips to exercise failure attribution and check that releasing
+    # adjacent owners clears the shape obstruction.
     def test_production_retained_tips_are_selected_and_local_growth_clears_angles(self):
         from collections import Counter
         from shapely import union_all
@@ -1025,6 +1164,8 @@ class CgalCavityTests(unittest.TestCase):
         # interfaces are exactly these ring edges (independent of their order).
         fixture = Path(__file__).parent / 'fixtures' / 'retained_tip_cavity.geojson'
         cavity = shape(json.loads(fixture.read_text()))
+        # Represent the hole rims as retained edge segments so the backend can report the owners
+        # bounding each acute sector.
         def interfaces(domain):
             return [LineString([a, b]) for h in domain.interiors
                     for a, b in zip(h.coords[:-1], h.coords[1:])]
@@ -1067,6 +1208,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(coverage.union(retained).symmetric_difference(group).area, 0)
         self.assertEqual(coverage.intersection(retained).area, 0)
 
+    # Replay the captured cavity directly. Check the residual angle repair works with the
+    # recorded interfaces and still meets the shape bound on the exported triangles.
     def test_96_rank_production_tips_recover_in_original_cavity(self):
         # Exact stage0_r2_c1 files supplied from the 96-rank (then 81-tile) run.
         # The supplied constraints are the cavity boundary, with no extra streams.
@@ -1084,6 +1227,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(audit(v, t)['valid'])
         self.assert_angles_pass(v, t)
 
+    # Test the entire merge around a captured tip, including reuse of original triangles away
+    # from the local repair.
     def test_96_rank_tip_full_merge_recovers_locally_and_preserves_original_work(self):
         # Use the exact reported tip in a complete merge, with a controlled
         # surrounding mesh because production retained connectivity is unavailable.
@@ -1118,9 +1263,13 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, box(x0, y0, x1, y1))
         self.assertTrue(audit(v, t)['valid'])
 
+    # A retained edge can miss a vertex by less than coordinate precision. Detect it before CGAL
+    # and remesh its owner locally.
     def test_production_near_touch_is_rejected_before_backend_and_local_growth_succeeds(self):
         fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
         cavity = shape(json.loads(fixture.read_text()))
+        # List the retained hole edges individually so a near miss can be traced to a specific
+        # input interface.
         def interfaces(domain):
             return [LineString([a, b]) for h in domain.interiors
                     for a, b in zip(h.coords[:-1], h.coords[1:])]
@@ -1156,6 +1305,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertEqual(coverage.union(remaining).symmetric_difference(group).area, 0)
         self.assertEqual(coverage.intersection(remaining).area, 0)
 
+    # Add a separate retained triangle to the near-touch case so overbroad cavity growth becomes
+    # observable.
     def test_precision_retry_keeps_unrelated_original_triangle(self):
         fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
         cavity = shape(json.loads(fixture.read_text()))
@@ -1179,6 +1330,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Bypass Python preflight and give the native executable the near-touch case. It must report
+    # a controlled failure.
     def test_direct_backend_near_touch_fails_without_signal(self):
         fixture = Path(__file__).parent / 'fixtures' / 'retained_near_touch_cavity.geojson'
         cavity = shape(json.loads(fixture.read_text()))
@@ -1206,6 +1359,8 @@ class CgalCavityTests(unittest.TestCase):
             self.assertIn('Patch meshing failed', run.stdout)
             self.assertFalse(output.exists())
 
+    # Put the notch on the source boundary. No amount of retained-face release should remove a
+    # prescribed part of the footprint.
     def test_quality_retry_cannot_remove_a_physical_notch(self):
         options = self.notch_options()
         domain = box(0, 0, 8000, 3500).difference(Polygon([(1000, 0), (3000, 0), (2000, 3450)]))
@@ -1218,6 +1373,8 @@ class CgalCavityTests(unittest.TestCase):
         supplied = shape(json.loads((folder / 'domain.json').read_text()))
         self.assertEqual(supplied.symmetric_difference(domain).area, 0)
 
+    # Exhaust ordinary local recovery and check the final native solve gets a cavity with the
+    # obstructing interfaces released.
     def test_final_attempt_removes_interfaces_before_real_cgal_refinement(self):
         a, ta = grid(0, 20, 0, 20, 2)
         b, tb = grid(20, 40, 0, 20, 2)
@@ -1225,6 +1382,8 @@ class CgalCavityTests(unittest.TestCase):
         tb = tb[covers(domain, polygons(b[tb, :2]))]
         line = LineString([(0, 0), (40, 20)])
         calls = []
+        # Force a real CGAL patch to subdivide a retained edge, reproducing an interface that
+        # keeps moving as the cavity grows.
         def split_interface(cavity, constraints, options, directory, fixed):
             calls.append(len(fixed))
             forced = list(fixed)
@@ -1246,6 +1405,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue(report['valid'], report)
         self.assertEqual(report['hanging_nodes'], 0)
 
+    # Use an exterior sliver whose centroid can round onto the domain. Classifying it as terrain
+    # can start unnecessary refinement.
     def test_rounded_exterior_centroid_cannot_start_runaway_refinement(self):
         # Reduced from the production boundary. A nearly collinear exterior
         # CDT face has a rounded centroid which OGR classifies as inside.
@@ -1267,6 +1428,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain)
         self.assertTrue(audit(v, t)['valid'])
 
+    # A protected input feature can affect CGAL's queue. Verify valid-looking shape cannot
+    # conceal an unresolved raster tolerance failure.
     def test_raster_refinement_is_not_dropped_at_protected_constraints(self):
         # Seven-vertex reduction of stage0_r2_c0. With ordinary BAD raster
         # status, CGAL drops faces near its acute constraint cluster; the final
@@ -1295,6 +1458,8 @@ class CgalCavityTests(unittest.TestCase):
                 self.assertLess(len(v), 1000)
         self.assertEqual(list(self.work.glob('cavity-*')), [])
 
+    # Compare mesh density near and away from the former split as well as coverage, since a
+    # geometrically closed seam can still leave a strip of extra faces.
     def test_overlapping_tiles_merge_with_no_seam_line_or_density_band(self):
         bounds_a, bounds_b = [0, 0, 20, 20], [20, 0, 40, 20]
         domain = box(0, 0, 40, 20)
@@ -1312,10 +1477,14 @@ class CgalCavityTests(unittest.TestCase):
         serial_v, serial_t = self.mesh(domain)
         self.assertLess(len(t), 1.5 * len(serial_t))
 
+    # Exercise both recovery from a transient failure and exhaustion on persistent failure while
+    # the caller's input arrays remain available.
     def test_retry_grows_cavity_and_exhaustion_does_not_modify_input(self):
         a, ta = grid(0, 20, 0, 20, 2)
         b, tb = grid(20, 40, 0, 20, 2)
         calls = []
+        # Include a normal budget summary in a recoverable quality error so merely mentioning
+        # the budget cannot stop a valid retry.
         def retry_once(domain, constraints, options, directory, fixed):
             calls.append(domain.area)
             if len(calls) == 1:
@@ -1327,12 +1496,15 @@ class CgalCavityTests(unittest.TestCase):
         self.assertGreater(calls[1], calls[0]); self.assertGreater(stats['attempts'], 1)
         validate_patch(v, t, box(0, 0, 40, 20))
         original = ta.copy()
+        # Reject every candidate to reach the exhaustion path after the permitted retries.
         def always_bad(*args): raise PatchError('invalid candidate')
         with self.assertRaisesRegex(PatchError, 'No valid cavity'):
             merge_cavity(a, ta, [0, 0, 20, 20], b, tb, [20, 0, 40, 20],
                 box(0, 0, 40, 20), [], dict(self.options, remesh_max_attempts=2), self.work, always_bad)
         np.testing.assert_array_equal(ta, original)
 
+    # Cap vertex growth deliberately and verify the error identifies budget exhaustion so the
+    # caller can distinguish it from a geometric defect.
     def test_backend_budget_failure_is_explicit(self):
         with self.assertRaisesRegex(PatchError, 'budget.*vertices=4.*limit=4') as failure:
             remesh_domain(box(0, 0, 20, 20), [], dict(self.options, remesh_max_vertices=4), self.work)
@@ -1345,6 +1517,8 @@ class CgalCavityTests(unittest.TestCase):
         self.assertTrue((folders[0] / 'domain.json').is_file())
         self.assertTrue((folders[0] / 'constraints.json').is_file())
 
+    # Move triangles partly and wholly outside a raster so the sampling window must clip or
+    # become empty before allocating memory.
     def test_backend_partial_and_disjoint_raster_coverage_is_bounded(self):
         # Source footprint is [-20, -20, 60, 40]. These include negative read
         # offsets and wholly disjoint windows which formerly underflowed in MEM.
@@ -1358,6 +1532,8 @@ class CgalCavityTests(unittest.TestCase):
                 self.assertLess(len(v), 300)
         self.assertEqual(list(self.work.glob('cavity-*')), [])
 
+    # Combine four ownership regions at a corner so the global merge must preserve both a hole
+    # and a stream through multiple former seams.
     def test_four_tile_junction_with_crossing_stream_and_hole(self):
         domain = box(0, 0, 40, 20).difference(box(2, 2, 5, 5))
         constraints = [LineString([(0, 10), (40, 10)]), LineString([(20, 0), (20, 20)])]
@@ -1374,12 +1550,16 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain, constraints)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Even a tile with no faces participates in the grid. Its bounds are needed to locate the
+    # next shared edge.
     def test_empty_tile_keeps_domain_and_ownership_boxes(self):
         a, ta = self.mesh(box(1, 1, 10, 19))
         v, t, _ = merge_cavity(a, ta, [0, 0, 20, 20], np.empty((0, 3)), np.empty((0, 3), dtype=int),
             [20, 0, 40, 20], box(1, 1, 10, 19), [], self.options, self.work)
         validate_patch(v, t, box(1, 1, 10, 19))
 
+    # Use variable relief to check that patch refinement responds to the same DEM error
+    # requirement as ordinary meshing.
     def test_rugged_dem_is_refined_by_original_error_criteria(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)
         x = -20 + (np.arange(160) + .5) * .5
@@ -1394,6 +1574,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Move the seam off a convenient alignment and cross it with a stream on sloping terrain to
+    # exercise the actual patch replacement.
     def test_shifted_seam_sloping_dem_and_diagonal_constraint(self):
         ds = gdal.Open(str(self.dem), gdal.GA_Update)
         xx, yy = np.meshgrid(-20 + (np.arange(160) + .5) * .5, 40 - (np.arange(120) + .5) * .5)
@@ -1407,6 +1589,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain, constraints)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Translate the geometry to realistic projected magnitudes so coordinate roundoff is
+    # exercised along a diagonal feature.
     def test_projected_coordinate_magnitudes_and_diagonal_constraint(self):
         from shapely.affinity import translate
         x, y = 500000, 7600000
@@ -1421,6 +1605,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(v, t, domain, constraints)
         self.assertTrue(audit(v, t)['valid'])
 
+    # Collinear subdivisions along a sloping domain boundary can differ by roundoff. They must
+    # still be recognized as physical when selecting repair owners.
     def test_refined_sloping_physical_edges_are_not_internal_interfaces(self):
         from mesher.mesh_topology import build_neighbours
         x, y = -1934381.4845238777, 3429022.4631309444
@@ -1445,6 +1631,8 @@ class CgalCavityTests(unittest.TestCase):
         validate_patch(joined_v, joined_t, domain)
         self.assertTrue(audit(joined_v, joined_t)['valid'])
 
+    # Use more tiles than simultaneous workers and run the real pipeline through export to check
+    # scheduling, merging and final connectivity together.
     @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
     def test_real_mpi_pipeline_and_export_with_independent_tile_count(self):
         from mesher.mesher_cli import run_mpi_meshing, build_mesh_from_arrays, compute_mpi_final_npz_path

@@ -24,6 +24,8 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/make_shared.hpp>
 
+// Own a GDAL dataset and, for a sampled triangle, its mask and pixel buffer. Callers
+// borrowing the band, dataset or transform must finish with them before replacing the dataset.
 class raster
 {
 public:
@@ -32,6 +34,8 @@ public:
     virtual ~raster();
 
     void open(std::string path);
+    // Legacy declaration without a definition. Triangle windows use the GDAL MEM driver
+    // in triangle::make_rasterized and transfer the resulting dataset through setDs().
     void create_memory_raster(double xsize, double ysize, GDALDataType type);
 
     double getXY(double X, double Y);

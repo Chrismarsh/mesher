@@ -9,6 +9,8 @@ from mesher.mesh_topology import MeshTopologyError, audit_mesh
 
 
 class ExtractPointTests(unittest.TestCase):
+    # Place vertices on DEM edges and near missing samples to exercise height recovery at the
+    # boundary.
     def test_dem_vertices_and_nodata_fallback(self):
         nodata = -9999.0
         raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
@@ -30,6 +32,8 @@ class ExtractPointTests(unittest.TestCase):
         self.assertEqual([v[2] for v in mesh['mesh']['vertex']], [2.5, 2.0, 3.0])
         np.testing.assert_array_equal(mesh['mesh']['neigh'], [[-1, -1, -1]])
 
+    # Rebuild neighbours during array preparation and check both faces on the shared edge before
+    # CHM consumes them.
     def test_mpi_array_export_includes_reciprocal_neighbours(self):
         raster = gdal.GetDriverByName('MEM').Create('', 3, 3, 1, gdal.GDT_Float32)
         raster.SetGeoTransform((0, 1, 0, 3, 0, -1))
@@ -44,16 +48,22 @@ class ExtractPointTests(unittest.TestCase):
         np.testing.assert_array_equal(np.asarray(mesh['mesh']['vertex'])[:, :2], vertices)
         self.assertTrue(audit_mesh(mesh)[0]['valid'])
 
+    # A T-junction is a connectivity error. It should be detected while the original arrays can
+    # still be inspected and before DEM sampling.
     def test_hanging_nodes_rejected_before_sampling_without_modifying_inputs(self):
         vertices = np.array([[0, 0], [1, 0], [1, 1], [1, .5], [2, .5]], dtype=float)
         triangles = np.array([[0, 1, 2], [4, 3, 1], [4, 2, 3]])
         self.assert_export_rejects(vertices, triangles, 'Hanging boundary nodes')
 
+    # Equal coordinates with distinct vertex IDs leave an unwelded seam even when the rendered
+    # triangles appear to touch.
     def test_coincident_boundary_vertices_rejected_before_sampling(self):
         vertices = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], dtype=float)
         triangles = np.array([[0, 1, 2], [4, 2, 3]])
         self.assert_export_rejects(vertices, triangles, 'Coincident boundary vertices')
 
+    # Give array preparation invalid geometry and verify it fails at topology validation while
+    # preserving its inputs.
     def assert_export_rejects(self, vertices, triangles, message):
         original_v, original_t = vertices.copy(), triangles.copy()
         with patch('mesher.mesher_cli.extract_point') as sample:

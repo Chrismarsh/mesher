@@ -29,6 +29,8 @@ def rank_face_range(nfaces, rank, nranks):
     return start, start + count + (rank < extra)
 
 
+# Yield half-open row intervals so the last short block and empty arrays use the same slicing
+# convention in every exporter.
 def batches(count, size=BATCH_SIZE):
     if size < 1:
         raise ValueError('Batch size must be positive')
@@ -36,10 +38,14 @@ def batches(count, size=BATCH_SIZE):
         yield start, min(count, start + size)
 
 
+# Create a writable NPY mapping. A later worker can recover shape and dtype from the header
+# using just the pathname.
 def disk_array(path, shape, dtype=float):
     return np.lib.format.open_memmap(path, mode='w+', dtype=dtype, shape=shape)
 
 
+# Convert and flush one slice at a time so a change of dtype does not require a second full
+# array in RAM.
 def copy_array(path, source, dtype=None):
     target = disk_array(path, np.shape(source), dtype or np.asarray(source).dtype)
     for lo, hi in batches(len(source)):
@@ -70,6 +76,8 @@ def open_mesh_arrays(path, directory=None):
                 array._mmap.close()
 
 
+# A missing neighbour identifies the open edge opposite that slot. Yield its face, slot and two
+# vertex IDs for the boundary audit.
 def boundary_edges(triangles, neighbours):
     for lo, hi in batches(len(triangles)):
         faces, slots = np.nonzero(neighbours[lo:hi] < 0)
@@ -97,6 +105,8 @@ def check_boundary_geometry(vertices, triangles, neighbours, directory, toleranc
                         db.execute('INSERT INTO spatial VALUES (?,?,?,?,?)', (vid, x, x, y, y))
             db.commit()
 
+            # The R-tree supplies candidate IDs by bounding box. Return their original
+            # coordinates for the caller's distance test.
             def nearby(x0, x1, y0, y1):
                 return db.execute('SELECT p.id,p.x,p.y FROM spatial s JOIN points p ON p.id=s.id '
                                   'WHERE s.x0<=? AND s.x1>=? AND s.y0<=? AND s.y1>=?',
@@ -151,6 +161,8 @@ def write_vtu(path, mesh, parameters, initial_conditions):
     n, nv = len(triangles), len(vertices)
     arrays, offset = [], 0
 
+    # The XML header needs each byte offset before the payload is written. Queue the block
+    # reader and include VTK's eight-byte length prefix in the next offset.
     def descriptor(name, dtype, count, components, blocks):
         nonlocal offset
         dt = np.dtype(dtype)
@@ -162,6 +174,8 @@ def write_vtu(path, mesh, parameters, initial_conditions):
         offset += 8 + size
         return tag
 
+    # Defer opening the block iterator until the writer reaches this array in the appended
+    # payload.
     def slices(a):
         return lambda: (a[lo:hi] for lo, hi in batches(len(a)))
 

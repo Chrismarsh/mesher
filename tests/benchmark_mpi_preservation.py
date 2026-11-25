@@ -22,6 +22,8 @@ from osgeo import gdal
 from shapely.geometry import box
 
 
+# Load a selected remeshing implementation so baseline and candidate run the same input and
+# measurement code.
 def load_module(filename):
     if not filename:
         from mesher.mesher_utls import mpi_remesh
@@ -32,17 +34,22 @@ def load_module(filename):
     return module
 
 
+# Mesh one input tile in a child process so the benchmark includes the native backend's work.
 def tile_worker(module_path, bounds, options, directory):
     module = load_module(module_path)
     v, t = module.remesh_domain(box(*bounds), [], options, directory)
     return v, t
 
 
+# Include completed children's CPU time. Timing the Python driver alone would miss much of the
+# cost of native refinement.
 def cpu_seconds():
     own, children = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
     return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
 
 
+# Generate the tiles and merge them under one configuration so the costs of seam retries and the
+# amount of preserved work can be compared.
 def run_case(args):
     gdal.UseExceptions()
     with tempfile.TemporaryDirectory(prefix='mesh-benchmark-') as directory:
@@ -76,6 +83,8 @@ def run_case(args):
                 a, b = [future.result() for future in futures]
             tile_seconds = time.perf_counter()-started
             calls = []
+            # Record the area requested and the number of triangles generated for each real
+            # patch solve so repeat work is visible in the benchmark.
             def measured_patch(cavity, constraints, options, directory, fixed):
                 call = {'area': cavity.area}
                 calls.append(call)
@@ -99,6 +108,8 @@ def run_case(args):
             triangles=len(t), vertices=len(v), stats=stats), indent=2))
 
 
+# Sum proportional set sizes across the process tree so shared mappings are apportioned across
+# workers in the memory estimate.
 def tree_pss(root):
     parents = {}
     for directory in Path('/proc').glob('[0-9]*'):
@@ -122,6 +133,8 @@ def tree_pss(root):
     return total
 
 
+# Sample memory from outside the measured run. The driver remains able to observe workers while
+# their native backends are busy.
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend', required=True)
