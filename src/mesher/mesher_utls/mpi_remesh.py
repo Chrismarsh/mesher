@@ -675,6 +675,7 @@ def _shared_interface(a, b):
 
 
 def _retain_mask(vertices, triangles, bounds, axis, seam, width):
+    """Select whole input faces the tile owns and can keep outside the seam band."""
     pts = vertices[triangles, :2]
     inside = ((pts >= np.asarray(bounds[:2])) & (pts <= np.asarray(bounds[2:]))).all(axis=(1, 2))
     # A face whose centroid is outside the band can still reach across the
@@ -724,7 +725,12 @@ def _physical_sector(failures, source_domain, constraints):
 
 
 def _retained_neighbours(neighbours, keep):
-    """Restrict validated adjacency to a subset without sorting its edges again."""
+    """Return adjacency in the face numbering of triangles[keep].
+
+    Filtering faces preserves their vertex order and all three edge slots.
+    A surviving neighbour gets its new row number. An edge exposed by a
+    removed face gets the same -1 boundary marker as an exterior edge.
+    """
     if neighbours is None:
         return np.empty((0, 3), dtype=np.int64)
     mapping = np.full(len(keep), -1, dtype=np.int64)
@@ -734,7 +740,12 @@ def _retained_neighbours(neighbours, keep):
 
 
 def _grow_cavity(keep, neighbours, affected, rings):
-    """Remove whole faces through retained adjacency, without crossing cavities."""
+    """Clear faces in keep in place and return how many were newly released.
+
+    affected and neighbours use the face numbering of the full keep mask.
+    Zero rings releases just the seeds. Following only faces still marked
+    for retention prevents growth across a cavity that is already open.
+    """
     frontier = np.unique(affected)
     frontier = frontier[keep[frontier]]
     removed = 0
@@ -801,11 +812,25 @@ def subdivide_parents(records, options, directory):
 
 
 def _join_exact(retained_v, retained_t, patch_v, patch_t):
+    """Give the retained mesh and the replacement patch a shared vertex table.
+
+    Each input triangle contains three row indices into its own XYZ array.
+    Return (vertices, kept, added), with both sets of triangles indexing
+    vertices. Each keeps its input face order so callers can still identify
+    a retained parent or a generated face after the vertex IDs change.
+    _stitch checks whether the remapped edges actually meet across the seam.
+    """
+    # A released face can leave unused vertices in retained_v. Drop those
+    # before matching XY so a discarded vertex cannot supply the patch's Z.
     used = np.unique(retained_t)
     vertices = retained_v[used].tolist()
     mapping_old = np.full(len(retained_v), -1, dtype=np.int64)
     mapping_old[used] = np.arange(len(used))
     kept = mapping_old[retained_t]
+    # Connectivity is defined in XY. An exact match inherits the retained
+    # vertex, including its elevation. The native writer uses max_digits10
+    # so shared coordinates round-trip. Snapping nearby vertices could close
+    # a narrow gap, and two retained IDs at one XY make the choice ambiguous.
     ids = {tuple(v[:2]): i for i, v in enumerate(vertices)}
     if len(ids) != len(vertices):
         raise PatchError('Distinct retained vertices have coincident coordinates')
@@ -822,8 +847,11 @@ def _join_exact(retained_v, retained_t, patch_v, patch_t):
 def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, options, directory, generation):
     """Stage valid children and patch interiors, removing failed two-sided regions.
 
-    Returned arrays are private until the caller validates the remaining coverage.
-    All chains refer to current retained edges by caller-owned IDs, not proximity.
+    Each patch interface ID indexes fixed, and owners maps it to a row of
+    retained. Its chain contains patch vertex IDs in order along that edge.
+    Return None if no interface was split. Otherwise the candidate keep mask
+    and neighbours index result_t. Failed parent IDs still index retained so
+    the caller can release the corresponding faces in the previous mesh.
     """
     patch_v, patch_t = patch
     if len(patch.interfaces) != len(fixed):
@@ -882,6 +910,9 @@ def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, opti
     selection = np.ones(len(old_t) + len(new_t), dtype=bool)
     selection[accepted] = False
     all_t = np.vstack((old_t, new_t))
+    # Removing accepted parents shifts the rows of surviving faces. Translate
+    # the failed parents and their patch-side neighbours into result_t before
+    # opening a cavity on both sides of each failed subdivision.
     old_to_new = np.cumsum(selection) - 1
     result_t = np.vstack((all_t[selection], np.asarray(child_t, dtype=np.int64).reshape((-1, 3))))
     sources = np.concatenate((provenance, np.full(len(new_t), generation)))[selection]
@@ -897,12 +928,23 @@ def _repair_candidate(vertices, retained, provenance, patch, fixed, owners, opti
 
 
 def _retained_boundary_edges(vertices, triangles, adjacency):
+    """Yield each exposed edge's owner row in triangles and its two XY endpoints.
+
+    Neighbour slot i lies opposite vertex i. When triangles is a compact
+    subset, the caller maps the owner back through retained_ids before
+    releasing it in the full working mesh.
+    """
     for face, slot in zip(*np.nonzero(adjacency < 0)):
         yield face, vertices[triangles[face, [(slot+1)%3, (slot+2)%3]], :2]
 
 
 def _conforming_remainder(vertices, triangles, neighbours, keep):
-    """Open local cavities around both sides of every staged boundary conflict."""
+    """Shrink keep in place until the surviving boundary conforms, then return its footprint.
+
+    A release exposes new edges. Repeating the audit catches hanging nodes
+    that were interior to the previous selection before it becomes the input
+    to the next repair.
+    """
     while True:
         face_ids = np.flatnonzero(keep)
         remaining = triangles[face_ids]
@@ -917,7 +959,6 @@ def _conforming_remainder(vertices, triangles, neighbours, keep):
             return mesh_coverage(vertices, remaining, adjacency)
         # IDs from the audit index the compact remainder. Remove the edge's
         # owner and every surviving triangle incident to an offending node.
-        # Re-audit the newly exposed boundary before promoting the candidate.
         remove = np.isin(remaining, list(nodes)).any(axis=1)
         remove[coarse_faces] = True
         keep[face_ids[remove]] = False
@@ -925,14 +966,17 @@ def _conforming_remainder(vertices, triangles, neighbours, keep):
 
 def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=None,
             retained_neighbours=None, result_neighbours=None):
-    # Only exact XY equality to a retained vertex authorizes reusing its ID.
-    # The C++ writer uses max_digits10 so interface doubles round-trip unchanged.
+    """Join the vertex tables and check that the faces meet across the cavity.
+
+    Kept faces occupy the first rows of the result. An exposed retained edge
+    inside the domain needs a neighbour in the added rows. A split edge can
+    share both endpoints yet still leave a hanging node between them.
+    InterfaceChanged reports rows of retained_t for the caller to reopen.
+    """
     result_v, kept, added = _join_exact(retained_v, retained_t, patch_v, patch_t)
     result_t = np.vstack((kept, added))
     neighbours = (build_neighbours(result_t, len(result_v), result_v)
                   if result_neighbours is None else result_neighbours)
-    # Every retained edge which faces the cavity must have exactly one patch
-    # neighbour. Boundary points that CGAL inserted therefore trigger a retry.
     if len(kept):
         if physical_boundary is None:
             physical_boundary = _PhysicalBoundary(domain)

@@ -24,7 +24,12 @@ from .mpi_progress import debug_log
 
 
 def selected_boundary(vertices, triangles, neighbours, active):
-    """Yield boundaries of the inactive part, including its active-side cuts."""
+    """Walk the perimeter of the faces that will remain on disk.
+
+    Yield the disk face ID, its edge's vertex IDs, their XY coordinates and
+    a flag marking an active neighbour. Only flagged edges need partners
+    in the local mesh. Both kinds of edge bound the disk footprint.
+    """
     for lo, hi in batches(len(triangles)):
         block = neighbours[lo:hi]
         retained = ~active[lo:hi]
@@ -45,6 +50,12 @@ def selected_boundary(vertices, triangles, neighbours, active):
 
 
 def inactive_coverage(vertices, triangles, neighbours, active):
+    """Return the disk footprint and the two lookups needed to reattach it.
+
+    Sorted XY endpoint pairs identify the disk face behind each cut edge
+    even after the local mesh is renumbered. The vertex-ID-to-XY map lets
+    a later expansion recover shared vertices from this input tile.
+    """
     directed, edges, interfaces = set(), [], {}
     cut_vertices = {}
     for face, ids, pair, internal in selected_boundary(vertices, triangles, neighbours, active):
@@ -142,6 +153,12 @@ def widen_disk_collars(inputs, active, pending, capacity, rings):
 
 
 def compact_region(vertices, triangles, active):
+    """Return local vertices, locally indexed triangles and their input face IDs.
+
+    The third array maps each local face back to its row in the tile archive.
+    It lets a retry release a specific disk parent after compaction has
+    renumbered the working mesh.
+    """
     # This allocation is proportional to the active seam, never the interiors.
     ids = np.concatenate([np.flatnonzero(active[lo:hi])+lo for lo, hi in batches(len(triangles))]) if len(triangles) else np.empty(0, dtype=np.int64)
     selected = triangles[ids]
@@ -150,6 +167,11 @@ def compact_region(vertices, triangles, active):
 
 
 def boundary_index(vertices, triangles):
+    """Index exposed edges by XY so independently numbered meshes can be compared.
+
+    Return unordered endpoint pairs for matching whole edges and a map from
+    endpoint XY to local vertex ID for attaching the next ring of disk faces.
+    """
     if not len(triangles):
         return set(), {}
     neighbours = build_neighbours(triangles, len(vertices), vertices)
@@ -161,7 +183,13 @@ def boundary_index(vertices, triangles):
 
 
 def extend_cached_region(cached, inputs, pending):
-    """Restore shared IDs along the previous disk cut when loading its next ring."""
+    """Extend a solved seam with newly active disk faces for the next retry.
+
+    Each tile has its own vertex IDs. Its cut_ids map lets a newly loaded
+    triangle reuse the cached vertex row at each known shared endpoint.
+    The returned keep mask retains the cached faces and excludes the disk
+    faces marked for replacement from the newly loaded collar.
+    """
     local_v, local_t, shared = cached
     vertices, triangles = [local_v], [local_t]
     keep = [np.ones(len(local_t), dtype=bool)]
