@@ -1,4 +1,7 @@
 import os
+import hashlib
+from contextlib import suppress
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -70,6 +73,23 @@ def merge_tiles(args):
     archive = Path(prefix + '.npz')
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix='merge-output-') as directory:
         staged_archive = Path(directory) / archive.name
+        cache = None
+        if '_cavity_team' in args:
+            # A fresh run, a regenerated parent or a rebuilt native solver must
+            # never pick up pieces produced under the old criteria or geometry.
+            cache = Path(directory) / 'pieces'
+            if 'checkpoint_run' in args:
+                binary = Path(shutil.which(args['mesher_path']) or args['mesher_path']).resolve()
+                stat = binary.stat()
+                identity = [1, args['checkpoint_run'], meta_a['checkpoint']['generation'],
+                            meta_b['checkpoint']['generation'], str(binary), stat.st_size, stat.st_mtime_ns,
+                            args.get('remesh_max_vertices', 500000), args.get('remesh_max_active_faces', 2000000),
+                            args.get('remesh_max_attempts', 12), args['remesh_band_width']]
+                key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+                cache = Path(prefix + '.cavity-pieces') / key
+                args = dict(args, _seam_retry_path=cache / 'seam-retry.npz')
+            args = dict(args, _cavity_cache=cache)
+
         report = merge_disk_cavity(tile_a['npz'], bounds_a, tile_b['npz'], bounds_b,
             load_domain(args['outer_polygon_shp']), load_constraints(args['constraints']),
             args, staged_archive)
@@ -77,6 +97,13 @@ def merge_tiles(args):
         report_phase(args, 'publishing the merge checkpoint')
         publish(staged_archive, prefix, dict(core_bbox=bounds, tile_bbox=bounds, band_width=0,
                 empty_tile=report['output_faces'] == 0, merge_method='remesh', remesh_report=report), args)
+        # Until the pair marker is committed a PBS timeout must leave all
+        # accepted pieces available. Reproduction logs live outside the cache.
+        if cache is not None and cache.exists():
+            shutil.rmtree(cache, ignore_errors=True)
+            if 'checkpoint_run' in args:
+                with suppress(OSError):
+                    cache.parent.rmdir()  # Keep any other generation still present.
 
 
 # Each rank takes a slice of the pending pairs. Mark a pair complete only after its archive and
@@ -89,11 +116,33 @@ def main(pickle_file: str, disconnect: bool, expected_workers=None):
     with open(pickle_file, 'rb') as f:
         param_args = cloudpickle.load(f)
 
-    param_args_split = np.array_split(param_args, MPI.COMM_WORLD.size)
-
-    for args in param_args_split[MPI.COMM_WORLD.rank]:
-        merge_tiles(args)
-        complete_task(args)
+    world = MPI.COMM_WORLD
+    groups = min(len(param_args), world.size)
+    cap = param_args[0].get('cavity_workers', 1)
+    if cap == 1:
+        # This also covers fixed-size launchers with more ranks than tasks.
+        for args in np.array_split(param_args, world.size)[world.rank]:
+            merge_tiles(args)
+            complete_task(args)
+    else:
+        from mesher.mesher_utls.parallel_cavity import CavityTeam
+        group = world.rank % groups
+        active = world.rank < groups * cap
+        comm = world.Split(group if active else MPI.UNDEFINED, world.rank)
+        if active:
+            try:
+                for args in param_args[group::groups]:
+                    team = CavityTeam(comm, args)
+                    if comm.rank == 0:
+                        try:
+                            merge_tiles(dict(args, _cavity_team=team))
+                            complete_task(args)
+                        finally:
+                            team.stop()
+                    else:
+                        team.serve()
+            finally:
+                comm.Free()
 
     if disconnect:
         comm = MPI.Comm.Get_parent()

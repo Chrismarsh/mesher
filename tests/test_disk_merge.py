@@ -198,6 +198,27 @@ class DiskMergeTests(unittest.TestCase):
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
 
+    def test_resume_after_disk_expansion_starts_at_saved_attempt(self):
+        native = mpi_remesh.merge_cavity
+        path = self.root/'pieces'/'seam-retry.npz'
+        def interrupted(*args, **kwargs):
+            if kwargs['initial_keep'] is not None:
+                raise TimeoutError('PBS wall limit')
+            v, t, report = native(*args, **kwargs)
+            v, t, point = self.split_vertical_cut(v, t, .5)
+            self.assertIsNotNone(point)
+            return v, t, report
+        with patch.object(mpi_remesh, 'merge_cavity', side_effect=interrupted), self.assertRaises(TimeoutError):
+            self.merge(_seam_retry_path=path)
+        self.assertTrue(path.exists())
+        self.assertFalse(self.output.exists())
+        with patch.object(mpi_remesh, 'merge_cavity', wraps=native) as solve:
+            report = self.merge(_seam_retry_path=path)
+        self.assertEqual(solve.call_count, 1)
+        self.assertIsNotNone(solve.call_args.kwargs['initial_keep'])
+        self.assertEqual(report['seam_attempts'], 2)
+        self.assert_valid()
+
     # Two split edges can have different repair outcomes. Only the parent with rejected children
     # should require a larger active region.
     def test_mixed_disk_subdivisions_expand_only_the_failed_parent(self):

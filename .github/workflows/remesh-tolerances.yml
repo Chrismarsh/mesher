@@ -38,7 +38,7 @@ jobs:
           OPENBLAS_NUM_THREADS: 1
         run: |
           export MESHER_TEST_EXE="$PWD/build/build-bin/meshercxx"
-          python3 -m unittest -v test_remesh_tolerances test_mpi_resume \
+          python3 -m unittest -v test_remesh_tolerances test_parallel_cavity test_mpi_resume \
             test_mpi_progress.MpiProgressTests.test_merge_launch_is_sized_after_resume_filtering \
             test_disk_merge \
             test_mpi_remesh.CgalCavityTests.test_physical_stream_angle_stops_after_one_merge_attempt

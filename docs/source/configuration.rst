@@ -793,6 +793,50 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     arrays, graph construction, or GEOS validation. See the separate active-face
     budget below.
 
+.. confval:: mpi_cavity_workers
+
+    :type: int
+    :default: 1
+
+    Maximum MPI ranks assigned to one pending tile pair. Set this above 1
+    to distribute a large, fully released seam across spare ranks in the
+    same launch. Independent tile pairs take priority and the job stays
+    within ``MPI_nworkers``. The coordinator also meshes pieces. Disk
+    selection, final validation and archive assembly still run on the
+    coordinator. Each active backend has its own raster cache and working mesh.
+
+    On a time-limited PBS allocation, for example::
+
+        mpi_cavity_workers = 8
+        mpi_cavity_target_faces = 25000
+
+    With a tracked run, ``mesher --resume CONFIG.py`` reuses the previous
+    completed pairs. For a pending pair it can also restore the last saved
+    outer seam retry and reuse validated pieces whose inputs and cut vertices
+    still match. These checkpoints live beside the pair under
+    ``<pair>.cavity-pieces`` until its final archive is committed. A timeout
+    during a piece leaves that piece to be solved again. Earlier versions
+    only saved completed pairs.
+
+.. confval:: mpi_cavity_target_faces
+
+    :type: int
+    :default: 50000
+
+    Approximate input faces per piece when ``mpi_cavity_workers`` exceeds 1.
+    The selected face count determines the desired number of pieces and their
+    area determines how the work is divided. With 330,000 faces and a target
+    of 25,000, a rectangular connected seam starts with 14 pieces. Only the
+    available ranks work simultaneously. Terrain refinement determines the
+    output face count. Smaller targets give shorter units of restartable work
+    and add more interfaces to reconcile.
+
+    Pieces honour the configured physical constraints and refinement criteria.
+    Both sides must agree on the exact subdivisions of each artificial cut.
+    Only pieces missing required vertices are retried. A cut that prevents
+    a conforming solution is removed locally. If all cuts are removed the
+    normal whole-cavity recovery remains available.
+
 .. confval:: mpi_remesh_max_active_faces
 
     :type: int

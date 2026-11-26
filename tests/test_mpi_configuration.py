@@ -21,7 +21,8 @@ class MpiConfigurationTests(unittest.TestCase):
         configured = mpi_remesh_options_from_config(SimpleNamespace(
             mpi_remesh_band_width=100, mpi_remesh_max_attempts=5, mpi_remesh_max_vertices=2000))
         self.assertEqual(configured, {'merge_method': 'remesh', 'remesh_band_width': 100,
-                                     'remesh_max_attempts': 5, 'remesh_max_vertices': 2000, 'remesh_max_active_faces': 2000000})
+                                     'remesh_max_attempts': 5, 'remesh_max_vertices': 2000, 'remesh_max_active_faces': 2000000,
+                                     'cavity_workers': 1, 'cavity_target_faces': 50000})
 
     # Old shared-edge settings describe a different merge algorithm. Rejecting them early
     # prevents silently generating a different mesh.

@@ -1433,7 +1433,10 @@ def _run_mpi_mesh_tasks(tasks, MPI_exec_str, MPI_nworkers, worker, label):
     template, declared = _launcher_template(MPI_exec_str)
     if declared is not None and declared != MPI_nworkers:
         raise ValueError(f'MPI launcher specifies {declared} ranks, but MPI_nworkers={MPI_nworkers}')
-    launcher, workers = _task_launch(template, min(MPI_nworkers, len(tasks)), MPI_nworkers)
+    # Late merge stages can lend spare ranks to one pair. Tiles still have
+    # exactly one owner and the total launch always fits the job allocation.
+    ranks_per_pair = tasks[0].get('cavity_workers', 1) if worker == 'MPI_merge_tiles.py' else 1
+    launcher, workers = _task_launch(template, min(MPI_nworkers, len(tasks)*ranks_per_pair), MPI_nworkers)
     print(f'{label}: launching {workers} MPI ranks for {len(tasks)} tasks', flush=True)
     debug = any(task.get('mesher_debug', False) for task in tasks)
     worker_path = os.path.join(os.path.dirname(mesher_utls.__file__), worker)
@@ -1490,6 +1493,9 @@ def mpi_remesh_options_from_config(config):
             'remesh_band_width': getattr(config, 'mpi_remesh_band_width', None),
             'remesh_max_attempts': getattr(config, 'mpi_remesh_max_attempts', 12),
             'remesh_max_vertices': getattr(config, 'mpi_remesh_max_vertices', 500000),
+            'cavity_workers': _positive_integer(getattr(config, 'mpi_cavity_workers', 1), 'mpi_cavity_workers'),
+            'cavity_target_faces': _positive_integer(getattr(config, 'mpi_cavity_target_faces', 50000),
+                                                     'mpi_cavity_target_faces'),
             'remesh_max_active_faces': getattr(config, 'mpi_remesh_max_active_faces', 2000000)}
 
 

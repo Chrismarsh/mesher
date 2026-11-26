@@ -42,12 +42,13 @@ class PatchResult(tuple):
     """Validated immutable arrays plus explicit CGAL interface lineage."""
     # Keep two-value unpacking for mesh callers while carrying interface lineage and statistics
     # into repair. Read-only geometry can safely be reused by a retry.
-    def __new__(cls, vertices, triangles, interfaces, stats):
+    def __new__(cls, vertices, triangles, interfaces, stats, constrained_edges=None):
         vertices.setflags(write=False)
         triangles.setflags(write=False)
         result = super().__new__(cls, (vertices, triangles))
         result.interfaces = interfaces
         result.stats = stats
+        result.constrained_edges = constrained_edges
         return result
 
 
@@ -574,7 +575,8 @@ def _precision_interface_ids(linework, fixed_edges, epsilon):
     return np.unique(np.concatenate((np.repeat(owners, 2)[forward[0]], owners[reverse[1]])))
 
 
-def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, retained_edges=None, disk_coverage=None):
+def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, retained_edges=None,
+                  disk_coverage=None, return_constrained_edges=False):
     """Invoke the real C++ refinement criteria, including raster constraints."""
     started = time.perf_counter()
     domain = polygon_domain(domain)
@@ -694,7 +696,8 @@ def remesh_domain(domain, constraints, options, directory, fixed_edges=(), *, re
         error.stats = stats
         raise error from exc
     shutil.rmtree(work)
-    return PatchResult(vertices, triangles, data.get('interfaces', []), stats)
+    return PatchResult(vertices, triangles, data.get('interfaces', []), stats,
+                       data.get('constrained_edges') if return_constrained_edges else None)
 
 
 def _shared_interface(a, b):
@@ -1148,7 +1151,19 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         try:
             if mesher is remesh_domain:
                 boundary = _retained_boundary_edges(joined_v, retained, adjacency)
-                patch = mesher(cavity, constraints, options, directory, fixed, retained_edges=boundary, disk_coverage=disk_coverage)
+                patch = None
+                # With zero retained faces there is no retained edge lineage
+                # to translate. Partition only this expensive rebuild, leaving
+                # the ordinary local repair and final disk checks in control.
+                if (not len(retained_ids) and '_cavity_team' in options
+                        and len(joined_t) > options['cavity_target_faces'] and not cavity.is_empty):
+                    from .parallel_cavity import solve
+                    patch = solve(cavity, constraints, options, 1-axis, len(joined_t), phase_prefix.rstrip(' |'))
+                    if patch is None:
+                        report_phase(options, f'{phase_prefix}solving unsplit cavity ({len(joined_t):,} local faces)')
+                if patch is None:
+                    patch = mesher(cavity, constraints, options, directory, fixed,
+                                   retained_edges=boundary, disk_coverage=disk_coverage)
             else:
                 patch = mesher(cavity, constraints, options, directory, fixed)
             patch_v, patch_t = patch

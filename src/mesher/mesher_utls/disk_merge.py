@@ -6,6 +6,8 @@ in memory. The existing native refinement and parent-repair rules still apply.
 """
 from contextlib import ExitStack
 import math
+import json
+import zlib
 import os
 from pathlib import Path
 import tempfile
@@ -347,6 +349,55 @@ def stream_join(inputs, active, local_v, local_t, work):
     return out_v, out_t
 
 
+def _save_retry(path, active, pending, cached, roundoff, state):
+    """Commit the *next* outer attempt after selecting its new disk collar.
+
+    Parent meshes and neighbour tables can be reopened by ID. Only the two
+    selection masks, the accepted local mesh and its collar mappings need to
+    survive the PBS allocation. The previous generation stays usable up to rename.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arrays = {'state': json.dumps(state, default=lambda value: value.item())}
+    for side in (0, 1):
+        arrays[f'active{side}'] = np.packbits(active[side])
+        arrays[f'roundoff{side}'] = np.array(sorted(roundoff[side]), dtype=np.int64)
+        if cached is not None:
+            arrays[f'added{side}'], arrays[f'removed{side}'] = pending[side]
+            arrays[f'shared{side}'] = np.array(list(cached[2][side].items()), dtype=np.int64).reshape(-1, 2)
+    if cached is not None:
+        arrays['vertices'], arrays['triangles'] = cached[:2]
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+        try:
+            np.savez(stream, **arrays)
+            stream.close()
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+
+def _load_retry(path, active):
+    """Read and CRC-check the entire snapshot before mutating either input mask."""
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            state = json.loads(data['state'].item())
+            masks = [np.unpackbits(data[f'active{i}'], count=len(selection))
+                     for i, selection in enumerate(active)]
+            roundoff = [set(data[f'roundoff{i}']) for i in (0, 1)]
+            cached = pending = None
+            if 'vertices' in data:
+                shared = [dict(data[f'shared{i}']) for i in (0, 1)]
+                cached = data['vertices'], data['triangles'], shared
+                pending = [(data[f'added{i}'], data[f'removed{i}']) for i in (0, 1)]
+    except FileNotFoundError:
+        return None
+    except (ValueError, KeyError, EOFError, zipfile.BadZipFile, zlib.error):
+        return None
+    for selection, mask in zip(active, masks):
+        selection[:] = mask
+    return cached, pending, roundoff, state
+
+
 # Remesh the seam while the two interiors stay on disk. Compare the solved boundary against both
 # disk cuts before joining them. On a mismatch, carry the solved faces into a wider collar
 # within the active-face budget.
@@ -421,6 +472,13 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
         previous_unmatched = None
         collar_rings = 4
         attempt = 0
+        retry_path = options.get('_seam_retry_path')
+        saved = _load_retry(retry_path, active) if retry_path is not None else None
+        if saved is not None:
+            cached, pending, roundoff_parents, state = saved
+            attempt, collar_rings, previous_unmatched, reused, peak_active, reports = state
+            print(f'Resuming seam attempt {attempt+1}/{limit} [{Path(output).stem}]', flush=True)
+            del saved
         while attempt < limit:
             report_phase(options, f'finding disk interfaces for seam attempt {attempt+1}/{limit}')
             # The mask counts original faces for disk ownership. After a retry
@@ -640,4 +698,7 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             else:
                 previous_unmatched = None
             attempt += 1
+            if retry_path is not None:
+                _save_retry(retry_path, active, pending, cached, roundoff_parents,
+                            [attempt, collar_rings, previous_unmatched, reused, peak_active, reports])
         raise remesh.PatchError('No conforming seam-region replacement')
