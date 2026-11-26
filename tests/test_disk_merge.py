@@ -172,19 +172,26 @@ class DiskMergeTests(unittest.TestCase):
     def test_changed_outer_interface_expands_and_reuses_generated_work(self):
         original = mpi_remesh.merge_cavity
         calls = []
+        phase = self.root / 'merge.phase'
+        cavity_phases = []
         # Return a subdivided cut from the solver to force the disk layer to reconcile it with
         # the archived parent.
         def split_boundary(*args, **kwargs):
             calls.append(kwargs.get('initial_keep'))
             v, t, report = original(*args, **kwargs)
+            # Sample the live status before the disk worker can overwrite it.
+            cavity_phases.append(phase.read_text())
             if len(calls) == 1:
                 # The midpoint would create a disk child below the angle bound.
                 v, t, point = self.split_vertical_cut(v, t, .5)
                 self.assertIsNotNone(point)
             return v, t, report
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_boundary):
-            report = self.merge()
+            report = self.merge(_mpi_phase_file=str(phase))
         self.assertEqual(len(calls), 2)
+        self.assertIn('seam attempt 1/6 | solving cavity, attempt', cavity_phases[0])
+        self.assertIn('seam attempt 2/6 (unmatched disk edges at last check = 1) | solving cavity, attempt 1/6',
+                      cavity_phases[1])
         self.assertEqual(report['attempts'], 1)
         self.assertEqual(report['original_triangles_retained'], np.count_nonzero(calls[1]))
         self.assertGreater(report['seam_work_reused'], 0)

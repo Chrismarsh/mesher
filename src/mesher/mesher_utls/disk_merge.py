@@ -482,10 +482,15 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
             debug_log(options, f'Seam region [{Path(output).stem}]: active={active_count}, '
                       f'interiors_on_disk={total-selected_count}')
             report_phase(options, f'solving seam, attempt {attempt+1}/{limit} ({active_count:,} active faces)')
+            # One disk attempt can spend hours in its own series of cavity
+            # solves. Keep the outer counter visible on every inner heartbeat.
+            seam_phase = f'seam attempt {attempt+1}/{limit}'
+            if previous_unmatched is not None:
+                seam_phase += f' (unmatched disk edges at last check = {previous_unmatched:,})'
             try:
                 lv, lt, report = remesh.merge_cavity(av, at, bounds_a, bv, bt, bounds_b,
                     domain, constraints, options, directory, prepared_domain=local_domain, initial_keep=initial_keep,
-                    disk_coverage=outside)
+                    disk_coverage=outside, phase_prefix=seam_phase + ' | ')
                 report_phase(options, f'checking disk interfaces for seam attempt {attempt+1}/{limit}')
                 # Splitting a disk-facing edge leaves the covered area unchanged.
                 # Check its endpoints too, or the split vertex becomes a hanging

@@ -1033,7 +1033,7 @@ def _stitch(retained_v, retained_t, patch_v, patch_t, domain, physical_boundary=
 
 def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bounds_b,
                  domain, constraints, options, directory, mesher=remesh_domain,
-                 *, prepared_domain=None, initial_keep=None, disk_coverage=None):
+                 *, prepared_domain=None, initial_keep=None, disk_coverage=None, phase_prefix=''):
     """Repair a private working mesh; publish only a conforming complete result."""
     started = time.perf_counter()
     axis, seam = _shared_interface(bounds_a, bounds_b)
@@ -1126,7 +1126,7 @@ def merge_cavity(vertices_a, triangles_a, bounds_a, vertices_b, triangles_b, bou
         retained_ids = np.flatnonzero(keep)
         # An outer disk-interface attempt may need several local cavity solves
         # before it can offer the disk mesh a matching edge.
-        report_phase(options, f'solving cavity, attempt {attempt+1}/{attempts} '
+        report_phase(options, f'{phase_prefix}solving cavity, attempt {attempt+1}/{attempts} '
                      f'({len(retained_ids):,} retained of {len(joined_t):,} local faces)')
         retained, retained_sources = joined_t[keep], sources[keep]
         adjacency = _retained_neighbours(neighbours, keep)

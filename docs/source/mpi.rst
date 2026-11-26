@@ -62,11 +62,13 @@ lines and a heartbeat every 30 seconds, even if no task has finished recently::
 One MPI rank processes each pair. When a stage launches just one pair,
 including after a resume, its heartbeat also shows the worker's current
 operation. During seam repair the worker reports the disk-interface attempt
-and active face count. Within that attempt it shows the local cavity attempt
-and the number of retained faces. The counter reaches 1/1 once it publishes
+and active face count. During a cavity solve, both attempt counters stay visible.
+When a disk check triggered the retry, the line also includes the number of
+edges still unmatched after that check. The counter reaches 1/1 once it publishes
 the checkpoint::
 
    MPI merge stage 10/13 (rows): 0/1 | elapsed 00:24:15 | solving seam, attempt 2/12 (221,990 active faces)
+   MPI merge stage 10/13 (rows): 0/1 | elapsed 00:25:00 | seam attempt 2/12 (unmatched disk edges at last check = 31) | solving cavity, attempt 1/12 (219,000 retained of 221,990 local faces)
 
 For an 8-row by 12-column grid, the 7 stages comprise 4 column stages and
 3 row stages. Intermediate filenames count from zero, so the first stage
