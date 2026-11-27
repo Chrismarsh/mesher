@@ -15,7 +15,11 @@ parser.add_argument("infile",
 
 
 def main():
-    """Read dictionary of arguments, find parameters, add new parameters to reference json file"""
+    """Combine parameter columns from files in the same mesh face order.
+
+    Later files replace earlier columns with the same name. Rows are matched
+    by position, so equal lengths alone cannot establish face correspondence.
+    """
 
     # Parse the input arguments
     args = vars(parser.parse_args())

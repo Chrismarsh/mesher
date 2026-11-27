@@ -23,7 +23,3 @@ MPI_nworkers=64
 mpi_mesh=True
 MPI_exec_str='mpirun -n 64 python '
 nworkers_gdal=1
-mpi_global_lloyd = 1
-
-
-mpi_shared_edge_spacing = 200

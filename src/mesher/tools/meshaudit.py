@@ -21,6 +21,8 @@ def _write_new_mesh(path, document):
         os.unlink(temporary)
 
 
+# Reconstruct adjacency to audit a saved CHM mesh. A requested repair writes a separate file so
+# the original remains available for diagnosis.
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('infile', help='CHM .mesh JSON file')

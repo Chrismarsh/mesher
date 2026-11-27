@@ -15,13 +15,18 @@ dependencies = [
     'vtk',
     'numpy',
     'scipy',
+    'shapely>=2.0',
     'matplotlib',
     'cloudpickle',
     'gdal[numpy]',
+    'exactextract',
     'metis',
     'mpi4py',
     'natsort'
 ]
+
+[project.optional-dependencies]
+hdf5 = ["h5py"]
 
 [project.urls]
 Homepage = "https://github.com/Chrismarsh/mesher"

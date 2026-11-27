@@ -1,0 +1,269 @@
+import io
+import json
+from pathlib import Path
+import shlex
+import shutil
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+import subprocess
+
+import cloudpickle
+
+from mesher.mesher_utls.mpi_progress import StageProgress, complete_task, report_phase
+
+
+class Terminal(io.StringIO):
+    # Make a captured stream look interactive so terminal refreshes can be tested without a real
+    # terminal.
+    def isatty(self):
+        return True
+
+
+class MpiProgressTests(unittest.TestCase):
+    def test_single_merge_reports_its_phase_before_the_checkpoint(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as root:
+            with StageProgress([{}], 'resumed merge', root, stream, show_phase=True) as progress:
+                task, = progress.tasks
+                for phase in ('building output neighbours', 'writing the merged archive'):
+                    report_phase(task, phase)
+                    progress._count()
+                    progress._render(force=True)
+                    self.assertIn('0/1 | elapsed', stream.getvalue().splitlines()[-1])
+                    self.assertTrue(stream.getvalue().splitlines()[-1].endswith(' | ' + phase))
+                complete_task(task)
+            self.assertTrue(stream.getvalue().splitlines()[-1].endswith(' | complete'))
+            # Other workers should never contend for a common phase file.
+            with StageProgress([{}, {}], 'two merges', root, stream, show_phase=True) as multiple:
+                for task in multiple.tasks:
+                    self.assertNotIn('_mpi_phase_file', task)
+                    report_phase(task, 'solving seam')
+                self.assertFalse(list(multiple.directory.iterdir()))
+            report_phase({'_mpi_phase_file': str(Path(root)/'removed'/'merge.phase')}, 'finishing')
+
+    # Exercise the live display with stale or partial progress so a failed stage does not finish
+    # with a misleading complete count.
+    def test_terminal_counts_only_current_completed_tasks_and_keeps_failure_visible(self):
+        stream = Terminal()
+        tasks = [{'tile_prefix': 'a'}, {'tile_prefix': 'b'}]
+        with tempfile.TemporaryDirectory() as root:
+            # Old outputs/markers must never count towards a new invocation.
+            (Path(root) / '0.done').touch()
+            with self.assertRaisesRegex(RuntimeError, 'worker failed'):
+                with StageProgress(tasks, 'MPI tiles', root, stream) as progress:
+                    progress._count()
+                    self.assertEqual(progress.completed, 0)
+                    complete_task(progress.tasks[0])
+                    progress._count()
+                    progress._render(force=True)
+                    self.assertEqual(progress.completed, 1)
+                    raise RuntimeError('worker failed')
+            self.assertFalse(progress.directory.exists())
+        self.assertNotIn('_mpi_progress_file', tasks[0])
+        self.assertIn('\rMPI tiles: [', stream.getvalue())
+        self.assertIn('1/2 | elapsed', stream.getvalue().splitlines()[-1])
+        self.assertTrue(stream.getvalue().endswith(' | failed\n'))
+        self.assertNotIn(' | complete', stream.getvalue())
+
+    # Advance a fake clock with no new completions. A redirected PBS log still needs occasional
+    # progress lines.
+    def test_batch_logs_have_throttled_heartbeats_without_terminal_controls(self):
+        stream = io.StringIO()
+        now = [0.]
+        with tempfile.TemporaryDirectory() as root, \
+             patch('mesher.mesher_utls.mpi_progress.time.monotonic', side_effect=lambda: now[0]):
+            with StageProgress([{}, {}], 'MPI merge stage 1/7 (columns)', root, stream) as progress:
+                complete_task(progress.tasks[0])
+                progress._count()
+                now[0] = 10
+                progress._render()
+                self.assertEqual(len(stream.getvalue().splitlines()), 1)
+                now[0] = 30
+                progress._render()
+                self.assertIn('1/2 | elapsed 00:00:30', stream.getvalue())
+                # A long-running task still gets a heartbeat with unchanged count.
+                now[0] = 60
+                progress._render()
+                complete_task(progress.tasks[1])
+        self.assertEqual(len(stream.getvalue().splitlines()), 4)
+        self.assertNotIn('\r', stream.getvalue())
+        self.assertNotIn('\x1b', stream.getvalue())
+        self.assertTrue(stream.getvalue().endswith('2/2 | elapsed 00:01:00 | complete\n'))
+
+    # Compare the advertised stage count and axis labels with the tasks actually scheduled for
+    # square, rectangular and one-tile grids.
+    def test_grid_summary_and_stage_numbers_match_the_executed_merge_schedule(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from mesher.mesher_cli import run_mpi_meshing
+
+        for rows, cols, axes in ((1, 1, []), (5, 1, ['rows'] * 3),
+                                 (3, 5, ['columns', 'rows'] * 2 + ['columns']),
+                                 (8, 12, ['columns', 'rows'] * 3 + ['columns'])):
+            with self.subTest(rows=rows, cols=cols), tempfile.TemporaryDirectory() as root:
+                summary, progress = io.StringIO(), io.StringIO()
+                with redirect_stdout(summary), redirect_stderr(progress), patch('subprocess.check_call'):
+                    run_mpi_meshing(root + '/', 'case', 0, 0, cols*100, rows*100,
+                                    'meshercxx', 'domain.json', {}, {}, {}, 8, .25, 1, 'rmse',
+                                    False, 1, 0, False, 'mpirun', 2, num_tiles=rows*cols)
+                self.assertIn(f'merge stages={len(axes)}', summary.getvalue())
+                completed = [line.split(':')[0] for line in progress.getvalue().splitlines()
+                             if line.startswith('MPI merge ') and line.endswith(' | complete')]
+                self.assertEqual(completed, [f'MPI merge stage {i}/{len(axes)} ({axis})'
+                                             for i, axis in enumerate(axes, 1)])
+
+    # Worker diagnostics and a terminal progress bar would overwrite one another. Check debug
+    # output and marker isolation between stages.
+    def test_debug_disables_live_bar_and_separate_stages_have_fresh_markers(self):
+        stream = Terminal()
+        directories = []
+        with tempfile.TemporaryDirectory() as root:
+            for _ in range(2):
+                with StageProgress([{}], 'MPI tiles', root, stream, debug=True) as progress:
+                    directories.append(progress.directory)
+                    progress._count()
+                    self.assertEqual(progress.completed, 0)
+                    complete_task(progress.tasks[0])
+        self.assertNotEqual(*directories)
+        self.assertNotIn('\r', stream.getvalue())
+        self.assertEqual(stream.getvalue().count('1/1'), 2)
+
+    # An exception while processing one task must not create its completion marker, even if an
+    # earlier task on that rank succeeded.
+    def test_workers_mark_only_successful_tasks(self):
+        from mesher.mesher_utls import MPI_mesh_tiles, MPI_merge_tiles
+        for module, operation in ((MPI_mesh_tiles, 'mesh_tile'), (MPI_merge_tiles, 'merge_tiles')):
+            with self.subTest(worker=module.__name__), tempfile.TemporaryDirectory() as root:
+                tasks = [{'_mpi_progress_file': str(Path(root) / f'{i}.done'), 'id': i} for i in range(2)]
+                arguments = Path(root) / 'tasks.pickle'
+                arguments.write_bytes(cloudpickle.dumps(tasks))
+
+                # Fail one chosen task after checking that its marker is still absent when work
+                # starts.
+                def work(task):
+                    self.assertFalse(Path(task['_mpi_progress_file']).exists())
+                    if task['id'] == 1:
+                        raise RuntimeError('failed validation')
+
+                with patch.object(module, operation, side_effect=work), \
+                     patch.object(module, 'MPI', SimpleNamespace(COMM_WORLD=SimpleNamespace(size=1, rank=0))):
+                    with self.assertRaisesRegex(RuntimeError, 'failed validation'):
+                        module.main(str(arguments), False)
+                self.assertTrue(Path(tasks[0]['_mpi_progress_file']).exists())
+                self.assertFalse(Path(tasks[1]['_mpi_progress_file']).exists())
+        complete_task({})  # Standalone workers do not need a progress observer.
+        with patch('mesher.mesher_utls.mpi_progress.Path.touch', side_effect=OSError('no marker space')):
+            complete_task({'_mpi_progress_file': '/unused/0.done'})
+
+    # Simulate a long backend call so progress polling and reproduction logging are exercised
+    # without a slow native solve.
+    def test_backend_heartbeat_is_debug_only_but_log_is_always_written(self):
+        from contextlib import redirect_stdout
+        from mesher.mesher_utls.mpi_remesh import _run_backend
+        for debug in (False, True):
+            with self.subTest(debug=debug), tempfile.TemporaryDirectory() as root:
+                stream = io.StringIO()
+
+                # Write a recognizable backend log line and simulate a polling timeout before
+                # the process exits.
+                def launch(*args, **kwargs):
+                    kwargs['stdout'].write('Patch progress: vertices=123\n')
+                    kwargs['stdout'].flush()
+                    process = MagicMock()
+                    process.__enter__.return_value = process
+                    process.wait.side_effect = [subprocess.TimeoutExpired('backend', 10), 0]
+                    return process
+
+                with redirect_stdout(stream), patch('mesher.mesher_utls.mpi_remesh.subprocess.Popen', side_effect=launch):
+                    status, _ = _run_backend(['backend'], Path(root), {'mesher_debug': debug})
+                self.assertEqual(status, 0)
+                self.assertIn('vertices=123', (Path(root) / 'backend.log').read_text())
+                if debug:
+                    self.assertIn('Backend active', stream.getvalue())
+                    self.assertIn('vertices=123', stream.getvalue())
+                else:
+                    self.assertEqual(stream.getvalue(), '')
+
+    # A nearly finished stage can have just one pair left. Verify rank sizing uses the filtered
+    # task list.
+    def test_merge_launch_is_sized_after_resume_filtering(self):
+        from mesher import mesher_cli as cli
+        flags = '--map-by slot --prtemca plm_ssh_args "-o SendEnv=PBS_JOBID -o LogLevel=ERROR" python'
+        tasks = [{} for _ in range(32)]
+        for launcher, expected, size in [
+            ('mpirun -n 4000 ' + flags, 'mpirun -n 14 ' + flags, 14),
+            ('/site/mpiexec -np 4000 ' + flags, '/site/mpiexec -np 14 ' + flags, 14),
+            ('pbs-launch {nworkers}', 'pbs-launch 14', 14),
+            ('fixed-pbs-launch', 'fixed-pbs-launch', 4000)
+        ]:
+            with self.subTest(launcher=launcher), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(cli.mpi_resume, 'unfinished', return_value=tasks[18:]), \
+                    patch.object(cli, 'StageProgress') as progress, \
+                    patch.object(cli.subprocess, 'check_call') as launch:
+                active = progress.return_value.__enter__.return_value
+                active.tasks, active.directory = tasks[18:], Path(directory)
+                cli.run_mpi_merge_stage(tasks, launcher, 4000, '7/13', resume_plan={'run_id': 'test'})
+                cmd = launch.call_args.args[0][0]
+                self.assertTrue(cmd.startswith(expected + ' '), cmd)
+                self.assertEqual(shlex.split(cmd)[-2:], ['False', str(size)])
+
+        with self.assertRaisesRegex(ValueError, 'MPI_nworkers=4000'):
+            cli._run_mpi_mesh_tasks(tasks, 'mpirun -n 3 python', 4000, 'MPI_merge_tiles.py', 'merge')
+
+    # Exercise the worker/parent boundary with real MPI processes so completion and launcher
+    # failures are observable outside the worker.
+    @unittest.skipUnless(shutil.which('mpirun'), 'OpenMPI is required')
+    def test_real_launchers_report_completed_tasks_and_errors(self):
+        script = (
+            'import json, sys\n'
+            'from pathlib import Path\n'
+            'from mesher.mesher_cli import _run_mpi_mesh_tasks\n'
+            'data = json.loads(Path(sys.argv[1]).read_text())\n'
+            '_run_mpi_mesh_tasks(data["tasks"], data["launcher"], 4, "MPI_mesh_tiles.py", "MPI tiles")\n'
+        )
+        for mode, debug, failure in (('external', False, False), ('spawn', False, False),
+                                     ('external', True, False), ('external', False, True)):
+            with self.subTest(mode=mode, debug=debug, failure=failure), tempfile.TemporaryDirectory() as root:
+                work = Path(root)
+                domain = work / 'domain.geojson'
+                domain.write_text(json.dumps({'type': 'Polygon', 'coordinates': [
+                    [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]}))
+                backend = work / 'backend'
+                backend.write_text('#!/bin/sh\necho "deliberate backend failure" >&2\nexit 2\n')
+                backend.chmod(0o755)
+                tasks = [{'tile_prefix': f'tile{i}', 'base_dir': root+'/',
+                          'tile_bbox': [0, 0, 5, 5] if failure else [20, 20, 30, 30],
+                          'band_width': 1, 'outer_polygon_shp': str(domain), 'constraints': [],
+                          'mesher_debug': debug, 'mesher_path': str(backend),
+                          'dem_path': str(work/'unused.tif'), 'max_area': 8,
+                          'min_area': .25, 'errormetric': 'rmse', 'max_tolerance': 1}
+                         for i in range(2)]
+                launcher = f'mpirun -n 4 --oversubscribe {shlex.quote(sys.executable)}' if mode == 'external' else None
+                args = work / 'input.json'
+                args.write_text(json.dumps({'tasks': tasks, 'launcher': launcher}))
+                run = subprocess.run([sys.executable, '-c', script, str(args)], cwd=root,
+                                     text=True, capture_output=True, timeout=45)
+                output = run.stdout + run.stderr
+                self.assertIn('launching 2 MPI ranks for 2 tasks', output)
+                self.assertIn('MPI tiles: 0/2', output)
+                self.assertNotIn('\r', output)
+                self.assertFalse(list(work.glob('.mesher-progress-*')))
+                if failure:
+                    self.assertNotEqual(run.returncode, 0, output)
+                    self.assertIn(' | failed', output)
+                    self.assertNotIn(' | complete', output)
+                    self.assertIn('deliberate backend failure', output)
+                    self.assertIn('Reproduction files and full backend log:', output)
+                    folders = list(work.glob('cavity-*'))
+                    self.assertGreater(len(folders), 0)
+                    self.assertIn('deliberate backend failure', (folders[0] / 'backend.log').read_text())
+                else:
+                    self.assertEqual(run.returncode, 0, output)
+                    self.assertIn('MPI tiles: 2/2', output)
+                    self.assertIn(' | complete', output)
+                    for i in range(2):
+                        self.assertTrue((work / f'tile{i}.npz').exists())
+                        self.assertTrue(json.loads((work / f'tile{i}.json').read_text())['empty_tile'])
+                    self.assertEqual('skipping halo meshing' in output, debug)

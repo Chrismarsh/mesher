@@ -5,7 +5,7 @@ by coordinate proximity. Large inputs use sorted temporary runs so edge
 matching does not require a Python dictionary containing the whole mesh.
 """
 
-import heapq
+from contextlib import ExitStack
 import os
 import tempfile
 
@@ -20,6 +20,8 @@ EDGE_DTYPE = np.dtype([('a', '<i8'), ('b', '<i8'), ('owner', '<i8')])
 DEFAULT_CHUNK_SIZE = 1_000_000
 
 
+# Connectivity is indexed directly into arrays. Check the shape and range before converting to
+# signed IDs so an oversized unsigned index cannot wrap to a boundary sentinel.
 def integer_rows(values, name, width=3):
     array = np.asarray(values)
     if array.ndim != 2 or array.shape[1] != width:
@@ -31,16 +33,21 @@ def integer_rows(values, name, width=3):
     return np.asarray(array, dtype=np.int64)
 
 
+# Sort edges by their unordered endpoint IDs so owners from different faces meet. Packing face *
+# 3 + slot lets the match write directly into the neighbour table.
 def _edge_records(triangles, first_face):
     edges = np.empty(3 * len(triangles), dtype=EDGE_DTYPE)
     for slot, (a, b) in enumerate(((1, 2), (2, 0), (0, 1))):
         edges['a'][slot::3] = np.minimum(triangles[:, a], triangles[:, b])
         edges['b'][slot::3] = np.maximum(triangles[:, a], triangles[:, b])
     edges['owner'] = np.arange(3 * first_face, 3 * (first_face + len(triangles)))
-    edges.sort(order=['a', 'b', 'owner'])
-    return edges
+    # Owners already increase in input order. The stable lexsort also leaves equal
+    # endpoint pairs in owner order, as required by the on-disk merge.
+    return edges[np.lexsort((edges['b'], edges['a']))]
 
 
+# One owner leaves a boundary, two owners fill reciprocal slots, and a third makes adjacency
+# ambiguous. Equal endpoint pairs are consecutive after the sort.
 def _match_sorted_edges(edges, neighbours):
     same = (edges['a'][1:] == edges['a'][:-1]) & (edges['b'][1:] == edges['b'][:-1])
     triples = np.flatnonzero(same[:-1] & same[1:])
@@ -54,44 +61,89 @@ def _match_sorted_edges(edges, neighbours):
     neighbours.flat[right] = left // 3
 
 
-def _records(array):
-    for record in array:
-        yield int(record['a']), int(record['b']), int(record['owner'])
+def _merged_edge_blocks(paths, block_size):
+    """Yield sorted blocks from sorted scratch files, with a bounded working set.
 
+    Use the complete (a, b, owner) key. The owner is unique even for a
+    non-manifold edge, so a dense vertex fan or corrupt input cannot push
+    thousands of equal keys past the per-run read limit.
+    """
+    with ExitStack() as mappings:
+        runs = []
+        for path in paths:
+            run = np.memmap(path, dtype=EDGE_DTYPE, mode='r')
+            mappings.callback(run._mmap.close)
+            runs.append(run)
 
-def _match_edge_runs(paths, neighbours):
-    runs = [np.load(path, mmap_mode='r') for path in paths]
-    try:
-        previous = None
-        owner = None
-        paired = False
-        for a, b, current in heapq.merge(*(_records(run) for run in runs)):
-            edge = (a, b)
-            if edge != previous:
-                previous, owner, paired = edge, current, False
-            elif paired:
-                raise MeshTopologyError(f'Non-manifold edge {edge}: more than two triangles')
+        while len(runs) > 1:
+            # Each run can supply at most its share of this block. Up to the
+            # smallest end key, all records are present in those prefixes.
+            share = block_size // len(runs)
+            pivot = min((run[share - 1] for run in runs if len(run) > share),
+                        key=tuple, default=None)
+            if pivot is None:
+                counts = [len(run) for run in runs]
             else:
-                neighbours.flat[owner] = current // 3
-                neighbours.flat[current] = owner // 3
-                paired = True
-    finally:
-        for run in runs:
-            run._mmap.close()
+                counts = [run[:share].searchsorted(pivot, side='right') for run in runs]
+            parts = [run[:n] for run, n in zip(runs, counts) if n]
+            runs = [run[n:] for run, n in zip(runs, counts) if n < len(run)]
+            if len(parts) == 1:
+                yield parts[0]
+            else:
+                records = np.concatenate(parts)
+                yield records[np.lexsort((records['owner'], records['b'], records['a']))]
+
+        if runs:
+            for start in range(0, len(runs[0]), block_size):
+                yield runs[0][start:start+block_size]
 
 
-def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_SIZE):
+def _match_edge_runs(paths, neighbours, directory, block_size):
+    """Pair owners across runs without visiting every edge in a Python loop."""
+    # Limit open files even when a late MPI stage has hundreds of runs. Each
+    # remaining file gets at least one record in a merge block.
+    fan_in = min(64, block_size)
+    generation = 0
+    while len(paths) > fan_in:
+        next_paths = []
+        for start in range(0, len(paths), fan_in):
+            group = paths[start:start+fan_in]
+            if len(group) == 1:
+                next_paths.extend(group)
+                continue
+            path = os.path.join(directory, f'merged-{generation}-{start}')
+            with open(path, 'wb') as output:
+                for block in _merged_edge_blocks(group, block_size):
+                    block.tofile(output)
+            for old in group:
+                os.unlink(old)
+            next_paths.append(path)
+        paths = next_paths
+        generation += 1
+
+    tail = np.empty(0, dtype=EDGE_DTYPE)
+    for block in _merged_edge_blocks(paths, block_size):
+        # A pair or a non-manifold triple can straddle a block boundary.
+        # Rechecking the last two records also covers successive one-record blocks.
+        edges = np.concatenate((tail, block))
+        _match_sorted_edges(edges, neighbours)
+        tail = edges[-2:].copy()
+
+
+def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_SIZE,
+                     output_path=None, temporary_directory=None):
     """Return an int64 (N, 3) table, rejecting invalid triangle topology.
 
-    chunk_size bounds the number of triangles sorted in memory at once. The
-    triangle and resulting neighbour arrays still occupy memory; larger edge
-    tables are written to temporary sorted runs under the system temporary dir.
+    chunk_size bounds the number of triangles sorted in memory at once.
+    An output_path keeps the neighbour table on disk. Edge sorting and geometry
+    checks use bounded batches; temporary_directory selects the scratch volume.
     """
     triangles = integer_rows(elements, 'elem')
     if not len(triangles):
         raise MeshTopologyError('Mesh has no triangles')
     if not isinstance(chunk_size, (int, np.integer)) or chunk_size < 1:
         raise ValueError('chunk_size must be a positive integer')
+    chunk_size = int(chunk_size)  # Three edge records per face can overflow a narrow NumPy scalar.
     if triangles.min() < 0 or triangles.max() >= nvertex:
         raise MeshTopologyError(f'elem contains a vertex index outside [0, {nvertex})')
     positions = None
@@ -99,8 +151,9 @@ def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_
         positions = np.asarray(vertices, dtype=float)
         if positions.ndim != 2 or positions.shape[0] != nvertex or positions.shape[1] not in (2, 3):
             raise MeshTopologyError('vertex must have shape (nvertex, 2) or (nvertex, 3)')
-        if not np.isfinite(positions).all():
-            raise MeshTopologyError('vertex contains non-finite coordinates or elevations')
+        for start in range(0, len(positions), chunk_size):
+            if not np.isfinite(positions[start:start + chunk_size]).all():
+                raise MeshTopologyError('vertex contains non-finite coordinates or elevations')
     for start in range(0, len(triangles), chunk_size):
         block = triangles[start:start + chunk_size]
         repeated = (block[:, 0] == block[:, 1]) | (block[:, 1] == block[:, 2]) | (block[:, 0] == block[:, 2])
@@ -114,17 +167,19 @@ def build_neighbours(elements, nvertex, vertices=None, chunk_size=DEFAULT_CHUNK_
             if degenerate.any():
                 raise MeshTopologyError(f'Triangle {start + np.flatnonzero(degenerate)[0]} has zero or numerically degenerate area')
 
-    neighbours = np.full(triangles.shape, -1, dtype=np.int64)
+    neighbours = (np.empty(triangles.shape, dtype=np.int64) if output_path is None else
+                  np.lib.format.open_memmap(output_path, mode='w+', dtype=np.int64, shape=triangles.shape))
+    neighbours[:] = -1
     if len(triangles) <= chunk_size:
         _match_sorted_edges(_edge_records(triangles, 0), neighbours)
     else:
-        with tempfile.TemporaryDirectory(prefix='mesher-edges-') as directory:
+        with tempfile.TemporaryDirectory(prefix='mesher-edges-', dir=temporary_directory) as directory:
             paths = []
             for start in range(0, len(triangles), chunk_size):
-                path = os.path.join(directory, f'{start}.npy')
-                np.save(path, _edge_records(triangles[start:start + chunk_size], start))
+                path = os.path.join(directory, str(start))
+                _edge_records(triangles[start:start + chunk_size], start).tofile(path)
                 paths.append(path)
-            _match_edge_runs(paths, neighbours)
+            _match_edge_runs(paths, neighbours, directory, 3 * chunk_size)
 
     for start in range(0, len(neighbours), chunk_size):
         block = neighbours[start:start + chunk_size]
@@ -169,6 +224,12 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     inside an unmatched edge, within tolerance in XY, are considered. This is a
     geometric candidate search, not proof that the edge is an MPI seam.
     """
+    coincident, subdivisions = boundary_node_conflicts(vertices, triangles, neighbours, tolerance)
+    return len(coincident), subdivisions
+
+
+def boundary_node_conflicts(vertices, triangles, neighbours, tolerance):
+    """Return coincident boundary vertex IDs and the same edge subdivision iterator."""
     from scipy.spatial import cKDTree
 
     if not np.isfinite(tolerance) or tolerance < 0:
@@ -178,12 +239,14 @@ def boundary_subdivisions(vertices, triangles, neighbours, tolerance):
     b = triangles[faces, (slots + 2) % 3]
     ids = np.unique(np.concatenate((a, b)))
     if len(ids) < 2:
-        return 0, iter(())
+        return ids[:0], iter(())
     xy = vertices[ids, :2]
     tree = cKDTree(xy)
     distances, _ = tree.query(xy, k=2)
-    coincident = int(np.count_nonzero(distances[:, 1] <= tolerance))
+    coincident = ids[distances[:, 1] <= tolerance]
 
+    # Project candidate vertices onto each open segment. Returning interior IDs in distance
+    # order gives the stitcher a chain from the first endpoint to the second.
     def subdivisions():
         for face, slot, va, vb in zip(faces, slots, a, b):
             p, q = vertices[va, :2], vertices[vb, :2]

@@ -11,6 +11,8 @@ ogr.UseExceptions()
 osr.UseExceptions()
 
 
+# Compare the saved mesh polygons to their DEM and write per-face errors, areas and angles for
+# inspecting refinement quality.
 def main():
     if len(sys.argv) == 1:
         print('ERROR: meshstats requires one argument, the directory of the output from a mesher run (e.g.,  mesher.py Bow)')
@@ -116,6 +118,8 @@ def main():
 
 
 
+# Measure interior angles in the XY plane. Missing DEM samples at a vertex exclude the face from
+# this terrain diagnostic.
 def tri_angles(raster_ds, ring):
     x1, y1, z = ring.GetPoint(0)  # this z is 0,
     z1 = extract_point(raster_ds, x1, y1)
@@ -128,11 +132,11 @@ def tri_angles(raster_ds, ring):
     if z1 == rb.GetNoDataValue() or z2 == rb.GetNoDataValue() or z3 == rb.GetNoDataValue():
         return None
 
-    # vector length
+    # Use horizontal edge lengths so slope does not enter the angle diagnostic.
     def vl(v):
         return math.sqrt(v[0] ** 2 + v[1] ** 2)
 
-    # dot product
+    # Dividing the dot product by both edge lengths gives the cosine of the included angle.
     def dp(u, v):
         return u[0] * v[0] + u[1] * v[1]
 
@@ -149,6 +153,8 @@ def tri_angles(raster_ds, ring):
     return [angle32, angle12, angle13]
 
 
+# Compare the plane through the three sampled vertex elevations to the DEM cells covered by the
+# triangle.
 def tri_rmse(raster_ds,feature):
     geom = feature.GetGeometryRef()
     ring = geom.GetGeometryRef(0)
@@ -212,7 +218,8 @@ def tri_rmse(raster_ds,feature):
     # rmse = ((z1+z2+z3)/3)-float(rtri.mean())
     return abs(rmse)
 
-#Zonal stats from here https://gist.github.com/perrygeo/5667173
+# Adapted from https://gist.github.com/perrygeo/5667173
+# Include the high-edge pixel when forming the triangle window on a north-up DEM.
 def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
     originX = gt[0]
     originY = gt[3]
@@ -244,6 +251,8 @@ def bbox_to_pixel_offsets(gt, bbox, rasterXsize, rasterYsize):
 
     return x1, y1, xsize, ysize
 
+# Convert a map point to a raster index for the error calculation and handle the one-pixel
+# overrun possible at the outer edge.
 def xyToPixel( gt, x,  y,  max_x,  max_y):
     # adfGeoTransform[0] /* top left x */
     # adfGeoTransform[1] /* w-e pixel resolution */
@@ -270,6 +279,8 @@ def xyToPixel( gt, x,  y,  max_x,  max_y):
 
     return px, py
 
+# Build a triangle mask in a local raster window so terrain error uses the elevations under this
+# polygon.
 def rasterize_elem(raster, feature):
 
     wkt = raster.GetProjection()
@@ -321,6 +332,8 @@ def rasterize_elem(raster, feature):
     )
 
     return new_gt,masked,src_offset[2],src_offset[3]
+# Sample DEM height at a triangle vertex, with an edge correction and a neighbourhood fallback
+# for NoData.
 def extract_point(raster,mx,my):
     # Convert from map to pixel coordinates.
     # Only works for geotransforms with no rotation.

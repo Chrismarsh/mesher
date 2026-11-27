@@ -1,4 +1,6 @@
 
+# Use class 18 where the mask differs from 1 or the land classification is zero. Elsewhere
+# preserve the supplied land class.
 def make_landcover(land,water):
     outtype = land
 
@@ -7,6 +9,7 @@ def make_landcover(land,water):
 
     return outtype
 
+# Turn the aggregated mask class into a binary field for the example's watermask parameter.
 def water(w):
     out = 1
     if w != 1:
@@ -27,12 +30,6 @@ MPI_nworkers=4
 mpi_mesh=True
 MPI_exec_str='mpirun -n 4 python '
 nworkers_gdal=1
-mpi_global_lloyd = 0
-
-
-mpi_shared_edge_constraints=True
-mpi_shared_edge_spacing = 500
-
 
 parameter_files = {
     'landcover': {'file': '../data/eosd.tif',

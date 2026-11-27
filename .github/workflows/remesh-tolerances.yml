@@ -1,0 +1,44 @@
+name: Remesh tolerances
+
+on: [pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 30
+    steps:
+      - name: Install native and Python test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates cmake g++ make \
+            libcgal-dev libgdal-dev libboost-filesystem-dev libboost-program-options-dev \
+            libmetis-dev python3-h5py python3-h5py-mpi gdal-bin python3-cloudpickle python3-mpi4py python3-gdal python3-numpy python3-scipy python3-shapely
+      - uses: actions/checkout@v4
+      - name: Check serial and parallel CHM HDF5 export
+        env:
+          PYTHONPATH: src:tests
+          OPENBLAS_NUM_THREADS: 1
+          MESHER_TEST_MPI_HDF5: "1"
+          OMPI_ALLOW_RUN_AS_ROOT: "1"
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: python3 -m unittest -v test_chm_hdf5
+      - name: Build and test the native backend
+        run: |
+          cmake -S . -B build -DBUILD_TESTING=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+      - name: Check terrain tolerances and TVC regressions
+        env:
+          PYTHONPATH: src:tests
+          OPENBLAS_NUM_THREADS: 1
+        run: |
+          export MESHER_TEST_EXE="$PWD/build/build-bin/meshercxx"
+          python3 -m unittest -v test_remesh_tolerances test_parallel_cavity test_mpi_resume \
+            test_mpi_progress.MpiProgressTests.test_merge_launch_is_sized_after_resume_filtering \
+            test_disk_merge \
+            test_mpi_remesh.CgalCavityTests.test_physical_stream_angle_stops_after_one_merge_attempt

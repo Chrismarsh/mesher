@@ -9,6 +9,8 @@ import json
 import os
 import argparse
 
+# Convert an existing CHM mesh to GIS polygons when the original meshing run and its rasters are
+# unavailable.
 def main():
     parser = argparse.ArgumentParser()
 
@@ -25,6 +27,8 @@ def main():
 
     write_shp(args["shapefile"], mesh, {}, {})
 
+# Construct polygon rings from each face's vertex IDs. Use the same face index for optional
+# attributes so they stay aligned with the exported geometry.
 def write_shp(fname, mesh, parameter_files, initial_conditions):
     # Create the shape file to hold the triangulation
 

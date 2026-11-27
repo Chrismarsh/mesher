@@ -4,10 +4,10 @@ import os
 import tempfile
 import sys
 try:
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 except ModuleNotFoundError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-    from mesher.mesher_utls.bootstrap_utils import ensure_mesher_on_path
+    from mesher.mesher_utls.bootstrap_utils import check_worker_count, ensure_mesher_on_path
 ensure_mesher_on_path()
 import cloudpickle
 from mpi4py import MPI
@@ -19,6 +19,8 @@ from mesher.mesher_utls.raster_utils import fill_nodata
 
 gdal.UseExceptions()  # Enable exception support
 
+# External launchers pass strings. Treating the literal False as a Python truth value would try
+# to disconnect a nonexistent parent.
 def str2bool(s: str) -> bool:
     if s.lower() == 'true':
         return True
@@ -26,6 +28,8 @@ def str2bool(s: str) -> bool:
     return False
 
 
+# Key a cached warp by its inputs, GDAL version and warp/fill settings. A source with no usable
+# file metadata gets a fresh name to prevent stale reuse.
 def projected_path(directory, filename, dataset, warp_options, fill_distance):
     # Include GDAL-reported dependencies (e.g. tiles behind a VRT) without reading raster data.
     dependencies = {}
@@ -53,6 +57,8 @@ def projected_path(directory, filename, dataset, warp_options, fill_distance):
     return os.path.join(directory, f'{stem}_{digest}_projected.tif')
 
 
+# Put each raster for one parameter on the DEM grid. Stage each warp and optional fill before
+# publishing so another rank can safely reuse the result.
 def regularize_inputs(args):
     (parameter_dir, data, gdal_prefix, key, pixel_height, pixel_width, srs_out,
      xmax, xmin, ymax, ymin, fill_holes, reuse_projected_parameters) = args
@@ -112,12 +118,14 @@ def regularize_inputs(args):
             except RuntimeError:
                 print(f'Rebuilding unreadable projected parameter: {out_name}', flush=True)
 
+        if reuse_projected_parameters == 'resume':
+            raise RuntimeError(f'Missing or unreadable projected parameter required for resume: {out_name}')
+
         # Publish only after warp and optional filling succeed, including when two ranks
         # use the same source and settings for different parameters.
         with tempfile.TemporaryDirectory(dir=parameter_dir) as work_dir:
             tmp = os.path.join(work_dir, 'projected.tif')
-            subprocess.check_call([gdal_prefix + 'gdalwarp', *warp_options, f, tmp],
-                                  env=dict(os.environ, GDAL_CACHEMAX='5%'))
+            subprocess.check_call([gdal_prefix + 'gdalwarp', *warp_options, f, tmp])
             if fill_holes:
                 fill_nodata(tmp, fill_distance)
             os.replace(tmp, out_name)
@@ -125,8 +133,11 @@ def regularize_inputs(args):
     return ret_df
 
 
+# Split parameter entries among the allotted GDAL ranks. A separate result file per rank lets
+# the parent collect projected paths on shared storage.
 def main(pickle_file: str,
-         disconnect: bool):
+         disconnect: bool, expected_workers=None):
+    check_worker_count(MPI.COMM_WORLD.size, expected_workers, 'expected GDAL worker count')
     # if called from SLURM, etc, these cli are coming in as strings
     if isinstance(disconnect, str):
         disconnect = str2bool(disconnect)
@@ -141,7 +152,7 @@ def main(pickle_file: str,
         r.append(regularize_inputs(args))
 
     # Return this rank's filenames to the parent process.
-    with open(f'pickled_param_args_rets_{MPI.COMM_WORLD.rank}.pickle', 'wb') as f:
+    with open(os.path.join(os.path.dirname(pickle_file), f'result_{MPI.COMM_WORLD.rank}.pickle'), 'wb') as f:
         cloudpickle.dump(r, f)
 
     # have been run from the MPI.spawn, so disconnect from parent

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import ctypes
 import sys, os
 import json
 import numpy as np
@@ -8,8 +9,11 @@ import scipy.sparse.csgraph as graph
 import scipy.sparse.linalg as linalg
 import importlib.util
 
+from mesher.mesh_store import batches
 from mesher.mesh_topology import audit_mesh, MeshTopologyError, validate_neighbours
 
+# Resolve the native library only when METIS is needed, allowing the other ordering methods to
+# run without it.
 def _load_metis():
     # Validate inputs before loading METIS. Respect an explicitly selected DLL;
     # otherwise use the library found at build time, or the wrapper's discovery.
@@ -46,7 +50,9 @@ MESH_PATCH = "0"
 
 
 def append_global_cell_id_to_mesh_file(args):
-    """Read dictionary of arguments, find a desired permutation of cell faces, add new permuted ids to json file"""
+    """Store the face ordering in CHM metadata. METIS also supplies rank sizes,
+    which tell the reader where each contiguous block of faces begins.
+    """
     global MESH_MAJOR, MESH_MINOR, MESH_PATCH
 
     with open(args["infile"]) as f:
@@ -81,12 +87,13 @@ def append_global_cell_id_to_mesh_file(args):
 ############################################################################
 # permutation functions
 def compute_rcm_permutation(neighbor_list):
-    """Computes the permutation that minimizes the bandwidth of the connectivity matrix
-    - uses Reverse CutHill-McKee (RCM) algorithm, which needs CSC or CSR sparse matrix format"""
+    """Use reverse Cuthill-McKee to bring neighbouring faces closer in index space.
+
+    The adjacency graph is undirected, so its CSR matrix can use symmetric mode.
+    """
 
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
 
-    # Note we are always dealing with undirected (symmetric) graphs
     permutation = graph.reverse_cuthill_mckee(A,symmetric_mode=True)
 
     print_bandwidth_before_after_permutation(A,permutation)
@@ -94,10 +101,13 @@ def compute_rcm_permutation(neighbor_list):
     return permutation.tolist()
 
 def compute_nd_permutation(neighbor_list):
-    """Computes a nested dissection permutation (minimizes fill-in of matrix factors)"""
+    """Implement the historical nd option using SuperLU's column permutation.
+
+    Take the ordering from the sparse LU factorization so the file records the
+    same column order used to limit fill-in in the factors.
+    """
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list,sparse.csc_matrix)
 
-    # permutation is determined during the factorization
     LUperm = linalg.splu(A)
 
     # Not really necessary, but curious
@@ -109,10 +119,32 @@ def compute_nd_permutation(neighbor_list):
 
     return LUperm.perm_c.tolist()
 
-def compute_metis_permutation_N(neighbor_list,nrank):
-    """Computes an nrank partition using METIS
-    - Uses metis deffault permutation for partitions"""
+def _compact_metis_graph(metis, neighbours):
+    """Pack triangle adjacency into METIS CSR arrays without Python objects per edge."""
+    dtype = np.dtype(metis.idx_t)
+    if len(neighbours) > np.iinfo(dtype).max:
+        raise MeshTopologyError('Mesh exceeds METIS index width; use 64-bit METIS')
+    offsets = np.empty(len(neighbours) + 1, dtype=dtype)
+    offsets[0] = 0
+    for lo, hi in batches(len(neighbours)):
+        counts = np.count_nonzero(neighbours[lo:hi] >= 0, axis=1)
+        ends = int(offsets[lo]) + np.cumsum(counts, dtype=np.int64)
+        if ends[-1] > np.iinfo(dtype).max:
+            raise MeshTopologyError('Mesh adjacency exceeds METIS index width; use 64-bit METIS')
+        offsets[lo+1:hi+1] = ends
+    edges = np.empty(int(offsets[-1]), dtype=dtype)
+    for lo, hi in batches(len(neighbours)):
+        block = neighbours[lo:hi]
+        edges[offsets[lo]:offsets[hi]] = block[block >= 0]
+    pointer = ctypes.POINTER(metis.idx_t)
+    # data_as retains a reference to its NumPy buffer throughout the native call.
+    return metis.METIS_Graph(metis.idx_t(len(neighbours)), metis.idx_t(1),
+                             offsets.ctypes.data_as(pointer), edges.ctypes.data_as(pointer),
+                             None, None, None)
 
+
+def metis_face_order(neighbor_list, nrank):
+    """Return partition sizes and new-position -> original-face index."""
     neighbours = validate_neighbours(neighbor_list)
     N = len(neighbours)
     if not isinstance(nrank, (int, np.integer)) or isinstance(nrank, bool) or not 2 <= nrank <= N:
@@ -123,29 +155,35 @@ def compute_metis_permutation_N(neighbor_list,nrank):
         # Some METIS versions return empty parts for this tiny-graph case.
         labels = np.arange(N)
     else:
-        trim_neighbor_list = [row[row >= 0].tolist() for row in neighbours]
         metis = _load_metis()
-        m = metis.part_graph(trim_neighbor_list,nrank)
-        labels = np.asarray(m[1])
+        labels = np.asarray(metis.part_graph(_compact_metis_graph(metis, neighbours), nrank)[1])
     if labels.shape != (N,) or labels.dtype.kind not in 'iu':
         raise MeshTopologyError(f'METIS returned an invalid partition array; expected {N} integer labels')
     if labels.min() < 0 or labels.max() >= nrank:
         raise MeshTopologyError('METIS returned partition labels outside the requested rank range')
-    rank_size = np.bincount(labels.astype(np.int64), minlength=nrank)
+    rank_size = np.bincount(labels.astype(np.int64, copy=False), minlength=nrank)
     if np.any(rank_size == 0):
         raise MeshTopologyError('METIS returned an empty partition; reduce nrank or inspect disconnected components')
     # This is new-position -> original-face-index, as consumed by CHM.
-    permutation = np.argsort(labels, kind='stable').tolist()
+    return rank_size, np.argsort(labels, kind='stable')
 
+
+# Adapt the numeric METIS result to the JSON tool's list format and report the connectivity
+# bandwidth in the proposed face order.
+def compute_metis_permutation_N(neighbor_list, nrank):
+    rank_size, permutation = metis_face_order(neighbor_list, nrank)
     A = convert_neighbor_list_to_compressed_matrix(neighbor_list, sparse.csr_matrix)
     print_bandwidth_before_after_permutation(A,permutation)
 
-    return rank_size.tolist(), permutation
+    return rank_size.tolist(), permutation.tolist()
 
 
 def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
-    """Get a sparse compressed_format from a list of neighbors (assuming aij input)
-    - compressed_format is one of sparse.csr_matrix or sparse.csc_matrix"""
+    """Build a square face-adjacency matrix, skipping the -1 boundary slots.
+
+    Keep all faces as rows, including isolated ones. The caller selects CSR
+    for graph traversal or CSC for sparse factorization.
+    """
 
     N = len(neighbor_list)
     i = []
@@ -168,7 +206,9 @@ def convert_neighbor_list_to_compressed_matrix(neighbor_list,compressed_format):
 
 ## Bandwidth comparison
 def print_bandwidth_before_after_permutation(A,permutation):
-    """Display bandwidth before and after permutation"""
+    """Apply the same face order to rows and columns to compare bandwidths
+    and write sparsity plots of the same graph under each numbering.
+    """
     orig_band = compute_bandwidth_CSR(A)
     print("  Original bandwidth: ", orig_band)
     plot_mat_connectivity(A,"orig_order.png")
@@ -180,7 +220,10 @@ def print_bandwidth_before_after_permutation(A,permutation):
     return
 
 def compute_bandwidth_CSR(A):
-    """Compute the maximum bandwidth from a CSR sparse matrix A"""
+    """Return the largest upper-diagonal neighbour offset. On an undirected
+    face graph each edge occurs in both directions, so scanning the upper side
+    suffices. An isolated face contributes zero.
+    """
     assert(sparse.isspmatrix_csr(A))
     indices = A.indices
     indptr = A.indptr
@@ -195,8 +238,9 @@ def compute_bandwidth_CSR(A):
     return bandwidth
 
 def plot_mat_connectivity(A,filename,**kwargs):
-    """Plot the spy view of the connectivity matrix
-    - TODO kwargs can be used to get values to pass into matplotlib functions"""
+    """Write a sparsity plot using a headless backend so mesh ordering can be
+    inspected from a batch job without a display.
+    """
 
     import matplotlib as mpl
     mpl.use('AGG')
@@ -215,6 +259,8 @@ def plot_mat_connectivity(A,filename,**kwargs):
 ############################################################################
 
 
+# Select an ordering from the command line and write the face numbering that CHM will use when
+# reading this mesh.
 def main():
     # Parse the input arguments
     args = vars(parser.parse_args())
