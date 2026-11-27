@@ -292,16 +292,29 @@ class DiskMergeTests(unittest.TestCase):
 
         with patch.object(mpi_remesh, 'merge_cavity', side_effect=split_inside_strip):
             report = self.merge(remesh_max_attempts=4, remesh_max_active_faces=500)
-        self.assertEqual(splits, [True, True, True, False])
+        self.assertEqual(splits, [True, True])
+        self.assertEqual(report['disk_edges_restored_from_seam'], 1)
+        self.assertEqual(report['unresolved_disk_edges'], 0)
         self.assertLessEqual(report['peak_loaded_faces'], 500)
         self.assertGreater(report['disk_interior_faces'], 1000)
         self.assert_valid()
+
+    @staticmethod
+    def reject_seam_children():
+        # Simulate a raster tolerance that rejects coarsening but still let
+        # native disk subdivisions and the normal constrained retries run.
+        native = mpi_remesh.subdivide_parents
+        def check(records, options, directory):
+            if all(len(r['parent']) == 3 for r in records):
+                return native(records, options, directory)
+            return {'repairs': [{'id': r['id'], 'accepted': False} for r in records]}
+        return patch.object(mpi_remesh, 'subdivide_parents', side_effect=check)
 
     # Force the cut to move repeatedly while limiting active faces so recovery has to choose
     # which connected interior to load.
     def test_repeated_moving_cut_closes_only_affected_interior_within_budget(self):
         splits = []
-        with self.moving_cut(splits):
+        with self.moving_cut(splits), self.reject_seam_children():
             report = self.merge(remesh_max_attempts=3, remesh_max_active_faces=1000)
         self.assertEqual(splits, [True, True, False])
         self.assertEqual(report['seam_attempts'], 3)
@@ -309,6 +322,106 @@ class DiskMergeTests(unittest.TestCase):
         self.assertLessEqual(report['peak_loaded_faces'], 1000)
         self.assertGreater(report['disk_interior_faces'], 600)
         self.assert_valid()
+
+    def test_overlapping_fans_preserve_quality_and_exact_required_edges(self):
+        # Two split disk edges share one seam triangle. Retriangulating their
+        # fans independently would remove the shared face twice. The target
+        # is an unchanged right triangle of area 2 with two restored edges.
+        v = np.array([[30,3,0], [32,3,0], [30,5,0], [31,3,0], [30,4,0]], dtype=float)
+        t = np.array([[0,3,4], [3,1,2], [3,2,4]])
+        keys, ids = disk_merge.boundary_index(v, t)
+        a, b, c = map(tuple, v[:3, :2])
+        missing = [{tuple(sorted((a, b))), tuple(sorted((a, c)))}, set()]
+        def repair(opts, constraints):
+            return disk_merge.repair_seam_boundary(v, t, keys, ids, missing, [{0:a,1:b,2:c},{}],
+                                                   constraints, opts, self.root)
+
+        vv, tt, gaps, _, release = repair(self.options, [])
+        self.assertEqual(gaps, [set(), set()])
+        self.assertEqual(len(tt), 1)
+        self.assertEqual(len(vv), 3)
+        self.assertEqual(len(release), 0)
+        mpi_remesh.validate_patch(vv, tt, Polygon([a,b,c]))
+        # A stream ending on the split, or a quality limit that requires
+        # smaller triangles, must keep the original fan for a two-sided retry.
+        for opts, lines in ((self.options, [LineString([v[3,:2], v[2,:2]])]),
+                            (dict(self.options, max_area=1.1), [])):
+            vv, tt, gaps, _, release = repair(opts, lines)
+            self.assertEqual(gaps, missing)
+            np.testing.assert_array_equal(tt, t)
+            np.testing.assert_array_equal(release, [0, 1, 2])
+
+    def test_many_diagonal_disk_edges_at_fabdem_coordinates(self):
+        # Only the example edge was supplied from FABDEM. Synthesize the
+        # neighbouring fans at that precision, including three pairs of
+        # intersecting fans, to exercise the reported 46 cuts on 43 owners.
+        a = np.array([-1208258.1882240062, 423462.1128712853])
+        b = np.array([-1207835.9462299387, 423061.7495686458])
+        dx, dy = b-a
+        c = a + [-dy, dx]
+        ds = gdal.Open(self.options['dem_path'], gdal.GA_Update)
+        ds.SetGeoTransform((a[0]-2000, 2000, 0, a[1]+18000, 0, -2000))
+        ds = None
+        vertices, triangles, edges, domains, required = [], [], set(), [], {}
+        for i in range(43):
+            offset = np.array([1600 * (i % 8), 1600 * (i // 8)])
+            x, y, z = (point + offset for point in (a,b,c))
+            base = len(vertices)
+            vertices.extend([x, y, z, (x+y)/2])
+            required.update((base+j,tuple(p)) for j,p in enumerate((x,y,z)))
+            edges.add(tuple(sorted((tuple(x),tuple(y)))))
+            domains.append(Polygon([x,y,z]))
+            if i < 3:
+                vertices.append((x+z)/2)
+                edges.add(tuple(sorted((tuple(x),tuple(z)))))
+                faces = [[0,3,4], [3,1,2], [3,2,4]]
+            else:
+                faces = [[0,3,2], [3,1,2]]
+            triangles.extend(np.asarray(faces)+base)
+        vertices = np.column_stack((vertices, np.zeros(len(vertices))))
+        triangles = np.asarray(triangles)
+        self.assertEqual(len(edges), 46)
+        vv, tt, missing, _, release = disk_merge.repair_seam_boundary(vertices, triangles,
+            *disk_merge.boundary_index(vertices, triangles), [edges,set()], [required,{}], [],
+            dict(self.options, max_area=1000000), self.root)
+        self.assertEqual(missing, [set(), set()])
+        self.assertEqual(len(tt), 43)
+        self.assertEqual(len(release), 0)
+        mpi_remesh.validate_patch(vv, tt, union_all(domains))
+
+    def test_restore_seam_edge_from_last_attempt_checkpoint(self):
+        path = self.root/'retry.npz'
+        # Interrupt just after selecting the collar for the final solve. Older
+        # writers kept the entire seam. New ones also remember which fans to release.
+        save = disk_merge._save_retry
+        def stop(path, *args):
+            save(path, *args)
+            if args[-1][0] == 2:
+                raise TimeoutError
+        with self.moving_cut([]), self.reject_seam_children(), patch.object(
+                disk_merge, '_save_retry', side_effect=stop), self.assertRaises(TimeoutError):
+            self.merge(_seam_retry_path=path, remesh_max_attempts=3, remesh_max_active_faces=500)
+        with np.load(path) as data:
+            saved = dict(data)
+        self.assertGreater(len(saved['release']), 0)
+        extend = disk_merge.extend_cached_region
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                snapshot = {k: v for k, v in saved.items() if not legacy or k != 'release'}
+                np.savez(path, **snapshot)
+                def verify_keep(cached, inputs, pending):
+                    v, t, keep = extend(cached, inputs, pending)
+                    np.testing.assert_array_equal(np.flatnonzero(~keep[:len(cached[1])]),
+                                                  [] if legacy else saved['release'])
+                    return v, t, keep
+                splits = []
+                with self.moving_cut(splits), patch.object(disk_merge, 'extend_cached_region', side_effect=verify_keep):
+                    report = self.merge(_seam_retry_path=path, remesh_max_attempts=3, remesh_max_active_faces=500)
+                self.assertEqual(splits, [True])
+                self.assertEqual(report['seam_attempts'], 3)
+                self.assertGreater(report['disk_edges_restored_from_seam'], 0)
+                self.assertEqual(report['unresolved_disk_edges'], 0)
+                self.assert_valid()
 
     # A cached repair on one side may split a previously conforming cut on the other. Exercise
     # that change on the final retry.
@@ -354,7 +467,7 @@ class DiskMergeTests(unittest.TestCase):
         x = v[t, 0].mean(axis=1)
         np.savez(self.inputs[0], verts=v, tris=t[(x < 19) | (x > 20)])
 
-        with self.moving_cut([]):
+        with self.moving_cut([]), self.reject_seam_children():
             report = self.merge(remesh_max_attempts=3, remesh_max_active_faces=530)
         self.assertTrue(report['seam_attempt_reports'][-1]['closing_disk_components'])
         self.assertLessEqual(report['peak_loaded_faces'], 530)
@@ -409,12 +522,16 @@ class DiskMergeTests(unittest.TestCase):
     def test_exhausted_moving_cut_names_inputs_and_preserves_previous_output(self):
         splits = []
         self.output.write_bytes(b'previous completed mesh')
-        with self.moving_cut(splits), self.assertRaises(mpi_remesh.PatchError) as failure:
+        with self.moving_cut(splits), self.reject_seam_children(), self.assertRaises(mpi_remesh.PatchError) as failure:
             self.merge(remesh_max_attempts=3, remesh_max_active_faces=500)
         self.assertRegex(str(failure.exception), r'Seam-region expansion exhausted.*merged.*unmatched disk edges')
         for path in self.inputs:
             self.assertIn(str(path), str(failure.exception))
         self.assertIn('active_face_limit=500', str(failure.exception))
+        example = json.loads((self.root/'merged.unmatched-edge.json').read_text())
+        self.assertEqual(len(example['disk_parent']), 3)
+        self.assertGreater(len(example['seam_triangles']), 0)
+        self.assertTrue(Polygon(example['disk_parent']).boundary.covers(LineString(example['disk_edge'])))
         self.assertEqual(splits, [True, True, True])
         self.assertEqual(self.output.read_bytes(), b'previous completed mesh')
 

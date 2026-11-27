@@ -780,8 +780,18 @@ If Mesher is used on a cluster to process a large domain, the use of a job sched
     single solve at each level. Before a solve, the merge can release whole
     faces bordering roundoff-width rings and recompute the cavity. These
     geometry-only passes count against the active-face budget when they load
-    disk faces. They do not consume a refinement attempt. Exhaustion leaves
-    any previous output intact.
+    disk faces. They do not consume a refinement attempt.
+
+    If the seam splits an edge belonging to a triangle on disk, the merge
+    first tries to subdivide that triangle. When the number of unmatched
+    edges stops falling, or on the last retry, it also tries to restore
+    the original edge by retriangulating its seam-side neighbours. Each
+    replacement must pass the configured mesh quality checks. Fans that
+    touch a physical constraint go through the constrained cavity solver
+    on a subsequent retry, if one remains. If the attempts run out with
+    unmatched disk edges, the merge preserves the previous output and
+    writes the disk triangle, nearby seam triangles, and local constraints
+    for one such edge to ``<merge-prefix>.unmatched-edge.json``.
 
 .. confval:: mpi_remesh_max_vertices
 

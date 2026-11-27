@@ -15,14 +15,15 @@ import time
 import zipfile
 
 import numpy as np
-from shapely import union_all
-from shapely.geometry import LineString, box
+from shapely import STRtree, polygons, union_all
+from shapely.geometry import LineString, Polygon, box
 from shapely.ops import polygonize
 
 from mesher.mesh_store import batches, disk_array, open_mesh_arrays, check_boundary_geometry
 from mesher.mesh_topology import MeshTopologyError, build_neighbours
 from . import mpi_remesh as remesh
 from .mpi_progress import debug_log, report_phase
+from .mpi_resume import write_marker
 
 
 def selected_boundary(vertices, triangles, neighbours, active):
@@ -193,9 +194,12 @@ def extend_cached_region(cached, inputs, pending):
     The returned keep mask retains the cached faces and excludes the disk
     faces marked for replacement from the newly loaded collar.
     """
-    local_v, local_t, shared = cached
+    # Faces surrounding a rejected split must be free to change on both
+    # sides. Keeping the seam fan would pin the same split on the next try.
+    local_v, local_t, shared, release = cached
     vertices, triangles = [local_v], [local_t]
     keep = [np.ones(len(local_t), dtype=bool)]
+    keep[0][release] = False
     offset = len(local_v)
     for (v, t, _), (added, removed), cut_ids in zip(inputs, pending, shared):
         used, inverse = np.unique(t[added], return_inverse=True)
@@ -292,7 +296,128 @@ def subdivide_disk_interface(inputs, active, parents, missing, vertices, triangl
             selection[faces] = False
         unresolved.append(edges)
         shared.append(endpoints)
-    return vertices, triangles, accepted, unresolved, shared, repaired_ids
+    return vertices, triangles, accepted, unresolved, shared, repaired_ids, repaired_keys
+
+
+def _split_edge_fans(triangles, keys, boundary_ids, missing):
+    """Find all faces incident to inserted vertices on a split disk edge.
+
+    Several edges can share a triangle. Their fans must be retriangulated
+    together, otherwise two accepted edits would replace the same face.
+    """
+    adjacent = {}
+    for a, b in keys:
+        adjacent.setdefault(a, []).append(b)
+        adjacent.setdefault(b, []).append(a)
+    chains = {}
+    at_vertex = {}
+    for edge in sorted(set.union(*missing)):
+        chain = remesh.split_edge_chain(*edge, adjacent)
+        if chain is None or len(chain) < 3:
+            continue
+        chains[edge] = chain
+        for xy in chain[1:-1]:
+            at_vertex.setdefault(boundary_ids[xy], []).append(edge)
+    if not chains:
+        return
+
+    # Scan the local mesh once for all fans. The input archive interiors
+    # are never indexed here, even when just one edge remains on a huge tile.
+    faces_at_edge = {e: [] for e in chains}
+    edges_at_face = {}
+    for face in np.flatnonzero(np.isin(triangles, list(at_vertex)).any(axis=1)):
+        edges = {e for v in triangles[face] for e in at_vertex.get(v, ())}
+        edges_at_face[face] = edges
+        for edge in edges:
+            faces_at_edge[edge].append(face)
+
+    unseen = set(chains)
+    for edge in chains:
+        if edge not in unseen:
+            continue
+        stack, group, faces = [edge], [], set()
+        unseen.remove(edge)
+        while stack:
+            current = stack.pop()
+            group.append(chains[current])
+            for face in faces_at_edge[current]:
+                if face not in faces:
+                    faces.add(face)
+                    neighbours = unseen.intersection(edges_at_face[face])
+                    unseen.difference_update(neighbours)
+                    stack.extend(neighbours)
+        yield sorted(faces), group
+
+
+def repair_seam_boundary(vertices, triangles, keys, boundary_ids, missing, cut_vertices,
+                         constraints, options, directory):
+    """Try the seam side of a rejected disk subdivision with its other edges fixed.
+
+    Replacing a fan can remove the extra seam vertex without changing the
+    adjacent disk triangle. Only accept native, quality-tested triangles with
+    the exact required perimeter. Return face IDs still needing two-sided
+    remeshing in the numbering of the returned triangle array.
+    """
+    required = {xy for side in cut_vertices for xy in side.values()}
+    streams = STRtree(constraints) if constraints else None
+    records, fans, owners = [], [], []
+    retry = np.zeros(len(triangles), dtype=bool)
+    budget = options.get('remesh_max_vertices', 500000)
+
+    def perimeter(xys):
+        return {tuple(sorted((a, b))) for a, b in zip(xys, xys[1:] + xys[:1])}
+
+    for faces, chains in _split_edge_fans(triangles, keys, boundary_ids, missing):
+        retry[faces] = True
+        interior = {xy for chain in chains for xy in chain[1:-1]}
+        if not required.isdisjoint(interior):
+            continue
+        original = union_all(polygons(vertices[triangles[faces], :2]))
+        if original.geom_type != 'Polygon' or original.interiors:
+            continue
+        # Removing a vertex is legal only along the verified chains. A
+        # branching boundary, hole, or physical stream needs the usual
+        # constrained two-sided solve. Never snap endpoints to make them fit.
+        outline = list(original.exterior.coords[:-1])
+        ring = [xy for xy in outline if xy not in interior]
+        if len(ring) < 3 or len(ring) > budget:
+            continue
+        old = perimeter(outline)
+        child_edges = {tuple(sorted((a, b))) for chain in chains for a, b in zip(chain, chain[1:])}
+        restored = {tuple(sorted((ch[0], ch[-1]))) for ch in chains}
+        if not child_edges <= old or perimeter(ring) != ((old - child_edges) | restored):
+            continue
+        target = Polygon(ring)
+        if not target.is_valid or original.symmetric_difference(target).area > remesh.area_tolerance(original):
+            continue
+        if streams is not None and (streams.query(original, predicate='intersects').size or
+                                    streams.query(target, predicate='intersects').size):
+            continue
+        record = {'id': len(records), 'parent': outline, 'boundary': ring}
+        records.append(record)
+        budget -= len(ring)
+        fans.append(faces)
+        owners.append({tuple(vertices[v, :2]): v for v in np.unique(triangles[faces])})
+
+    if not records:
+        return vertices, triangles, missing, boundary_ids, np.flatnonzero(retry)
+    children = []
+    drop = np.zeros(len(triangles), dtype=bool)
+    for result in remesh.subdivide_parents(records, options, directory)['repairs']:
+        if result['accepted']:
+            i = result['id']
+            drop[fans[i]] = True
+            children.extend([[owners[i][tuple(xy)] for xy in tri] for tri in result['triangles']])
+    if not children:
+        return vertices, triangles, missing, boundary_ids, np.flatnonzero(retry)
+
+    # Compaction drops the removed split vertices as well. They must not
+    # reappear as unused nodes in the final CHM archive or a cached retry.
+    used, inverse = np.unique(np.vstack((triangles[~drop], children)), return_inverse=True)
+    updated_v, updated_t = vertices[used], inverse.reshape(-1, 3)
+    updated_keys, updated_ids = boundary_index(updated_v, updated_t)
+    unresolved = [edges - updated_keys for edges in missing]
+    return updated_v, updated_t, unresolved, updated_ids, np.flatnonzero(retry[~drop])
 
 
 def stream_join(inputs, active, local_v, local_t, work):
@@ -349,6 +474,31 @@ def stream_join(inputs, active, local_v, local_t, work):
     return out_v, out_t
 
 
+def _write_cut_example(prefix, edge, parent, vertices, triangles, constraints):
+    """Keep the local geometry of an exhausted cut without copying either tile.
+
+    Include faces whose envelopes intersect the disk edge even if the seam
+    omitted an endpoint and a matching subdivision chain cannot be identified.
+    """
+    local = []
+    a, b = np.asarray(edge)
+    lo, hi = np.minimum(a, b), np.maximum(a, b)
+    segment = LineString(edge)
+    epsilon = remesh._coordinate_tolerance(segment)
+    for start, end in batches(len(triangles)):
+        xy = vertices[triangles[start:end], :2]
+        nearby = ((xy.min(axis=1) <= hi+epsilon) & (xy.max(axis=1) >= lo-epsilon)).all(axis=1)
+        for tri in xy[nearby]:
+            if Polygon(tri).distance(segment) <= epsilon:
+                local.append(tri.tolist())
+    envelope = union_all([Polygon(parent), *(Polygon(tri) for tri in local)]).envelope
+    lines = [list(part.coords) for curve in constraints for part in remesh.line_parts(curve.intersection(envelope))]
+    path = Path(str(prefix) + '.unmatched-edge.json')
+    write_marker(path, dict(disk_edge=edge, disk_parent=parent.tolist(), seam_triangles=local,
+                            constraint_lines=lines))
+    return path
+
+
 def _save_retry(path, active, pending, cached, roundoff, state):
     """Commit the *next* outer attempt after selecting its new disk collar.
 
@@ -365,7 +515,7 @@ def _save_retry(path, active, pending, cached, roundoff, state):
             arrays[f'added{side}'], arrays[f'removed{side}'] = pending[side]
             arrays[f'shared{side}'] = np.array(list(cached[2][side].items()), dtype=np.int64).reshape(-1, 2)
     if cached is not None:
-        arrays['vertices'], arrays['triangles'] = cached[:2]
+        arrays['vertices'], arrays['triangles'], arrays['release'] = cached[0], cached[1], cached[3]
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
         tmp = Path(stream.name)
         try:
@@ -387,7 +537,9 @@ def _load_retry(path, active):
             cached = pending = None
             if 'vertices' in data:
                 shared = [dict(data[f'shared{i}']) for i in (0, 1)]
-                cached = data['vertices'], data['triangles'], shared
+                # Older checkpoints retained the complete local candidate.
+                release = data['release'] if 'release' in data else np.empty(0, dtype=np.int64)
+                cached = data['vertices'], data['triangles'], shared, release
                 pending = [(data[f'added{i}'], data[f'removed{i}']) for i in (0, 1)]
     except FileNotFoundError:
         return None
@@ -533,7 +685,7 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                     initial_keep = np.concatenate((keep_a & ~np.isin(a_ids, list(roundoff_parents[0])),
                                                    keep_b & ~np.isin(b_ids, list(roundoff_parents[1]))))
             else:
-                reused += len(cached[1])
+                reused += len(cached[1]) - len(cached[3])
                 av, at, initial_keep = extend_cached_region(cached, inputs, pending)
                 # The expanded seam is already indexed as a single working mesh.
                 bv, bt = av[:0], at[:0]
@@ -576,7 +728,7 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                     repaired = subdivide_disk_interface(inputs, active, affected, missing, lv, lt,
                                                         boundary_ids, keys, options, directory)
                     if repaired is not None:
-                        lv, lt, accepted, missing, cut_vertices, boundary_ids = repaired
+                        lv, lt, accepted, missing, cut_vertices, boundary_ids, keys = repaired
                         for selection, faces in zip(active, accepted):
                             selection[faces] = True
                         accepted_count = sum(map(len, accepted))
@@ -586,11 +738,24 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                         report['disk_parents_subdivided'] = accepted_count
                         debug_log(options, f'Subdivided {accepted_count} disk parents [{Path(output).stem}]: '
                                   f'{parent_count} parents still require expansion')
+                release = np.empty(0, dtype=np.int64)
+                remaining = sum(map(len, missing))
+                stalled = previous_unmatched is not None and remaining >= previous_unmatched
+                if remaining and limit > 1 and (stalled or attempt+1 == limit):
+                    report_phase(options, f'repairing {remaining} disk edges from the seam side')
+                    lv, lt, missing, boundary_ids, release = repair_seam_boundary(
+                        lv, lt, keys, boundary_ids, missing, cut_vertices, constraints, options, directory)
+                    report['disk_edges_restored_from_seam'] = remaining - sum(map(len, missing))
+                    report['seam_faces_released_for_retry'] = len(release)
+                    affected = [sorted({interfaces[e] for e in edges}) for interfaces, edges in zip(cuts, missing)]
+                    parent_count = sum(map(len, affected))
+                    debug_log(options, f"Restored {report['disk_edges_restored_from_seam']} disk edges "
+                              f"from the seam side; {parent_count} disk parents still unmatched")
                 report['unresolved_disk_edges'] = sum(map(len, missing))
                 if any(affected):
                     shared = [{i: boundary_ids[xy] for i, xy in endpoints.items() if xy in boundary_ids}
                               for endpoints in cut_vertices]
-                    cached = lv, lt, shared
+                    cached = lv, lt, shared, release
             except remesh.PatchBoundaryRoundoff as exc:
                 # Preflight can release another disk parent before CGAL runs.
                 # Each successful release shrinks the immutable interior, so
@@ -652,12 +817,16 @@ def merge_disk_cavity(path_a, bounds_a, path_b, bounds_b, domain, constraints, o
                 edge = min(missing[side])
                 example = tuple(tuple(map(float, p)) for p in edge)
                 remaining = [r['unresolved_disk_edges'] for r in reports if 'unresolved_disk_edges' in r]
+                v, t, _ = inputs[side]
+                witness = _write_cut_example(options.get('out_prefix') or Path(directory)/Path(output).stem,
+                                             example, v[t[cuts[side][edge]], :2], lv, lt, constraints)
                 raise remesh.PatchError(
                     f'Seam-region expansion exhausted [{Path(output).stem}] after {attempt+1} attempts: '
                     f'{sum(map(len, missing))} unmatched disk edges on {parent_count} parents, '
                     f'active={active_count}, active_face_limit={max_active}, '
                     f'interiors_on_disk={total-selected_count}, unresolved_by_solve={remaining}, example={example}, '
-                    f'owner={cuts[side][edge]} in {(path_a, path_b)[side]}, inputs=({path_a}, {path_b})')
+                    f'owner={cuts[side][edge]} in {(path_a, path_b)[side]}, inputs=({path_a}, {path_b}), '
+                    f'local geometry={witness}')
             pending = []
             for selection, (_, _, neighbours), seeds in zip(active, inputs, affected):
                 # Remove the failed interface parents and their immediate ring;
